@@ -241,9 +241,154 @@ Scales to millions of memories with sub-50ms recall.
 |-------------|---------|--------|
 | MCP Protocol | `@celiums-memory/adapter-mcp` | ✅ 5 tools |
 | REST API | `@celiums-memory/server` | ✅ 9 endpoints |
+| Claude Code | MCP bridge | ✅ 4 tools |
 | LangChain | `@celiums-memory/adapter-langchain` | ✅ BaseMemory |
 | LlamaIndex | `@celiums-memory/adapter-llamaindex` | ✅ BaseChatStore |
 | CLI | `@celiums-memory/cli` | ✅ 6 commands |
+
+---
+
+## Connect to Claude Code
+
+Give Claude persistent memory with emotions in 3 steps:
+
+### Step 1: Start the memory server
+
+```bash
+# Option A: In-memory mode (quick, no databases)
+git clone https://github.com/terrizoaguimor/celiums-memory.git
+cd celiums-memory && npm install && npm start
+# Server runs at http://localhost:3210
+
+# Option B: Production mode (persistent, requires Docker)
+docker compose -f docker/docker-compose.yml up -d
+DATABASE_URL=postgresql://user:pass@localhost:5432/celiums_memory \
+QDRANT_URL=http://localhost:6333 \
+VALKEY_URL=redis://localhost:6379 \
+npm start
+```
+
+### Step 2: Create the MCP bridge
+
+Save this as `~/.claude/celiums-memory-bridge.mjs`:
+
+```javascript
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+
+const MEMORY_URL = process.env.CELIUMS_MEMORY_URL || "http://localhost:3210";
+const USER_ID = process.env.CELIUMS_USER_ID || "default";
+
+const server = new Server(
+  { name: "celiums-memory", version: "1.0.0" },
+  { capabilities: { tools: {} } }
+);
+
+server.setRequestHandler("tools/list", async () => ({
+  tools: [
+    {
+      name: "remember",
+      description: "Store a memory with emotional context. Persists across sessions.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          content: { type: "string", description: "What to remember" },
+        },
+        required: ["content"],
+      },
+    },
+    {
+      name: "recall",
+      description: "Recall memories by semantic + emotional relevance.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "What to search for" },
+        },
+        required: ["query"],
+      },
+    },
+    {
+      name: "emotion",
+      description: "Get current AI emotional state (Pleasure, Arousal, Dominance).",
+      inputSchema: { type: "object", properties: {} },
+    },
+    {
+      name: "forget",
+      description: "Delete a specific memory by ID.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          memoryId: { type: "string", description: "Memory ID to delete" },
+        },
+        required: ["memoryId"],
+      },
+    },
+  ],
+}));
+
+server.setRequestHandler("tools/call", async (request) => {
+  const { name, arguments: args } = request.params;
+  try {
+    let res, data;
+    if (name === "remember") {
+      res = await fetch(`${MEMORY_URL}/store`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: args.content, userId: USER_ID }),
+      });
+      data = await res.json();
+    } else if (name === "recall") {
+      res = await fetch(`${MEMORY_URL}/recall`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: args.query, userId: USER_ID, limit: 10 }),
+      });
+      data = await res.json();
+    } else if (name === "emotion") {
+      res = await fetch(`${MEMORY_URL}/emotion?userId=${USER_ID}`);
+      data = await res.json();
+    } else if (name === "forget") {
+      data = { forgotten: args.memoryId };
+    }
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  } catch (err) {
+    return { content: [{ type: "text", text: `Error: ${err.message}` }] };
+  }
+});
+
+const transport = new StdioServerTransport();
+await server.connect(transport);
+```
+
+Then install the MCP SDK:
+
+```bash
+cd ~/.claude && npm install @modelcontextprotocol/sdk
+```
+
+### Step 3: Add to Claude Code settings
+
+Add this to `~/.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "celiums-memory": {
+      "command": "node",
+      "args": ["~/.claude/celiums-memory-bridge.mjs"],
+      "env": {
+        "CELIUMS_MEMORY_URL": "http://localhost:3210",
+        "CELIUMS_USER_ID": "your-name"
+      }
+    }
+  }
+}
+```
+
+Restart Claude Code. You now have 4 tools: `remember`, `recall`, `emotion`, `forget`.
+
+Ask Claude: *"What do you remember about me?"* — and watch it recall across sessions.
 
 ---
 
