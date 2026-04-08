@@ -335,7 +335,7 @@ cd ~/.claude && npm install @modelcontextprotocol/sdk zod
 
 ### Step 3: Add to Claude Code settings
 
-Add this to `~/.claude/settings.json`:
+Add this to your project's MCP servers in `~/.claude.json` (NOT `~/.claude/settings.json`):
 
 ```json
 {
