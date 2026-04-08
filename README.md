@@ -276,54 +276,54 @@ Save this as `~/.claude/celiums-memory-bridge.mjs`:
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import https from "node:https";
 
 const MEMORY_URL = process.env.CELIUMS_MEMORY_URL || "http://localhost:3210";
 const USER_ID = process.env.CELIUMS_USER_ID || "default";
 
+function request(path, method, body) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(path, MEMORY_URL);
+    const mod = url.protocol === "https:" ? https : await import("node:http");
+    const postData = body ? JSON.stringify(body) : null;
+    const req = (url.protocol === "https:" ? https : mod).request({
+      hostname: url.hostname, port: url.port || (url.protocol === "https:" ? 443 : 80),
+      path: url.pathname + url.search, method,
+      headers: { "User-Agent": "celiums-memory-bridge/1.0", "Content-Type": "application/json",
+        ...(postData ? { "Content-Length": Buffer.byteLength(postData) } : {}) },
+    }, (res) => {
+      let data = "";
+      res.on("data", (c) => data += c);
+      res.on("end", () => { try { resolve(JSON.parse(data)); } catch { resolve({ error: data.substring(0, 200) }); } });
+    });
+    req.on("error", reject);
+    if (postData) req.write(postData);
+    req.end();
+  });
+}
+
 const server = new McpServer({ name: "celiums-memory", version: "1.0.0" });
 
-const HEADERS = { "Content-Type": "application/json", "User-Agent": "celiums-memory-bridge/1.0" };
-
-server.tool(
-  "remember",
-  "Store a memory with emotional context. Persists across all sessions forever.",
+server.tool("remember", "Store a memory with emotional context. Persists forever.",
   { content: z.string(), tags: z.array(z.string()).optional() },
   async ({ content, tags }) => {
-    const res = await fetch(`${MEMORY_URL}/store`, {
-      method: "POST", headers: HEADERS,
-      body: JSON.stringify({ content, userId: USER_ID, tags }),
-    });
-    const text = await res.text();
-    const data = JSON.parse(text);
-    return { content: [{ type: "text", text: JSON.stringify({ stored: true, emotion: data.emotion, state: data.limbicState }, null, 2) }] };
-  }
-);
+    const data = await request("/store", "POST", { content, userId: USER_ID, tags });
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  });
 
-server.tool(
-  "recall",
-  "Recall memories by semantic and emotional relevance. Returns ranked results.",
+server.tool("recall", "Recall memories by semantic and emotional relevance.",
   { query: z.string() },
   async ({ query }) => {
-    const res = await fetch(`${MEMORY_URL}/recall`, {
-      method: "POST", headers: HEADERS,
-      body: JSON.stringify({ query, userId: USER_ID, limit: 10 }),
-    });
-    const text = await res.text();
-    const data = JSON.parse(text);
-    return { content: [{ type: "text", text: JSON.stringify({ found: data.found, memories: data.memories, emotion: data.emotion }, null, 2) }] };
-  }
-);
+    const data = await request("/recall", "POST", { query, userId: USER_ID, limit: 10 });
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  });
 
-server.tool(
-  "emotion",
-  "Get current AI emotional state: Pleasure, Arousal, Dominance (PAD model).",
+server.tool("emotion", "Get AI emotional state (Pleasure, Arousal, Dominance).",
   {},
   async () => {
-    const res = await fetch(`${MEMORY_URL}/emotion?userId=${USER_ID}`, { headers: HEADERS });
-    const data = await res.json();
+    const data = await request("/emotion?userId=" + USER_ID, "GET");
     return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
-  }
-);
+  });
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
