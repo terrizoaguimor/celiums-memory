@@ -282,17 +282,19 @@ const USER_ID = process.env.CELIUMS_USER_ID || "default";
 
 const server = new McpServer({ name: "celiums-memory", version: "1.0.0" });
 
+const HEADERS = { "Content-Type": "application/json", "User-Agent": "celiums-memory-bridge/1.0" };
+
 server.tool(
   "remember",
   "Store a memory with emotional context. Persists across all sessions forever.",
   { content: z.string(), tags: z.array(z.string()).optional() },
   async ({ content, tags }) => {
     const res = await fetch(`${MEMORY_URL}/store`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+      method: "POST", headers: HEADERS,
       body: JSON.stringify({ content, userId: USER_ID, tags }),
     });
-    const data = await res.json();
+    const text = await res.text();
+    const data = JSON.parse(text);
     return { content: [{ type: "text", text: JSON.stringify({ stored: true, emotion: data.emotion, state: data.limbicState }, null, 2) }] };
   }
 );
@@ -303,11 +305,11 @@ server.tool(
   { query: z.string() },
   async ({ query }) => {
     const res = await fetch(`${MEMORY_URL}/recall`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+      method: "POST", headers: HEADERS,
       body: JSON.stringify({ query, userId: USER_ID, limit: 10 }),
     });
-    const data = await res.json();
+    const text = await res.text();
+    const data = JSON.parse(text);
     return { content: [{ type: "text", text: JSON.stringify({ found: data.found, memories: data.memories, emotion: data.emotion }, null, 2) }] };
   }
 );
@@ -317,7 +319,7 @@ server.tool(
   "Get current AI emotional state: Pleasure, Arousal, Dominance (PAD model).",
   {},
   async () => {
-    const res = await fetch(`${MEMORY_URL}/emotion?userId=${USER_ID}`);
+    const res = await fetch(`${MEMORY_URL}/emotion?userId=${USER_ID}`, { headers: HEADERS });
     const data = await res.json();
     return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
   }
