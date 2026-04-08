@@ -282,8 +282,10 @@ const USER_ID = process.env.CELIUMS_USER_ID || "default";
 
 const server = new McpServer({ name: "celiums-memory", version: "1.0.0" });
 
-server.tool("remember",
-  { content: z.string().describe("What to remember"), tags: z.array(z.string()).optional() },
+server.tool(
+  "remember",
+  "Store a memory with emotional context. Persists across all sessions forever.",
+  { content: z.string(), tags: z.array(z.string()).optional() },
   async ({ content, tags }) => {
     const res = await fetch(`${MEMORY_URL}/store`, {
       method: "POST",
@@ -295,8 +297,10 @@ server.tool("remember",
   }
 );
 
-server.tool("recall",
-  { query: z.string().describe("What to search for") },
+server.tool(
+  "recall",
+  "Recall memories by semantic and emotional relevance. Returns ranked results.",
+  { query: z.string() },
   async ({ query }) => {
     const res = await fetch(`${MEMORY_URL}/recall`, {
       method: "POST",
@@ -308,7 +312,9 @@ server.tool("recall",
   }
 );
 
-server.tool("emotion",
+server.tool(
+  "emotion",
+  "Get current AI emotional state: Pleasure, Arousal, Dominance (PAD model).",
   {},
   async () => {
     const res = await fetch(`${MEMORY_URL}/emotion?userId=${USER_ID}`);
