@@ -101,13 +101,8 @@ async function main() {
           memories: result.memories.map(m => ({
             content: m.memory.content,
             type: m.memory.memoryType,
-            importance: m.memory.importance,
-            score: m.finalScore,
-            emotion: {
-              pleasure: m.memory.emotionalValence,
-              arousal: m.memory.emotionalArousal,
-              dominance: m.memory.emotionalDominance,
-            },
+            importance: Math.round(m.memory.importance * 100) / 100,
+            score: Math.round(m.finalScore * 100) / 100,
           })),
           limbicState: result.limbicState,
           modulation: result.modulation,
@@ -117,16 +112,22 @@ async function main() {
         return;
       }
 
-      // Get current emotional state
+      // Get current emotional state (simplified for humans)
       if (req.method === 'GET' && url.pathname === '/emotion') {
         const userId = url.searchParams.get('userId') ?? 'default';
         const limbic = await engine.getLimbicState(userId);
         const mod = await engine.getModulation(userId);
+        const label = getEmotionLabel(limbic);
         res.writeHead(200);
         res.end(JSON.stringify({
+          feeling: label,
           state: limbic,
-          emotion: getEmotionLabel(limbic),
-          modulation: mod,
+          modulation: {
+            temperature: mod.temperature,
+            maxTokens: mod.maxTokens,
+            systemPromptModifier: mod.systemPromptModifier,
+            activeBranch: mod.activeBranch,
+          },
         }, null, 2));
         return;
       }
