@@ -1,0 +1,14 @@
+{
+  "name": "@celiums-memory/server",
+  "version": "0.1.0",
+  "description": "REST API server for Celiums Memory",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": { "build": "tsc", "test": "vitest run", "clean": "rm -rf dist" },
+  "dependencies": {
+    "@celiums-memory/core": "workspace:*",
+    "@celiums-memory/types": "workspace:*"
+  },
+  "devDependencies": { "typescript": "^5.7.0", "vitest": "^3.0.0" }
+}

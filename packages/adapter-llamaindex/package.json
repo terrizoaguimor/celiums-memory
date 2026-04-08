@@ -1,0 +1,17 @@
+{
+  "name": "@celiums-memory/adapter-llamaindex",
+  "version": "1.0.0",
+  "description": "LlamaIndex integration for celiums-memory — emotional AI memory",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc -w"
+  },
+  "peerDependencies": {
+    "@celiums-memory/core": "^1.0.0",
+    "@celiums-memory/types": "^1.0.0",
+    "llamaindex": ">=0.1.0"
+  },
+  "license": "Apache-2.0"
+}

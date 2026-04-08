@@ -1,0 +1,18 @@
+{
+  "name": "@celiums-memory/core",
+  "version": "0.1.0",
+  "description": "Core persistent memory engine — store, recall, consolidate, lifecycle",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "scripts": { "build": "tsc", "test": "vitest run", "clean": "rm -rf dist" },
+  "dependencies": {
+    "@celiums-memory/types": "workspace:*",
+    "pg": "^8.13.0",
+    "@qdrant/js-client-rest": "^1.12.0",
+    "ioredis": "^5.4.0"
+  },
+  "devDependencies": { "@types/pg": "^8.11.0", "typescript": "^5.7.0", "vitest": "^3.0.0" }
+}

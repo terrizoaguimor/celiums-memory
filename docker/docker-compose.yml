@@ -1,0 +1,238 @@
+version: "3.9"
+
+name: celiums-memory
+
+# ─────────────────────────────────────────────
+#  Networks
+# ─────────────────────────────────────────────
+networks:
+  celiums-internal:
+    driver: bridge
+    internal: true
+  celiums-external:
+    driver: bridge
+
+# ─────────────────────────────────────────────
+#  Volumes
+# ─────────────────────────────────────────────
+volumes:
+  postgres_data:
+    driver: local
+  qdrant_data:
+    driver: local
+  valkey_data:
+    driver: local
+  celiums_uploads:
+    driver: local
+
+# ─────────────────────────────────────────────
+#  Services
+# ─────────────────────────────────────────────
+services:
+
+  # ───────────────────────────────────────────
+  #  PostgreSQL 17 + pgvector
+  # ───────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: celiums-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-celiums}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-celiums_secret_change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-celiums_memory}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init/postgres:/docker-entrypoint-initdb.d:ro
+    networks:
+      - celiums-internal
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-celiums} -d ${POSTGRES_DB:-celiums_memory}"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ───────────────────────────────────────────
+  #  Qdrant — Vector Store
+  # ───────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:v1.9.0
+    container_name: celiums-qdrant
+    restart: unless-stopped
+    environment:
+      QDRANT__SERVICE__HTTP_PORT: 6333
+      QDRANT__SERVICE__GRPC_PORT: 6334
+      QDRANT__LOG_LEVEL: ${QDRANT_LOG_LEVEL:-INFO}
+      QDRANT__STORAGE__STORAGE_PATH: /qdrant/storage
+      # Enable API key auth if QDRANT_API_KEY is set
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - celiums-internal
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -sf http://localhost:6333/healthz || exit 1"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ───────────────────────────────────────────
+  #  Valkey — Redis-compatible Cache + Queue
+  # ───────────────────────────────────────────
+  valkey:
+    image: valkey/valkey:7.2-alpine
+    container_name: celiums-valkey
+    restart: unless-stopped
+    command: >
+      valkey-server
+      --save 60 1
+      --loglevel ${VALKEY_LOG_LEVEL:-notice}
+      --maxmemory ${VALKEY_MAX_MEMORY:-256mb}
+      --maxmemory-policy allkeys-lru
+      --requirepass ${VALKEY_PASSWORD:-valkey_secret_change_me}
+      --appendonly yes
+      --appendfsync everysec
+    volumes:
+      - valkey_data:/data
+    networks:
+      - celiums-internal
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "valkey-cli -a ${VALKEY_PASSWORD:-valkey_secret_change_me} ping | grep -q PONG"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 64M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ───────────────────────────────────────────
+  #  Celiums Memory Server
+  # ───────────────────────────────────────────
+  celiums-memory:
+    image: celiums/memory:${CELIUMS_VERSION:-latest}
+    container_name: celiums-memory
+    restart: unless-stopped
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: production
+    ports:
+      - "${CELIUMS_PORT:-3456}:3456"
+    environment:
+      # Server
+      NODE_ENV: production
+      PORT: 3456
+      CELIUMS_API_KEY: ${CELIUMS_API_KEY:?CELIUMS_API_KEY is required}
+      CELIUMS_LOG_LEVEL: ${CELIUMS_LOG_LEVEL:-info}
+      CELIUMS_CORS_ORIGINS: ${CELIUMS_CORS_ORIGINS:-*}
+
+      # PostgreSQL
+      POSTGRES_URL: postgresql://${POSTGRES_USER:-celiums}:${POSTGRES_PASSWORD:-celiums_secret_change_me}@postgres:5432/${POSTGRES_DB:-celiums_memory}
+
+      # Qdrant
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-celiums_memories}
+
+      # Valkey
+      VALKEY_URL: redis://:${VALKEY_PASSWORD:-valkey_secret_change_me}@valkey:6379
+
+      # Embeddings
+      EMBEDDINGS_PROVIDER: ${EMBEDDINGS_PROVIDER:-openai}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      COHERE_API_KEY: ${COHERE_API_KEY:-}
+      MEMORY_EMBEDDING_MODEL: ${MEMORY_EMBEDDING_MODEL:-text-embedding-3-small}
+      MEMORY_EMBEDDING_DIMENSIONS: ${MEMORY_EMBEDDING_DIMENSIONS:-1536}
+
+      # Memory settings
+      MEMORY_MAX_PER_AGENT: ${MEMORY_MAX_PER_AGENT:-10000}
+      MEMORY_SIMILARITY_THRESHOLD: ${MEMORY_SIMILARITY_THRESHOLD:-0.75}
+      MEMORY_CACHE_TTL_SECONDS: ${MEMORY_CACHE_TTL_SECONDS:-300}
+
+      # MCP
+      MCP_ENABLED: ${MCP_ENABLED:-true}
+      MCP_PATH: ${MCP_PATH:-/mcp}
+
+    volumes:
+      - celiums_uploads:/app/uploads
+    networks:
+      - celiums-internal
+      - celiums-external
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -sf http://localhost:3456/health || exit 1"
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

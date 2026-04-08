@@ -1,0 +1,16 @@
+{
+  "name": "@celiums-memory/cli",
+  "version": "0.1.0",
+  "description": "CLI for Celiums Memory — start, recall, stats, forget, export, import",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": { "celiums-memory": "./dist/index.js" },
+  "scripts": { "build": "tsc", "dev": "tsx src/index.ts", "clean": "rm -rf dist" },
+  "dependencies": {
+    "@celiums-memory/core": "workspace:*",
+    "@celiums-memory/types": "workspace:*",
+    "@celiums-memory/server": "workspace:*",
+    "@celiums-memory/adapter-mcp": "workspace:*"
+  },
+  "devDependencies": { "typescript": "^5.7.0", "tsx": "^4.19.0" }
+}
