@@ -75,7 +75,7 @@ import type {
   LimbicState,
   LLMModulation,
   PersonalityTraits,
-} from '@celiums-memory/types';
+} from '@celiums/memory-types';
 
 // === Implementations ===
 import { PersonalityEngine } from './personality.js';
@@ -129,7 +129,7 @@ export async function createMemoryEngine(config: CeliumsMemoryConfig): Promise<M
   } else {
     // Dynamic import — only loads pg/ioredis/qdrant when actually needed
     const { MemoryStore } = await import('./store.js');
-    store = new MemoryStore(config);
+    store = new MemoryStore(config as any);
   }
 
   if (isInMemoryMode) {
@@ -165,7 +165,7 @@ export async function createMemoryEngine(config: CeliumsMemoryConfig): Promise<M
   const ans = new ANSModulator();
   const recall = new RecallEngine(store, undefined, limbic);
   const consolidator = new ConsolidationEngine(store);
-  const lifecycle = new MemoryLifecycle(store, config);
+  const _lifecycle = new MemoryLifecycle(store, config);
 
   // Initialize database
   await store.initialize();
@@ -185,7 +185,7 @@ export async function createMemoryEngine(config: CeliumsMemoryConfig): Promise<M
 
         // Habituation: modulate reward based on novelty
         const feedbackSignal = limbic.reward.computeFromUserFeedback(partial.content);
-        const modulatedReward = habituation.modulateReward(
+        const _modulatedReward = habituation.modulateReward(
           feedbackSignal.actual,
           partial.content,
           'user_feedback',
@@ -202,8 +202,7 @@ export async function createMemoryEngine(config: CeliumsMemoryConfig): Promise<M
         );
 
         // PFC regulation
-        const regulation = pfc.regulate(limbic.getState());
-        const finalState = regulation.regulatedState;
+        pfc.regulate(limbic.getState());
 
         const record: MemoryRecord = {
           id: partial.id ?? '',
@@ -316,17 +315,17 @@ export async function createMemoryEngine(config: CeliumsMemoryConfig): Promise<M
       return store.deleteMemories(memoryIds);
     },
 
-    async getContext(query: string, userId: string, tokenBudget?: number): Promise<string> {
+    async getContext(query: string, userId: string, _tokenBudget?: number): Promise<string> {
       return recall.assembleContext(query, userId, null);
     },
 
-    async getLimbicState(userId: string): Promise<LimbicState> {
+    async getLimbicState(_userId: string): Promise<LimbicState> {
       // Return PFC-regulated state (safe for external consumption)
       const regulation = pfc.regulate(limbic.getState());
       return regulation.regulatedState;
     },
 
-    async getModulation(userId: string): Promise<LLMModulation> {
+    async getModulation(_userId: string): Promise<LLMModulation> {
       const regulation = pfc.regulate(limbic.getState());
       return ans.computeModulation(regulation.regulatedState);
     },

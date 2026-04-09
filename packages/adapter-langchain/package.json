@@ -1,6 +1,6 @@
 {
   "name": "@celiums-memory/adapter-langchain",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "LangChain integration for celiums-memory — emotional AI memory",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -9,9 +9,14 @@
     "dev": "tsc -w"
   },
   "peerDependencies": {
-    "@celiums-memory/core": "^1.0.0",
-    "@celiums-memory/types": "^1.0.0",
+    "@celiums/memory": ">=0.1.0",
+    "@celiums/memory-types": ">=0.1.0",
     "langchain": ">=0.1.0"
+  },
+  "devDependencies": {
+    "@celiums/memory": "workspace:*",
+    "@celiums/memory-types": "workspace:*",
+    "typescript": "^5.7.0"
   },
   "license": "Apache-2.0"
 }

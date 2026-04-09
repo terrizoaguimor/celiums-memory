@@ -35,7 +35,7 @@ import type {
   PersonalityConstants,
   EmpathyMatrix,
   PADVector,
-} from '@celiums-memory/types';
+} from '@celiums/memory-types';
 
 // ============================================================
 // Preset Personalities
@@ -102,9 +102,9 @@ export class PersonalityEngine {
 
   constructor(traits?: PersonalityTraits | string) {
     if (typeof traits === 'string') {
-      this.traits = PERSONALITY_PRESETS[traits] ?? PERSONALITY_PRESETS.balanced;
+      this.traits = (PERSONALITY_PRESETS as Record<string, PersonalityTraits>)[traits] || PERSONALITY_PRESETS['balanced']!;
     } else {
-      this.traits = traits ?? PERSONALITY_PRESETS.balanced;
+      this.traits = traits !== undefined ? traits : PERSONALITY_PRESETS['balanced']!;
     }
     this.constants = this.deriveConstants(this.traits);
   }

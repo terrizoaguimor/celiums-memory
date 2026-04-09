@@ -9,7 +9,7 @@
  * and spaced repetition via reactivation on access.
  */
 
-import type { MemoryRecord, MemoryScope, LimbicState } from '@celiums-memory/types';
+import type { MemoryRecord, MemoryScope, LimbicState } from '@celiums/memory-types';
 import { LimbicEngine } from './limbic';
 
 // ============================================================
@@ -88,7 +88,7 @@ export class RecallEngine {
   private config: RecallConfig;
   private limbic: LimbicEngine | null;
 
-  constructor(store: MemoryStore, config?: Partial<RecallConfig>, limbic?: LimbicEngine) {
+  constructor(store: any, config?: Partial<RecallConfig>, limbic?: LimbicEngine) {
     this.store = store;
     this.limbic = limbic ?? null;
     this.config = { ...DEFAULT_RECALL_CONFIG, ...config };
@@ -168,7 +168,7 @@ export class RecallEngine {
 
     // 5. Score each memory
     const now = new Date();
-    const scored: ScoredMemory[] = memories.map((memory) => {
+    const scored: ScoredMemory[] = memories.map((memory: any) => {
       const candidate = candidateMap.get(memory.id)!;
 
       const semanticScore = candidate.semanticScore;
@@ -188,8 +188,8 @@ export class RecallEngine {
       // Formula: β(A) = -k·(A - optimal)² + peak
       // GROK4 VALIDATED: Default to optimal arousal when no limbic engine,
       // not 0 (which biases SAR inverted-U to suboptimal)
-      const currentArousal = this.limbic ? this.limbic.getState().arousal : OPTIMAL_AROUSAL;
       const OPTIMAL_AROUSAL = 0.4; // Sweet spot for NE-mediated attention
+      const currentArousal = this.limbic ? this.limbic.getState().arousal : OPTIMAL_AROUSAL;
       const SAR_PEAK = 2.0;       // Maximum scaling at optimal arousal
       const SAR_K = 2.5;          // Curvature of inverted-U
       const sarBeta = Math.max(0.5,

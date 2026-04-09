@@ -27,7 +27,7 @@ import type {
   TelemetryMetrics,
   MetricBounds,
   PADVector,
-} from '@celiums-memory/types';
+} from '@celiums/memory-types';
 
 // ============================================================
 // Configuration

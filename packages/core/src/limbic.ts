@@ -30,10 +30,10 @@ import type {
   TelemetryMetrics,
   RewardSignal,
   CircadianContext,
-} from '@celiums-memory/types';
-import { CircadianEngine } from './circadian';
-import { InteroceptionEngine } from './interoception';
-import { RewardEngine } from './reward';
+} from '@celiums/memory-types';
+import { CircadianEngine } from './circadian.js';
+import { InteroceptionEngine } from './interoception.js';
+import { RewardEngine } from './reward.js';
 
 // ============================================================
 // Defaults

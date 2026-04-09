@@ -15,7 +15,7 @@
  * @license Apache-2.0
  */
 
-import type { MemoryConfig, MemoryTier } from "@celiums-memory/types";
+import type { MemoryConfig, MemoryTier } from "@celiums/memory-types";
 // Duck-typed: works with both any and InMemoryany
 
 /** Tier thresholds in days since last access */

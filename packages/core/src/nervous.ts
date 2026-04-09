@@ -16,7 +16,7 @@
  * @license Apache-2.0
  */
 
-import type { LimbicState, LLMModulation } from '@celiums-memory/types';
+import type { LimbicState, LLMModulation } from '@celiums/memory-types';
 
 // ============================================================
 // Configuration

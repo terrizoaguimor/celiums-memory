@@ -10,7 +10,7 @@
  */
 
 import { createMemoryEngine } from './index.js';
-import type { MemoryEngine, LimbicState, LLMModulation } from '@celiums-memory/types';
+import type { MemoryEngine, LimbicState, LLMModulation } from '@celiums/memory-types';
 import http from 'node:http';
 
 const PORT = parseInt(process.env.PORT ?? '3210', 10);

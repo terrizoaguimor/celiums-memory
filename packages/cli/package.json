@@ -7,8 +7,8 @@
   "bin": { "celiums-memory": "./dist/index.js" },
   "scripts": { "build": "tsc", "dev": "tsx src/index.ts", "clean": "rm -rf dist" },
   "dependencies": {
-    "@celiums-memory/core": "workspace:*",
-    "@celiums-memory/types": "workspace:*",
+    "@celiums/memory": "workspace:*",
+    "@celiums/memory-types": "workspace:*",
     "@celiums-memory/server": "workspace:*",
     "@celiums-memory/adapter-mcp": "workspace:*"
   },

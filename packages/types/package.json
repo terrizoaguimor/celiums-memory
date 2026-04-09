@@ -1,14 +1,8 @@
 {
-  "name": "@celiums/types",
-  "version": "1.0.0",
-  "description": "Shared TypeScript types and schemas for Celiums Memory",
-  "keywords": [
-    "celiums",
-    "memory",
-    "ai",
-    "types",
-    "typescript"
-  ],
+  "name": "@celiums/memory-types",
+  "version": "0.1.0",
+  "description": "TypeScript types for celiums-memory — neuroscience-grounded AI memory",
+  "keywords": ["celiums", "memory", "ai", "types", "typescript", "emotional-ai"],
   "homepage": "https://celiums.ai",
   "repository": {
     "type": "git",
@@ -16,33 +10,21 @@
     "directory": "packages/types"
   },
   "license": "Apache-2.0",
-  "author": {
-    "name": "Celiums Solutions LLC",
-    "email": "hello@celiums.ai"
-  },
+  "author": { "name": "Celiums Solutions LLC", "email": "hello@celiums.ai" },
   "type": "module",
   "exports": {
     ".": {
-      "import": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
-      },
-      "require": {
-        "types": "./dist/index.d.cts",
-        "default": "./dist/index.cjs"
-      }
+      "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+      "require": { "types": "./dist/index.d.cts", "default": "./dist/index.cjs" }
     }
   },
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": [
-    "dist",
-    "README.md",
-    "LICENSE"
-  ],
+  "files": ["dist", "README.md", "LICENSE"],
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts --clean --sourcemap",
-    "dev": "tsup src/index.ts --format esm,cjs --dts --watch",
-    "typecheck": "tsc --noEmit",
-    "lint": "eslint src --ext .ts",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": { "tsup": "^8.0.0", "typescript": "^5.7.0" }
+}

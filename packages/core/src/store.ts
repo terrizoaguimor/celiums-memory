@@ -16,7 +16,7 @@ import type {
   MemoryType,
   MemoryScope,
   Entity,
-} from '@celiums-memory/types';
+} from '@celiums/memory-types';
 
 // ============================================================
 // Configuration

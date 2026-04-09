@@ -1,18 +1,61 @@
 {
-  "name": "@celiums-memory/core",
+  "name": "@celiums/memory",
   "version": "0.1.0",
-  "description": "Core persistent memory engine — store, recall, consolidate, lifecycle",
+  "description": "Neuroscience-grounded persistent memory for AI agents — with real emotions, personality, and a simulated brain. 3 layers, 14 modules, 10 equations.",
+  "keywords": [
+    "ai", "memory", "llm", "emotional-ai", "neuroscience", "cognitive-architecture",
+    "personality", "agent-memory", "persistent-memory", "langchain", "llamaindex",
+    "mcp", "pad-model", "big-five", "limbic-system", "typescript"
+  ],
+  "homepage": "https://celiums.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/terrizoaguimor/celiums-memory.git",
+    "directory": "packages/core"
+  },
   "license": "Apache-2.0",
+  "author": {
+    "name": "Celiums Solutions LLC",
+    "email": "hello@celiums.ai",
+    "url": "https://celiums.ai"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
-  "scripts": { "build": "tsc", "test": "vitest run", "clean": "rm -rf dist" },
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./store": {
+      "import": {
+        "types": "./dist/store.d.ts",
+        "default": "./dist/store.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts src/store.ts --format esm --dts --clean --sourcemap",
+    "test": "vitest run",
+    "clean": "rm -rf dist"
+  },
   "dependencies": {
-    "@celiums-memory/types": "workspace:*",
+    "@celiums/memory-types": "^0.1.0",
     "pg": "^8.13.0",
     "@qdrant/js-client-rest": "^1.12.0",
     "ioredis": "^5.4.0"
   },
-  "devDependencies": { "@types/pg": "^8.11.0", "typescript": "^5.7.0", "vitest": "^3.0.0" }
+  "devDependencies": {
+    "@types/pg": "^8.11.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
 }

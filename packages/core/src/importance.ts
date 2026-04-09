@@ -7,7 +7,7 @@
  * @license Apache-2.0
  */
 
-import type { ImportanceSignals, PADVector } from "@celiums-memory/types";
+import type { ImportanceSignals, PADVector } from "@celiums/memory-types";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Signal detection patterns

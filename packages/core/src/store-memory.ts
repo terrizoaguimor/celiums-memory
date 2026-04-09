@@ -25,7 +25,7 @@ import type {
   MemoryScope,
   Entity,
   MemoryConfig,
-} from '@celiums-memory/types';
+} from '@celiums/memory-types';
 
 // ============================================================
 // In-Memory Store
@@ -499,9 +499,9 @@ export class InMemoryMemoryStore {
     if (a.length !== b.length) return 0;
     let dot = 0, magA = 0, magB = 0;
     for (let i = 0; i < a.length; i++) {
-      dot += a[i] * b[i];
-      magA += a[i] * a[i];
-      magB += b[i] * b[i];
+      dot += a[i]! * b[i]!;
+      magA += a[i]! * a[i]!;
+      magB += b[i]! * b[i]!;
     }
     const denom = Math.sqrt(magA) * Math.sqrt(magB);
     return denom > 0 ? dot / denom : 0;

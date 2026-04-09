@@ -20,7 +20,7 @@
  * @license Apache-2.0
  */
 
-import type { LimbicState, RewardSignal, PADVector } from '@celiums-memory/types';
+import type { LimbicState, RewardSignal, PADVector } from '@celiums/memory-types';
 
 // ============================================================
 // Configuration

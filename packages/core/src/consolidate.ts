@@ -14,7 +14,7 @@ import type {
   MemoryScope,
   MemoryState,
   Entity,
-} from '@celiums-memory/types';
+} from '@celiums/memory-types';
 import { analyzeForMemory, extractPAD } from './importance';
 
 // ============================================================

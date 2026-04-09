@@ -22,7 +22,7 @@ import type {
   LimbicState,
   LLMModulation,
   RecallResponse,
-} from '@celiums-memory/types';
+} from '@celiums/memory-types';
 
 // ============================================================
 // Types

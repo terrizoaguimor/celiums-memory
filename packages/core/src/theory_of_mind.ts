@@ -19,7 +19,7 @@
  * @license Apache-2.0
  */
 
-import type { PADVector, EmpathyMatrix } from '@celiums-memory/types';
+import type { PADVector, EmpathyMatrix } from '@celiums/memory-types';
 
 // ============================================================
 // Preset empathy matrices
@@ -67,7 +67,7 @@ export class TheoryOfMindEngine {
   private userState: PADVector;
 
   constructor(omega?: EmpathyMatrix) {
-    this.omega = omega ?? EMPATHY_PRESETS.professional;
+    this.omega = omega !== undefined ? omega : EMPATHY_PRESETS['professional']!;
     this.userState = { pleasure: 0, arousal: 0, dominance: 0 };
   }
 

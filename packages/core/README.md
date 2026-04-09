@@ -5,7 +5,7 @@
 Neuroscience-grounded persistent memory for AI agents that feel, forget, adapt, and evolve — like a real brain.
 
 [![License](https://img.shields.io/github/license/terrizoaguimor/celiums-memory?color=green)](https://github.com/terrizoaguimor/celiums-memory/blob/main/LICENSE)
-[![npm version](https://img.shields.io/npm/v/@celiums/memory?color=green)](https://www.npmjs.com/package/@celiums/memory)
+[![npm version](https://img.shields.io/npm/v/@celiums-memory/core?color=green)](https://www.npmjs.com/package/@celiums-memory/core)
 [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![GitHub Stars](https://img.shields.io/github/stars/terrizoaguimor/celiums-memory?style=social)](https://github.com/terrizoaguimor/celiums-memory)
 
@@ -22,7 +22,7 @@ Neuroscience-grounded persistent memory for AI agents that feel, forget, adapt, 
 Your agent remembers *how it felt* when something happened. It gets bored of repetitive praise. It calms down when the user panics. It sleeps, wakes up, and adapts its personality to the conversation. **No other memory system does this.**
 
 ```bash
-npm install @celiums/memory
+npm install @celiums-memory/core
 npm start
 ```
 
@@ -120,7 +120,7 @@ Their agents forget like goldfish. Ours evolve like humans. 🧬
 ### Store and recall with emotions
 
 ```typescript
-import { createMemoryEngine } from '@celiums/memory';
+import { createMemoryEngine } from '@celiums-memory/core';
 
 const engine = await createMemoryEngine({
   personality: 'celiums', // enthusiastic, technical, direct

@@ -28,7 +28,7 @@
  * @license Apache-2.0
  */
 
-import type { CircadianConfig, CircadianContext, PADVector } from '@celiums-memory/types';
+import type { CircadianConfig, CircadianContext, PADVector } from '@celiums/memory-types';
 
 // ============================================================
 // Factor Events — external signals that modulate the rhythm
