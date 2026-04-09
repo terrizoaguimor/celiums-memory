@@ -60,7 +60,7 @@ The response includes the AI's **current emotional state**, **LLM parameter modu
 
 ## Architecture: A Digital Brain
 
-Three neuroscience-inspired layers. 14 core modules. 10 mathematical equations. 6,800+ lines of TypeScript.
+Three neuroscience-inspired layers. 15 core modules. 10 mathematical equations. 8,960+ lines of TypeScript.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -69,6 +69,7 @@ Three neuroscience-inspired layers. 14 core modules. 10 mathematical equations. 
 │  theory_of_mind.ts — Empathic Friction Matrix (3x3)          │
 │  habituation.ts    — Dopamine satiation (kills praise spam)  │
 │  pfc.ts            — "Bite your tongue" regulation           │
+│  autonomy.ts       — Delegation policy + 7 safety guards     │
 └──────────────────────────┬───────────────────────────────────┘
                            ▼
 ┌──────────────────────────────────────────────────────────────┐
@@ -239,12 +240,12 @@ Scales to millions of memories with sub-50ms recall.
 
 | Integration | Package | Status |
 |-------------|---------|--------|
-| MCP Protocol | `@celiums-memory/adapter-mcp` | ✅ 5 tools |
-| REST API | `@celiums-memory/server` | ✅ 9 endpoints |
+| MCP Protocol | `@celiums/adapter-mcp` | ✅ 5 tools |
+| REST API | `@celiums/server` | ✅ 9 endpoints |
 | Claude Code | MCP bridge | ✅ 4 tools |
-| LangChain | `@celiums-memory/adapter-langchain` | ✅ BaseMemory |
-| LlamaIndex | `@celiums-memory/adapter-llamaindex` | ✅ BaseChatStore |
-| CLI | `@celiums-memory/cli` | ✅ 6 commands |
+| LangChain | `@celiums/adapter-langchain` | ✅ BaseMemory |
+| LlamaIndex | `@celiums/adapter-llamaindex` | ✅ BaseChatStore |
+| CLI | `@celiums/cli` | ✅ 6 commands |
 
 ---
 
@@ -377,7 +378,7 @@ git commit -m "Add serotonin proxy for dominance stability"
 
 This project is built by one self-taught developer from Venezuela, living in Medellín, running on ADHD hyperfocus and way too much coffee. No investors, no team, no CS degree — just thousands of hours of empirical learning, trial and error, and the stubborn belief that AI deserves a real brain.
 
-Every line of these 7,800+ lines was written between 20-hour coding sessions, fueled by curiosity and obsession. If celiums-memory is useful to you, or if you believe AI should have emotions and not just compute, consider supporting the work.
+Every line of these 8,960+ lines was written between 20-hour coding sessions, fueled by curiosity and obsession. If celiums-memory is useful to you, or if you believe AI should have emotions and not just compute, consider supporting the work.
 
 Your contribution keeps the H200 GPU running, the coffee flowing, and this project alive.
 
