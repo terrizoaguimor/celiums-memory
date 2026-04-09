@@ -33,6 +33,7 @@ export { PersonalityEngine, PERSONALITY_PRESETS } from './personality.js';
 export { TheoryOfMindEngine, EMPATHY_PRESETS } from './theory_of_mind.js';
 export { HabituationEngine } from './habituation.js';
 export { PrefrontalCortex } from './pfc.js';
+export { AutonomyEngine, DEFAULT_DELEGATION_POLICY } from './autonomy.js';
 
 // === Layer 2: Limbic System ===
 export { LimbicEngine } from './limbic.js';
