@@ -196,6 +196,17 @@ export class LimbicEngine {
   private state: LimbicState;
   private mutex: LimbicMutex;
 
+  /**
+   * Circadian-arousal value that was baked into `state.arousal` at the
+   * last update. Used for drift correction in `getState()` so that the
+   * returned arousal reflects the CURRENT time-of-day rhythm, not a
+   * stale snapshot from the last interaction.
+   *
+   * Math: state.arousal = intrinsic + lastCircadianApplied
+   *       fresh.arousal = state.arousal - lastCircadianApplied + currentCircadian
+   */
+  private lastCircadianApplied: number = 0;
+
   // Peripheral systems
   readonly circadian: CircadianEngine;
   readonly interoception: InteroceptionEngine;
@@ -231,9 +242,45 @@ export class LimbicEngine {
   }
 
   // ----------------------------------------------------------
-  // getState() — Current limbic state
+  // getState() — Current limbic state with FRESH circadian
+  //
+  // Reads always return state with the CURRENT time-of-day arousal
+  // applied, not a stale snapshot from the last update. This is the
+  // "fresh-on-read" pattern that fixes the circadian drift bug.
+  //
+  // Drift correction: state.arousal embeds the circadian arousal that
+  // was active at the last update. We subtract that and add the
+  // current circadian arousal so the returned value tracks real time.
   // ----------------------------------------------------------
   getState(): LimbicState {
+    // Compute current circadian-only arousal contribution.
+    // We pass the static homeostatic and read the arousal delta —
+    // this gives us only the time-of-day rhythm, no factors mixed in
+    // beyond what is needed for accurate clock representation.
+    const fresh = this.circadian.modifyHomeostatic(this.config.homeostatic);
+    const currentCircadianArousal = fresh.arousal - this.config.homeostatic.arousal;
+
+    // Apply drift correction to arousal only (P and D do not have a
+    // strong time-of-day component in this model).
+    const driftCorrected = this.state.arousal - this.lastCircadianApplied + currentCircadianArousal;
+
+    return {
+      pleasure: this.state.pleasure,
+      arousal: clamp(driftCorrected, -1, 1),
+      dominance: this.state.dominance,
+      // Timestamp reflects the read time, not the last write
+      timestamp: new Date(),
+    };
+  }
+
+  // ----------------------------------------------------------
+  // getRawState() — State without circadian drift correction
+  //
+  // Returns the stored state as-is. Used internally by update
+  // methods that need to read the un-corrected baseline before
+  // applying their own circadian computation.
+  // ----------------------------------------------------------
+  private getRawState(): LimbicState {
     return { ...this.state };
   }
 
@@ -334,6 +381,11 @@ export class LimbicEngine {
 
     // Apply circadian rhythm to arousal
     homeoReal = this.circadian.modifyHomeostatic(homeoReal, circadianContext);
+
+    // Capture the circadian arousal contribution for drift correction
+    // on subsequent getState() reads. This is the "what was applied"
+    // that fresh-on-read needs to subtract before adding the current.
+    this.lastCircadianApplied = homeoReal.arousal - this.config.homeostatic.arousal;
 
     // Apply system stress to corrupt baseline
     if (telemetry) {

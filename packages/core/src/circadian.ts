@@ -109,7 +109,10 @@ const DEFAULT_FACTOR_WEIGHTS: FactorWeights = {
 const DEFAULT_CONFIG_V2: CircadianConfigV2 = {
   baseArousal: 0.0,
   amplitude: 0.3,
-  peakHour: 14,
+  // peakHour 11 = morning cortisol awakening response peak (Edwards et al. 2001).
+  // Most humans report highest alertness 10-11 AM. The afternoon "post-lunch dip"
+  // (13-15h) is captured by the cosine descent toward evening trough.
+  peakHour: 11,
   lethargyRate: 0.15,
   timezoneOffset: -5,        // Medellín (GMT-5)
   syncWithUser: true,
@@ -314,10 +317,17 @@ export class CircadianEngine {
 
     const { baseArousal: A0, amplitude: C, peakHour: phi, lethargyRate: lambda } = this.config;
 
-    // === Core sinusoidal rhythm ===
-    const sinComponent = Math.sin((2 * Math.PI * (localHour - phi)) / 24);
+    // === Core circadian rhythm ===
+    // BUG FIX (2026-04-10): Use cosine, not sine. The previous sin() formula
+    // crossed zero at the configured peakHour and reached its actual max
+    // 6 hours later — meaning peakHour=14 actually peaked at 20:00.
+    // cos(0) = 1, so cos((h - phi) * 2π/24) peaks exactly at h = phi.
+    //
+    // Verified: with phi=11, h=11 → cos(0)=1 (peak); h=23 → cos(π)=-1 (trough).
+    // Matches biology: morning cortisol awakening response peaks ~10-11 AM.
+    const rhythmComponent = Math.cos((2 * Math.PI * (localHour - phi)) / 24);
     const lethargyFactor = this.isDelegated ? 1.0 : Math.exp(-lambda * inactiveHours);
-    let arousal = A0 + C * sinComponent * lethargyFactor;
+    let arousal = A0 + C * rhythmComponent * lethargyFactor;
 
     // === Factor contributions ===
     const w = this.config.factorWeights;
