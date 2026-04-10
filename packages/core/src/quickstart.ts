@@ -29,6 +29,13 @@ const mode = (databaseUrl && qdrantUrl)
   ? `sqlite (${sqlitePath})`
   : 'in-memory (zero deps, volatile)';
 
+// Short label used in the /health response
+const modeShort = (databaseUrl && qdrantUrl)
+  ? 'triple-store'
+  : sqlitePath
+  ? 'sqlite'
+  : 'in-memory';
+
 async function main() {
   console.log(`
   ╔══════════════════════════════════════════════════╗
@@ -76,7 +83,7 @@ async function main() {
         res.writeHead(200);
         res.end(JSON.stringify({
           status: 'alive',
-          mode: 'in-memory',
+          mode: modeShort,
           limbicState: limbic,
           modulation: mod,
           stores: h,
