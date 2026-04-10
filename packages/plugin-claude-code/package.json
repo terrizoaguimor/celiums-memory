@@ -1,0 +1,50 @@
+{
+  "name": "@celiums/memory-claude-code",
+  "version": "0.1.0",
+  "description": "Claude Code plugin for celiums-memory — automatic persistent memory with emotions via hooks + MCP. Memories survive context death.",
+  "keywords": [
+    "claude-code",
+    "claude",
+    "mcp",
+    "memory",
+    "ai-memory",
+    "emotional-ai",
+    "persistent-memory",
+    "plugin",
+    "hooks"
+  ],
+  "homepage": "https://celiums.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/terrizoaguimor/celiums-memory.git",
+    "directory": "packages/plugin-claude-code"
+  },
+  "license": "Apache-2.0",
+  "author": {
+    "name": "Celiums Solutions LLC",
+    "email": "hello@celiums.ai",
+    "url": "https://celiums.ai"
+  },
+  "type": "module",
+  "bin": {
+    "celiums-memory-install": "./bin/install.js",
+    "celiums-memory-bridge": "./src/bridge.mjs"
+  },
+  "files": [
+    "src",
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "install-hooks": "node ./bin/install.js",
+    "bridge": "node ./src/bridge.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
