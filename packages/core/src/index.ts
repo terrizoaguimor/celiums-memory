@@ -55,6 +55,21 @@ export {
 // === Middleware (automatic memory for any LLM) ===
 export { MemoryMiddleware } from './middleware.js';
 
+// === Multi-key authentication ===
+export {
+  ApiKeyManager,
+  PgApiKeyStore,
+  InMemoryApiKeyStore,
+  CREATE_API_KEYS_SQL,
+} from './auth.js';
+export type {
+  ApiKey,
+  ApiKeyScope,
+  ApiKeyStore,
+  CreateApiKeyInput,
+  CreateApiKeyResult,
+} from './auth.js';
+
 // === Layer 1: Autonomic ===
 export { ANSModulator } from './nervous.js';
 export { RewardEngine } from './reward.js';

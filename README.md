@@ -48,10 +48,99 @@ curl -X POST http://localhost:3210/store \
 ### 🔒 Authentication
 
 The server requires a Bearer token for all endpoints except `/health`.
-- **First boot:** the server auto-generates a key and writes it to `~/.celiums/api-key` (mode 0600). It also prints it in the startup logs.
-- **Custom key:** set `CELIUMS_API_KEY=cmk_...` in your `.env` before starting.
-- **Localhost:** loopback connections (127.0.0.1/::1) bypass auth ONLY when there is no proxy in front. Cloudflare Tunnel, nginx, or any `X-Forwarded-For` header disables the bypass — your public domain always requires the key.
-- **Clients:** every client (Claude Code plugin, MCP bridge, hooks) reads `CELIUMS_API_KEY` from the environment.
+
+**Single-key mode** (sqlite, in-memory, or quick start):
+- First boot auto-generates a key in `~/.celiums/api-key` (mode 0600) and prints it in the startup logs.
+- Or set `CELIUMS_API_KEY=cmk_...` in `.env` before starting.
+
+**Multi-key mode** (triple-store / company deployment):
+- Activates automatically when running with PostgreSQL.
+- First boot creates an `api_keys` table and a master `cmk_admin_...` key — printed ONCE in the startup logs.
+- The master key is used to mint per-developer keys via `POST /admin/keys`.
+- Each non-admin key is **scoped to a `userId`**: alice can never read bob's memories even if she crafts the request.
+- All endpoints support both modes; the server tries multi-key first, then falls back to the single key.
+
+**Localhost:** loopback connections (127.0.0.1/::1) bypass auth ONLY when there is no proxy header (`X-Forwarded-For`, `CF-Connecting-IP`, etc). Behind Cloudflare Tunnel, nginx, or any reverse proxy the bypass is automatically disabled — your public domain always requires a real key.
+
+#### Multi-key admin endpoints
+
+```bash
+# Create a developer key (use the master key for Authorization)
+curl -X POST https://your-deploy.example.com/admin/keys \
+  -H "Authorization: Bearer cmk_admin_xxx" \
+  -H 'Content-Type: application/json' \
+  -d '{"scope":"user","userId":"alice","label":"alice@acme.com"}'
+# Response includes "apiKey": "cmk_user_..." — show it to alice ONCE.
+
+# List all keys
+curl https://your-deploy.example.com/admin/keys \
+  -H "Authorization: Bearer cmk_admin_xxx"
+
+# Revoke a key
+curl -X DELETE https://your-deploy.example.com/admin/keys/<id> \
+  -H "Authorization: Bearer cmk_admin_xxx"
+```
+
+Each developer then sets their own key in their environment:
+```bash
+export CELIUMS_API_KEY="cmk_user_..."
+export CELIUMS_MEMORY_URL="https://memory.your-company.com"
+npx @celiums/memory-claude-code
+```
+
+### 🌐 Production deployment with Cloudflare Tunnel (recommended)
+
+For a company deployment, **never expose port 3210 directly to the internet**. Use Cloudflare Tunnel — zero open ports, free TLS, DDoS protection, and origin IP hidden.
+
+**1. Run celiums-memory locally on your server (no public ports):**
+```bash
+git clone https://github.com/terrizoaguimor/celiums-memory.git
+cd celiums-memory
+docker compose up -d
+```
+
+**2. Install cloudflared:**
+```bash
+curl -fsSL https://pkg.cloudflare.com/install.sh | sh
+sudo apt install cloudflared
+```
+
+**3. Authenticate with your Cloudflare account:**
+```bash
+cloudflared tunnel login
+```
+
+**4. Create the tunnel:**
+```bash
+cloudflared tunnel create celiums-memory
+```
+
+**5. Point a subdomain at the tunnel** (e.g. `memory.your-company.com`):
+```bash
+cloudflared tunnel route dns celiums-memory memory.your-company.com
+```
+
+**6. Run the tunnel** (or set it up as a systemd service):
+```bash
+cloudflared tunnel run --url http://localhost:3210 celiums-memory
+```
+
+**7. Lock down the firewall** so port 3210 is unreachable from anything except localhost:
+```bash
+sudo ufw default deny incoming
+sudo ufw allow 22/tcp
+sudo ufw enable
+# Port 3210 is now ONLY reachable through the tunnel
+```
+
+Your endpoint is now `https://memory.your-company.com` with:
+- Free TLS via Cloudflare
+- No open ports on your VPS
+- Origin IP hidden
+- Multi-key auth enforced
+- Cloudflare WAF + DDoS in front
+
+This is exactly how `memory.celiums.ai` is deployed.
 
 **Verified:** tested on a fresh DigitalOcean Droplet (Ubuntu 24.04, 4GB RAM, $24/mo).
 End-to-end from `doctl droplet create` to live API in under 3 minutes.
