@@ -9,11 +9,15 @@ Persistent memory for AI agents. Stores content + the emotional context around i
 [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![GitHub Stars](https://img.shields.io/github/stars/terrizoaguimor/celiums-memory?style=social)](https://github.com/terrizoaguimor/celiums-memory)
 
-## 🚀 Deploy in 60 seconds
+## 🚀 Deploy in 3 minutes on any VPS
 
-Full triple-store production stack with one command:
+Full triple-store production stack from a fresh Ubuntu/Debian server:
 
 ```bash
+# 1. Install Docker (skip if already installed)
+curl -fsSL https://get.docker.com | sh
+
+# 2. Clone and run
 git clone https://github.com/terrizoaguimor/celiums-memory.git
 cd celiums-memory
 docker compose up -d
@@ -32,6 +36,9 @@ curl -X POST http://localhost:3210/store \
   -H 'Content-Type: application/json' \
   -d '{"content":"AI agents need memory that survives restarts","userId":"alice"}'
 ```
+
+**Verified:** tested on a fresh DigitalOcean Droplet (Ubuntu 24.04, 4GB RAM, $24/mo).
+End-to-end from `doctl droplet create` to live API in under 3 minutes.
 
 ---
 
