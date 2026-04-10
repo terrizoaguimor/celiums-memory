@@ -1,32 +1,48 @@
-# celiums-memory 🧠
+# celiums-memory
 
-**Your AI has amnesia. We fixed it.**
+**Memory that remembers how it felt.**
 
-Neuroscience-grounded persistent memory for AI agents that feel, forget, adapt, and evolve — like a real brain.
+Persistent memory for AI agents. Stores content + the emotional context around it. Recalls based on semantic match AND emotional resonance. Survives context death.
 
 [![License](https://img.shields.io/github/license/terrizoaguimor/celiums-memory?color=green)](https://github.com/terrizoaguimor/celiums-memory/blob/main/LICENSE)
 [![npm version](https://img.shields.io/npm/v/@celiums/memory?color=green)](https://www.npmjs.com/package/@celiums/memory)
 [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![GitHub Stars](https://img.shields.io/github/stars/terrizoaguimor/celiums-memory?style=social)](https://github.com/terrizoaguimor/celiums-memory)
 
-> **Note**: This is a computational model inspired by neuroscience. It does not process real human biometric data. For production use with personal data, implement encryption at rest and conduct a security audit. See [SECURITY.md](SECURITY.md).
-
-> **Coming soon**: A live chat demo where you can talk to an AI powered by celiums-memory — watch it remember, feel, forget, and adapt in real time. Follow this repo for updates.
-
 ---
 
-## What is this?
-
-**celiums-memory** is the only AI memory library built on real neuroscience. It doesn't just store facts — it simulates a **complete cognitive architecture** with emotions, personality, forgetting, attention, and self-regulation.
-
-Your agent remembers *how it felt* when something happened. It gets bored of repetitive praise. It calms down when the user panics. It sleeps, wakes up, and adapts its personality to the conversation. **No other memory system does this.**
+## Quick start
 
 ```bash
 npm install @celiums/memory
-npm start
 ```
 
-That's it. Zero databases needed for dev — runs entirely in-memory.
+```typescript
+import { createMemoryEngine } from '@celiums/memory';
+
+const memory = await createMemoryEngine({ personality: 'balanced' });
+
+// Store — the emotional context is extracted automatically
+await memory.store([{
+  userId: 'alice',
+  content: 'I prefer concise answers, no preamble',
+}]);
+
+// Recall — ranked by semantic + emotional relevance
+const result = await memory.recall({
+  query: 'how should I respond?',
+  userId: 'alice',
+});
+
+console.log(result.memories[0].memory.content);
+// → "I prefer concise answers, no preamble"
+
+console.log(result.modulation);
+// → { temperature: 0.65, topK: 35, maxTokens: 1900 }
+//   (LLM parameters auto-tuned by the current emotional state)
+```
+
+Zero databases needed for dev. Runs in-memory. Set `sqlitePath` for single-file persistence, or `databaseUrl` + `qdrantUrl` + `valkeyUrl` for production.
 
 ## Three Storage Modes
 
@@ -74,7 +90,7 @@ npx @celiums/memory-claude-code install
 This installs:
 - **5 automatic hooks** — capture user prompts, tool observations, assistant responses, session boundaries
 - **6 MCP tools** — `remember`, `recall`, `search` (token-efficient), `timeline`, `emotion`, `forget`
-- **7 Cognitive Reflexes** — neural instincts that teach Claude *when* and *how* to use memory, grounded in real neuroscience (Squire, LeDoux, Schultz, Ebbinghaus, Tulving, McGaugh, Diekelmann)
+- **9 Cognitive Reflexes** — neural instincts that fire automatically based on context, including the meta-reflex `reflex-create` that generates new reflexes from observed patterns
 - **Auto-recall at session start** — Claude sees relevant memories from previous sessions
 
 No manual MCP config needed. See [packages/plugin-claude-code](packages/plugin-claude-code/README.md).
@@ -229,11 +245,12 @@ const response = await openai.chat.completions.create({
 });
 ```
 
----
+<details>
+<summary><b>🔬 For Researchers — 10 Equations + Papers</b></summary>
 
-## The 10 Equations
+Every module is backed by peer-reviewed neuroscience, translated into math. Skip this section if you just want to ship.
 
-Every module is backed by neuroscience, translated into math:
+### The 10 Equations
 
 | # | Equation | What it does |
 |---|----------|-------------|
@@ -248,26 +265,24 @@ Every module is backed by neuroscience, translated into math:
 | 9 | `Salience = α·cos + β(A)·resonance` | Yerkes-Dodson attention filter |
 | 10 | `LLM(temp,topK) = f(S_final)` | Emotion → LLM parameter modulation |
 
----
+### Primary References
 
-## Scientific Basis
+| Module | Reference |
+|---|---|
+| PAD emotional model | Mehrabian & Russell (1974). *An approach to environmental psychology*. MIT Press |
+| Dopamine RPE | Schultz (1997). *A neural substrate of prediction and reward*. Science 275(5306) |
+| Ebbinghaus decay | Ebbinghaus (1885). *Memory: A Contribution to Experimental Psychology* |
+| Big Five / OCEAN | McCrae & Costa (2008). *The Five-Factor Theory of Personality*. Handbook of Personality |
+| PFC regulation | Miller & Cohen (2001). *An integrative theory of prefrontal cortex function*. Annual Review of Neuroscience |
+| Theory of Mind | Premack & Woodruff (1978). *Does the chimpanzee have a theory of mind?*. Behavioral and Brain Sciences |
+| Yerkes-Dodson | Yerkes & Dodson (1908). *The relation of strength of stimulus to rapidity of habit-formation*. Journal of Comparative Neurology |
+| Circadian rhythms | Reppert & Weaver (2002). *Coordination of circadian timing in mammals*. Nature 418 |
+| Interoception | Craig (2002). *How do you feel? Interoception*. Nature Reviews Neuroscience |
+| Habituation | Rankin et al. (2009). *Habituation revisited*. Neurobiology of Learning and Memory |
 
-This is not pseudoscience with fancy variable names. Every module maps to peer-reviewed neuroscience:
+**Disclaimer:** celiums-memory is a computational model inspired by these principles. It is not a clinical tool and does not process real human biometric data.
 
-| Module | Brain System | Key Reference |
-|--------|-------------|---------------|
-| PAD emotional model | Dimensional emotion theory | Mehrabian & Russell (1974). *An approach to environmental psychology*. MIT Press |
-| Dopamine RPE | Reward prediction error | Schultz, W. (1997). *A neural substrate of prediction and reward*. Science, 275(5306) |
-| Ebbinghaus decay | Memory forgetting curve | Ebbinghaus, H. (1885). *Memory: A Contribution to Experimental Psychology* |
-| Big Five / OCEAN | Personality trait theory | McCrae & Costa (2008). *The Five-Factor Theory of Personality*. Handbook of Personality |
-| PFC regulation | Executive function | Miller & Cohen (2001). *An integrative theory of prefrontal cortex function*. Annual Review of Neuroscience |
-| Theory of Mind | Cognitive empathy | Premack & Woodruff (1978). *Does the chimpanzee have a theory of mind?*. Behavioral and Brain Sciences |
-| Yerkes-Dodson | Arousal-performance curve | Yerkes & Dodson (1908). *The relation of strength of stimulus to rapidity of habit-formation*. Journal of Comparative Neurology |
-| Circadian rhythms | Suprachiasmatic nucleus | Reppert & Weaver (2002). *Coordination of circadian timing in mammals*. Nature, 418 |
-| Interoception | Body-brain feedback | Craig (2002). *How do you feel? Interoception: the sense of the physiological condition of the body*. Nature Reviews Neuroscience |
-| Habituation | Synaptic adaptation | Rankin et al. (2009). *Habituation revisited: An updated and revised description*. Neurobiology of Learning and Memory |
-
-**Disclaimer**: celiums-memory is a computational model inspired by these principles. It is not a clinical tool and does not process real human biometric data.
+</details>
 
 ---
 

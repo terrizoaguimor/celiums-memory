@@ -41,6 +41,8 @@ const COGNITIVE_REFLEXES = [
   'session-consolidation',
   'context-recovery',
   'habituation-check',
+  'surface-learnings',
+  'reflex-create',
 ];
 
 function log(msg) {

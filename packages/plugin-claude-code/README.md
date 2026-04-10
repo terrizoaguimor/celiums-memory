@@ -29,19 +29,25 @@ That's it. Restart Claude Code and it now has a persistent, emotional memory.
 - `emotion()` — Current AI emotional state
 - `forget(memoryIds[])` — Delete specific memories
 
-**Cognitive Reflexes (7 neural instincts):**
+**Cognitive Reflexes (9 neural instincts):**
 
-Cognitive Reflexes are skills grounded in real neuroscience. They teach Claude *when* and *how* to use memory — not as suggestions, but as reflexive instincts that fire automatically based on context. Each reflex cites the brain system it models and the paper it is grounded in.
+Cognitive Reflexes teach Claude *when* and *how* to use memory — not as suggestions, but as reflexive instincts that fire automatically based on context.
 
-| Reflex | Neural basis | Fires when |
-|---|---|---|
-| `pre-response-recall` | Hippocampus (Squire & Wixted, 2011) | Before any substantive response — search memory first, never fabricate continuity |
-| `decision-encoding` | Hippocampus + amygdala (Eichenbaum, 2004) | A decision is made — encode what, why, and rejected alternatives |
-| `emotional-calibration` | Amygdala + PFC (LeDoux, 2000) | User's message carries emotional weight — check PAD state, adapt tone |
-| `salience-filtering` | Amygdala gating (McGaugh, 2004) | Before every store — the default answer is "no". Only store what will matter in 7 days |
-| `session-consolidation` | Sleep consolidation (Diekelmann & Born, 2010) | End of session — capture DONE, OPEN, NEXT in one structured memory |
-| `context-recovery` | Episodic recall (Tulving, 2002) | First turn of every session — timeline + search + emotion before responding |
-| `habituation-check` | Dopamine RPE (Schultz, 1997) | Before emitting praise, status updates, or reassurances — suppress the redundant |
+| Reflex | Fires when |
+|---|---|
+| `pre-response-recall` | Before any substantive response — search memory first, never fabricate continuity |
+| `decision-encoding` | A decision is made — encode what, why, and rejected alternatives |
+| `emotional-calibration` | User's message carries emotional weight — adapt tone to current PAD state |
+| `salience-filtering` | Before every store — only encode what will matter in 7 days |
+| `session-consolidation` | End of session — capture DONE, OPEN, NEXT in one structured memory |
+| `context-recovery` | First turn of every session — recover state before responding |
+| `habituation-check` | Before emitting praise or status updates — suppress redundant signals |
+| **`surface-learnings`** | **User asks "what have you learned" or `/reflexes` — synthesizes patterns, not a memory dump** |
+| **`reflex-create`** | **User says "I keep doing X — make it automatic" — generates a NEW cognitive reflex from observed patterns** |
+
+The last two are the **self-extension layer**. `reflex-create` is the meta-reflex that lets Claude learn new instincts without retraining.
+
+Installed automatically to `~/.claude/skills/`. Claude auto-discovers them by frontmatter and fires them based on contextual matches.
 
 Installed automatically to `~/.claude/skills/`. Claude auto-discovers them by frontmatter and fires them based on contextual matches. No manual invocation needed.
 
