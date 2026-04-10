@@ -10,18 +10,17 @@
  */
 
 import client from '../client.mjs';
+import { readStdinBounded, safeJsonParse } from '../safe-utils.mjs';
 
 async function main() {
-  // Claude Code passes session info as JSON on stdin
-  let stdin = '';
-  try {
-    for await (const chunk of process.stdin) stdin += chunk;
-  } catch {}
-
+  // Bounded read + prototype-pollution-safe parse
   let session = {};
   try {
-    session = stdin ? JSON.parse(stdin) : {};
-  } catch {}
+    const stdin = await readStdinBounded();
+    session = safeJsonParse(stdin);
+  } catch {
+    // Hook never blocks Claude Code on parse failures
+  }
 
   const cwd = session.cwd || process.cwd();
   const projectName = cwd.split('/').pop() || 'project';

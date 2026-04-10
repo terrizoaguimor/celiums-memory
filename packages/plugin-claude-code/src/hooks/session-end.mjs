@@ -8,16 +8,13 @@
  */
 
 import client from '../client.mjs';
+import { readStdinBounded, safeJsonParse, redactSecrets } from '../safe-utils.mjs';
 
 async function main() {
-  let stdin = '';
-  try {
-    for await (const chunk of process.stdin) stdin += chunk;
-  } catch {}
-
   let payload = {};
   try {
-    payload = stdin ? JSON.parse(stdin) : {};
+    const stdin = await readStdinBounded();
+    payload = safeJsonParse(stdin);
   } catch {}
 
   const transcript = payload.transcript || payload.session_summary || '';
@@ -27,9 +24,10 @@ async function main() {
     process.exit(0);
   }
 
-  await client.consolidate({
-    conversation: typeof transcript === 'string' ? transcript : JSON.stringify(transcript),
-  });
+  const conversation = redactSecrets(
+    typeof transcript === 'string' ? transcript : JSON.stringify(transcript),
+  );
+  await client.consolidate({ conversation });
 
   process.exit(0);
 }

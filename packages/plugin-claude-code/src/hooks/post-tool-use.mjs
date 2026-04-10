@@ -9,6 +9,7 @@
  */
 
 import client from '../client.mjs';
+import { readStdinBounded, safeJsonParse, redactSecrets } from '../safe-utils.mjs';
 
 const IGNORE_TOOLS = new Set(['TodoWrite', 'Glob']);
 const SIGNIFICANT_TOOLS = new Set(['Edit', 'Write', 'Bash', 'WebFetch', 'WebSearch', 'Grep', 'Read']);
@@ -16,14 +17,10 @@ const MIN_CONTENT_LENGTH = 50;
 const MAX_CONTENT_LENGTH = 2000;
 
 async function main() {
-  let stdin = '';
-  try {
-    for await (const chunk of process.stdin) stdin += chunk;
-  } catch {}
-
   let payload = {};
   try {
-    payload = stdin ? JSON.parse(stdin) : {};
+    const stdin = await readStdinBounded();
+    payload = safeJsonParse(stdin);
   } catch {
     process.exit(0);
   }
@@ -58,8 +55,8 @@ async function main() {
   // Only store if observation is meaningful
   if (observation.length < MIN_CONTENT_LENGTH) process.exit(0);
 
-  // Truncate to a reasonable size
-  const content = observation.substring(0, MAX_CONTENT_LENGTH);
+  // Truncate AND redact common secret patterns before persistence
+  const content = redactSecrets(observation.substring(0, MAX_CONTENT_LENGTH));
 
   await client.store({
     content,

@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { atomicWriteJsonSafe, assertPathContains, safeJsonParse } from '../src/safe-utils.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -53,8 +54,15 @@ function readConfig() {
   if (!fs.existsSync(CLAUDE_CONFIG)) {
     return {};
   }
+  // Refuse to read through a symlink — defeats the symlink-swap race
+  const stat = fs.lstatSync(CLAUDE_CONFIG);
+  if (stat.isSymbolicLink()) {
+    log(`ERROR: ${CLAUDE_CONFIG} is a symlink. Refusing to read for safety.`);
+    process.exit(1);
+  }
   try {
-    return JSON.parse(fs.readFileSync(CLAUDE_CONFIG, 'utf8'));
+    // safeJsonParse rejects __proto__/constructor/prototype keys
+    return safeJsonParse(fs.readFileSync(CLAUDE_CONFIG, 'utf8'));
   } catch (err) {
     log(`Could not parse ${CLAUDE_CONFIG}: ${err.message}`);
     log('Create a backup and run again, or edit manually.');
@@ -63,13 +71,19 @@ function readConfig() {
 }
 
 function writeConfig(config) {
-  // Backup first
+  // Backup first (only if real file, not symlink)
   if (fs.existsSync(CLAUDE_CONFIG)) {
+    const stat = fs.lstatSync(CLAUDE_CONFIG);
+    if (stat.isSymbolicLink()) {
+      log(`ERROR: ${CLAUDE_CONFIG} became a symlink. Refusing to write.`);
+      process.exit(1);
+    }
     const backup = `${CLAUDE_CONFIG}.backup-${Date.now()}`;
     fs.copyFileSync(CLAUDE_CONFIG, backup);
     log(`Backup saved: ${backup}`);
   }
-  fs.writeFileSync(CLAUDE_CONFIG, JSON.stringify(config, null, 2));
+  // Atomic write via temp file + rename, with mode 0600
+  atomicWriteJsonSafe(CLAUDE_CONFIG, config);
   log(`Updated: ${CLAUDE_CONFIG}`);
 }
 
@@ -184,6 +198,19 @@ function uninstall() {
 
 function install() {
   log('Installing celiums-memory plugin for Claude Code...');
+
+  // Path containment — every hook and bridge MUST live inside PLUGIN_ROOT.
+  // Defeats path-traversal via malicious package layouts or symlinks.
+  try {
+    assertPathContains(PLUGIN_ROOT, BRIDGE_PATH);
+    for (const [, hookPath] of Object.entries(HOOKS)) {
+      assertPathContains(PLUGIN_ROOT, hookPath);
+    }
+  } catch (err) {
+    log(`SECURITY: ${err.message}`);
+    log('Refusing to install. Reinstall the package from npm.');
+    process.exit(1);
+  }
 
   // Verify bridge and hooks exist
   if (!fs.existsSync(BRIDGE_PATH)) {

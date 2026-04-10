@@ -9,19 +9,20 @@
  */
 
 import client from '../client.mjs';
+import { readStdinBounded, safeJsonParse, redactSecrets } from '../safe-utils.mjs';
 
 async function main() {
-  let stdin = '';
-  try {
-    for await (const chunk of process.stdin) stdin += chunk;
-  } catch {}
-
   let payload = {};
   try {
-    payload = stdin ? JSON.parse(stdin) : {};
-  } catch {}
+    const stdin = await readStdinBounded();
+    payload = safeJsonParse(stdin);
+  } catch {
+    process.exit(0);
+  }
 
-  const prompt = payload.prompt || payload.user_prompt || '';
+  const rawPrompt = payload.prompt || payload.user_prompt || '';
+  // Redact common secret patterns before any storage
+  const prompt = redactSecrets(rawPrompt);
   if (!prompt || prompt.length < 3) {
     process.exit(0);
   }

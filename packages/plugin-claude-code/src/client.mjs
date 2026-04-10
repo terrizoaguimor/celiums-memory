@@ -11,14 +11,31 @@
 
 import http from 'node:http';
 import https from 'node:https';
+import { assertSafeUrl } from './safe-utils.mjs';
 
 const DEFAULT_URL = process.env.CELIUMS_MEMORY_URL || 'http://localhost:3210';
 const DEFAULT_USER = process.env.CELIUMS_MEMORY_USER_ID || 'default';
 const DEFAULT_TIMEOUT = parseInt(process.env.CELIUMS_MEMORY_TIMEOUT || '5000', 10);
 
+// SSRF defense — fail fast at module load if the user-provided URL is unsafe.
+// This blocks AWS/GCP metadata endpoints, link-local, and arbitrary public IPs.
+try {
+  assertSafeUrl(DEFAULT_URL);
+} catch (err) {
+  process.stderr.write(`[celiums-memory] CELIUMS_MEMORY_URL rejected: ${err.message}\n`);
+  process.exit(1);
+}
+
 function request(path, method = 'GET', body = null) {
   return new Promise((resolve, reject) => {
     const url = new URL(path, DEFAULT_URL);
+    // Re-check on every request — defense in depth against URL mutation
+    try {
+      assertSafeUrl(url.toString());
+    } catch (err) {
+      reject(err);
+      return;
+    }
     const isHttps = url.protocol === 'https:';
     const lib = isHttps ? https : http;
     const payload = body ? JSON.stringify(body) : null;

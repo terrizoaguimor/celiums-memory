@@ -1,7 +1,7 @@
 {
   "name": "@celiums/memory-claude-code",
-  "version": "0.3.0",
-  "description": "Claude Code plugin for celiums-memory — automatic persistent memory with emotions, 5 hooks, 6 MCP tools, and 9 Cognitive Reflexes (including self-extension via /reflex-create).",
+  "version": "0.3.1",
+  "description": "Claude Code plugin for celiums-memory — automatic persistent memory with emotions, 5 hooks, 6 MCP tools, and 9 Cognitive Reflexes. Hardened against SSRF, prototype pollution, symlink races, path traversal, and credential leaks.",
   "keywords": [
     "claude-code",
     "claude",

@@ -7,16 +7,13 @@
  */
 
 import client from '../client.mjs';
+import { readStdinBounded, safeJsonParse, redactSecrets } from '../safe-utils.mjs';
 
 async function main() {
-  let stdin = '';
-  try {
-    for await (const chunk of process.stdin) stdin += chunk;
-  } catch {}
-
   let payload = {};
   try {
-    payload = stdin ? JSON.parse(stdin) : {};
+    const stdin = await readStdinBounded();
+    payload = safeJsonParse(stdin);
   } catch {
     process.exit(0);
   }
@@ -28,10 +25,11 @@ async function main() {
     process.exit(0);
   }
 
-  // Extract a concise summary — first 500 chars
-  const summary = typeof response === 'string'
+  // Extract a concise summary — first 500 chars, then redact secrets
+  const rawSummary = typeof response === 'string'
     ? response.substring(0, 500)
     : JSON.stringify(response).substring(0, 500);
+  const summary = redactSecrets(rawSummary);
 
   await client.store({
     content: `ASSISTANT TURN: ${summary}`,
