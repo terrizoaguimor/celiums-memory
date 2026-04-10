@@ -12,9 +12,73 @@
 import { createMemoryEngine } from './index.js';
 import type { MemoryEngine, LimbicState, LLMModulation } from '@celiums/memory-types';
 import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 
 const PORT = parseInt(process.env.PORT ?? '3210', 10);
 const HOST = process.env.HOST ?? '0.0.0.0';
+
+// ─── API Key Authentication ──────────────────────────
+// Source priority:
+//   1. CELIUMS_API_KEY env var (preferred)
+//   2. ~/.celiums/api-key file (auto-generated on first boot)
+// Localhost (127.0.0.1, ::1) bypasses auth so local clients work without
+// keys. Public binds REQUIRE the key.
+function loadOrCreateApiKey(): string {
+  if (process.env.CELIUMS_API_KEY) return process.env.CELIUMS_API_KEY;
+
+  const dir = path.join(os.homedir(), '.celiums');
+  const keyPath = path.join(dir, 'api-key');
+  if (fs.existsSync(keyPath)) {
+    return fs.readFileSync(keyPath, 'utf8').trim();
+  }
+
+  // Generate a fresh key, persist with mode 0600
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const key = `cmk_${randomBytes(32).toString('base64url')}`;
+  fs.writeFileSync(keyPath, key, { mode: 0o600 });
+  return key;
+}
+
+const API_KEY = loadOrCreateApiKey();
+const API_KEY_BUF = Buffer.from(API_KEY);
+
+function isLocalhost(req: http.IncomingMessage): boolean {
+  // Defensive check: if there is ANY proxy header, the connection is NOT
+  // truly local — it's a tunneled request from the public internet that
+  // happens to terminate on a loopback socket. Refuse the bypass.
+  if (
+    req.headers['x-forwarded-for'] ||
+    req.headers['cf-connecting-ip'] ||
+    req.headers['x-real-ip'] ||
+    req.headers['forwarded']
+  ) {
+    return false;
+  }
+  const addr = req.socket.remoteAddress || '';
+  return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+}
+
+function isAuthenticated(req: http.IncomingMessage): boolean {
+  // Public path: /health is always accessible (no data exposure)
+  const url = req.url || '';
+  if (url === '/health' || url.startsWith('/health?')) return true;
+
+  // True localhost bypass — only when there is no proxy in front of us.
+  // Cloudflare Tunnel + nginx + reverse proxies all set X-Forwarded-For
+  // or CF-Connecting-IP, which disables this branch.
+  if (isLocalhost(req)) return true;
+
+  const auth = req.headers['authorization'] || '';
+  const match = /^Bearer\s+(.+)$/i.exec(String(auth));
+  if (!match) return false;
+
+  const provided = Buffer.from(match[1] || '');
+  if (provided.length !== API_KEY_BUF.length) return false;
+  return timingSafeEqual(provided, API_KEY_BUF);
+}
 
 // Auto-detect storage mode from environment
 const databaseUrl = process.env.DATABASE_URL;
@@ -59,16 +123,30 @@ async function main() {
   });
 
   console.log('[celiums-memory] Engine initialized. Starting REST API...');
+  console.log('');
+  console.log('  ─── Authentication ───────────────────────────────');
+  console.log(`  API Key:  ${API_KEY}`);
+  console.log('  Set CELIUMS_API_KEY in your client to authenticate.');
+  console.log('  Localhost requests bypass auth (loopback only).');
+  console.log('  ──────────────────────────────────────────────────');
+  console.log('');
 
   const server = http.createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
+      return;
+    }
+
+    // Authentication check — fails fast for non-localhost without bearer
+    if (!isAuthenticated(req)) {
+      res.writeHead(401, { 'WWW-Authenticate': 'Bearer realm="celiums-memory"' });
+      res.end(JSON.stringify({ error: 'Unauthorized', hint: 'Send Authorization: Bearer <CELIUMS_API_KEY>' }));
       return;
     }
 

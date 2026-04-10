@@ -1,6 +1,6 @@
 {
   "name": "@celiums/memory",
-  "version": "0.4.0",
+  "version": "0.4.2",
   "description": "Neuroscience-grounded persistent memory for AI agents — with real emotions, personality, and a simulated brain. 3 layers, 15 modules, 10 equations. SQLite, in-memory, or full triple-store.",
   "keywords": [
     "ai", "memory", "llm", "emotional-ai", "neuroscience", "cognitive-architecture",
@@ -53,7 +53,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@celiums/memory-types": "workspace:*",
+    "@celiums/memory-types": "^0.1.0",
     "pg": "^8.13.0",
     "@qdrant/js-client-rest": "^1.12.0",
     "ioredis": "^5.4.0"

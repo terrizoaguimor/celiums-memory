@@ -87,6 +87,11 @@ services:
       VALKEY_URL: redis://:${VALKEY_PASSWORD:-celiums_dev_password_change_me}@valkey:6379
       PORT: 3210
       PERSONALITY: ${PERSONALITY:-balanced}
+      # IMPORTANT: Set CELIUMS_API_KEY in your .env file before exposing
+      # this server to the internet. If you leave it unset, the server
+      # auto-generates one and prints it in the startup logs — copy it
+      # to your clients.
+      CELIUMS_API_KEY: ${CELIUMS_API_KEY:-}
     ports:
       - "${CELIUMS_PORT:-3210}:3210"
     healthcheck:

@@ -31,11 +31,27 @@ You get:
 - Schema migration runs automatically on first boot
 
 ```bash
+# Health check (always public)
 curl http://localhost:3210/health
+
+# Store + recall require Bearer auth on public deployments.
+# Get the API key from the startup logs (look for "API Key: cmk_...")
+# or set CELIUMS_API_KEY in your .env file before docker compose up.
+API_KEY="cmk_..."
+
 curl -X POST http://localhost:3210/store \
+  -H "Authorization: Bearer $API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"content":"AI agents need memory that survives restarts","userId":"alice"}'
 ```
+
+### 🔒 Authentication
+
+The server requires a Bearer token for all endpoints except `/health`.
+- **First boot:** the server auto-generates a key and writes it to `~/.celiums/api-key` (mode 0600). It also prints it in the startup logs.
+- **Custom key:** set `CELIUMS_API_KEY=cmk_...` in your `.env` before starting.
+- **Localhost:** loopback connections (127.0.0.1/::1) bypass auth ONLY when there is no proxy in front. Cloudflare Tunnel, nginx, or any `X-Forwarded-For` header disables the bypass — your public domain always requires the key.
+- **Clients:** every client (Claude Code plugin, MCP bridge, hooks) reads `CELIUMS_API_KEY` from the environment.
 
 **Verified:** tested on a fresh DigitalOcean Droplet (Ubuntu 24.04, 4GB RAM, $24/mo).
 End-to-end from `doctl droplet create` to live API in under 3 minutes.

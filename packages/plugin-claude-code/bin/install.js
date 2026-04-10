@@ -22,8 +22,17 @@ const PLUGIN_ROOT = path.resolve(__dirname, '..');
 
 const CLAUDE_CONFIG = path.join(os.homedir(), '.claude.json');
 const CLAUDE_SKILLS_DIR = path.join(os.homedir(), '.claude', 'skills');
-const MEMORY_URL = process.env.CELIUMS_MEMORY_URL || 'http://localhost:3210';
-const USER_ID = process.env.CELIUMS_MEMORY_USER_ID || 'default';
+const CELIUMS_DIR = path.join(os.homedir(), '.celiums');
+const SQLITE_PATH = process.env.CELIUMS_SQLITE_PATH || path.join(CELIUMS_DIR, 'memory.db');
+
+// Local-first by default. Each user has their own SQLite brain at
+// ~/.celiums/memory.db. Memories never leave the user's machine.
+// Set CELIUMS_MEMORY_URL to opt into a remote server (memory.celiums.ai
+// or self-hosted). Remote requires CELIUMS_API_KEY for auth.
+const REMOTE_URL = process.env.CELIUMS_MEMORY_URL || '';
+const API_KEY = process.env.CELIUMS_API_KEY || '';
+const STORAGE_LABEL = REMOTE_URL ? `remote (${REMOTE_URL})` : `local SQLite (${SQLITE_PATH})`;
+const USER_ID = process.env.CELIUMS_MEMORY_USER_ID || os.userInfo().username || 'default';
 
 const BRIDGE_PATH = path.join(PLUGIN_ROOT, 'src', 'bridge.mjs');
 const HOOKS = {
@@ -90,13 +99,19 @@ function writeConfig(config) {
 function installMcp(config) {
   if (!config.mcpServers) config.mcpServers = {};
 
+  // Build env: only set CELIUMS_MEMORY_URL if remote was explicitly chosen.
+  // Otherwise the bridge defaults to local SQLite at ~/.celiums/memory.db.
+  const env = {
+    CELIUMS_MEMORY_USER_ID: USER_ID,
+    CELIUMS_SQLITE_PATH: SQLITE_PATH,
+  };
+  if (REMOTE_URL) env.CELIUMS_MEMORY_URL = REMOTE_URL;
+  if (API_KEY) env.CELIUMS_API_KEY = API_KEY;
+
   config.mcpServers['celiums-memory'] = {
     command: 'node',
     args: [BRIDGE_PATH],
-    env: {
-      CELIUMS_MEMORY_URL: MEMORY_URL,
-      CELIUMS_MEMORY_USER_ID: USER_ID,
-    },
+    env,
   };
 
   log('MCP server configured: celiums-memory (6 tools)');
@@ -133,6 +148,13 @@ function installReflexes() {
 function installHooks(config) {
   if (!config.hooks) config.hooks = {};
 
+  // Build env exports prefix so each hook has the same SQLite path + user ID
+  // as the MCP bridge. Hooks read these via process.env in client.mjs.
+  const apiKeyExport = API_KEY ? `CELIUMS_API_KEY=${shellEscape(API_KEY)} ` : '';
+  const envPrefix = REMOTE_URL
+    ? `CELIUMS_MEMORY_URL=${shellEscape(REMOTE_URL)} ${apiKeyExport}CELIUMS_MEMORY_USER_ID=${shellEscape(USER_ID)} `
+    : `CELIUMS_SQLITE_PATH=${shellEscape(SQLITE_PATH)} CELIUMS_MEMORY_USER_ID=${shellEscape(USER_ID)} `;
+
   for (const [eventName, hookPath] of Object.entries(HOOKS)) {
     if (!config.hooks[eventName]) config.hooks[eventName] = [];
 
@@ -151,7 +173,7 @@ function installHooks(config) {
       hooks: [
         {
           type: 'command',
-          command: `node ${hookPath}`,
+          command: `${envPrefix}node ${hookPath}`,
           timeout: 10,
         },
       ],
@@ -159,6 +181,10 @@ function installHooks(config) {
 
     log(`Hook installed: ${eventName}`);
   }
+}
+
+function shellEscape(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
 }
 
 function uninstall() {
@@ -196,8 +222,47 @@ function uninstall() {
   log('Uninstall complete. Restart Claude Code.');
 }
 
-function install() {
-  log('Installing celiums-memory plugin for Claude Code...');
+function checkClaudeCodeInstalled() {
+  return fs.existsSync(CLAUDE_CONFIG) || fs.existsSync(path.join(os.homedir(), '.claude'));
+}
+
+function ensureCeliumsDir() {
+  if (!fs.existsSync(CELIUMS_DIR)) {
+    fs.mkdirSync(CELIUMS_DIR, { recursive: true, mode: 0o700 });
+    log(`Created ${CELIUMS_DIR}`);
+  }
+}
+
+async function install() {
+  process.stdout.write(`
+  ╔═══════════════════════════════════════════════════════╗
+  ║                                                       ║
+  ║   🧠  celiums-memory plugin for Claude Code           ║
+  ║       Local-first persistent memory                   ║
+  ║                                                       ║
+  ╚═══════════════════════════════════════════════════════╝
+
+`);
+
+  // Pre-flight: Claude Code installed?
+  if (!checkClaudeCodeInstalled()) {
+    log('⚠  Claude Code does not appear to be installed.');
+    log('   Install it first: https://claude.com/claude-code');
+    log('   Then run this installer again.');
+    log('');
+    log('   Continuing anyway in case you have a custom setup...');
+    log('');
+  }
+
+  // Storage mode info
+  log(`Storage: ${STORAGE_LABEL}`);
+  if (!REMOTE_URL) {
+    ensureCeliumsDir();
+    log('Your memories live ONLY on this machine. Nothing is sent anywhere.');
+  } else {
+    log('Using remote server. Your memories will be sent there over HTTPS.');
+  }
+  log('');
 
   // Path containment — every hook and bridge MUST live inside PLUGIN_ROOT.
   // Defeats path-traversal via malicious package layouts or symlinks.
@@ -231,19 +296,48 @@ function install() {
   writeConfig(config);
   installReflexes();
 
-  log('');
-  log('  Installation complete.');
-  log('');
-  log(`  Memory URL:  ${MEMORY_URL}`);
-  log(`  User ID:     ${USER_ID}`);
-  log('');
-  log('  Next steps:');
-  log('    1. Start the celiums-memory server (if using local):');
-  log('         npx @celiums/memory  (or: cd celiums-memory && npm start)');
-  log('    2. Restart Claude Code');
-  log('    3. Claude will now have automatic persistent memory + emotions');
-  log('');
-  log('  To uninstall: node bin/install.js --uninstall');
+  process.stdout.write(`
+  ╔═══════════════════════════════════════════════════════╗
+  ║                                                       ║
+  ║   ✓  Installation complete                            ║
+  ║                                                       ║
+  ╚═══════════════════════════════════════════════════════╝
+
+  Storage   : ${STORAGE_LABEL}
+  User ID   : ${USER_ID}
+  Config    : ~/.claude.json
+  Reflexes  : ~/.claude/skills/ (9 cognitive reflexes)
+
+  WHAT JUST HAPPENED:
+    • 6 new MCP tools in Claude Code
+        remember, recall, search, timeline, emotion, forget
+    • 5 lifecycle hooks capture context automatically
+    • 9 cognitive reflexes teach Claude when to use memory
+    ${REMOTE_URL ? '• Memories go to your configured remote server' : '• Memories live ONLY on this machine (~/.celiums/memory.db)'}
+
+  NEXT:
+    1. Restart Claude Code (quit + reopen)
+    2. Ask Claude in a new session:
+         "remember that I prefer concise answers"
+       Then in ANOTHER new session:
+         "what do you remember about how I like answers?"
+       Watch it actually remember.
+
+  PRIVACY:
+    ${REMOTE_URL
+      ? '⚠  Remote mode: memories sent to ' + REMOTE_URL
+      : '✓  Fully local. Nothing leaves your machine.'}
+
+  To switch to remote (e.g. shared team memory):
+       CELIUMS_MEMORY_URL=https://memory.celiums.ai \\
+         npx @celiums/memory-claude-code
+
+  To uninstall:
+       npx @celiums/memory-claude-code --uninstall
+
+  Docs: https://github.com/terrizoaguimor/celiums-memory
+
+`);
 }
 
 // ─── Entry ─────────────────────────────────────────────
@@ -251,5 +345,8 @@ const args = process.argv.slice(2);
 if (args.includes('--uninstall') || args.includes('-u')) {
   uninstall();
 } else {
-  install();
+  install().catch((err) => {
+    log(`FATAL: ${err.message}`);
+    process.exit(1);
+  });
 }
