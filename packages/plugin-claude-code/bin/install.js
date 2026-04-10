@@ -20,6 +20,7 @@ const __dirname = path.dirname(__filename);
 const PLUGIN_ROOT = path.resolve(__dirname, '..');
 
 const CLAUDE_CONFIG = path.join(os.homedir(), '.claude.json');
+const CLAUDE_SKILLS_DIR = path.join(os.homedir(), '.claude', 'skills');
 const MEMORY_URL = process.env.CELIUMS_MEMORY_URL || 'http://localhost:3210';
 const USER_ID = process.env.CELIUMS_MEMORY_USER_ID || 'default';
 
@@ -31,6 +32,16 @@ const HOOKS = {
   Stop: path.join(PLUGIN_ROOT, 'src', 'hooks', 'stop.mjs'),
   SessionEnd: path.join(PLUGIN_ROOT, 'src', 'hooks', 'session-end.mjs'),
 };
+
+const COGNITIVE_REFLEXES = [
+  'pre-response-recall',
+  'decision-encoding',
+  'emotional-calibration',
+  'salience-filtering',
+  'session-consolidation',
+  'context-recovery',
+  'habituation-check',
+];
 
 function log(msg) {
   process.stdout.write(`[celiums-memory] ${msg}\n`);
@@ -73,6 +84,34 @@ function installMcp(config) {
   };
 
   log('MCP server configured: celiums-memory (6 tools)');
+}
+
+function installReflexes() {
+  const srcDir = path.join(PLUGIN_ROOT, 'skills');
+  if (!fs.existsSync(srcDir)) {
+    log('WARNING: skills directory not found — skipping cognitive reflexes');
+    return;
+  }
+
+  fs.mkdirSync(CLAUDE_SKILLS_DIR, { recursive: true });
+
+  let installed = 0;
+  for (const reflex of COGNITIVE_REFLEXES) {
+    const srcPath = path.join(srcDir, reflex, 'SKILL.md');
+    const dstDir = path.join(CLAUDE_SKILLS_DIR, reflex);
+    const dstPath = path.join(dstDir, 'SKILL.md');
+
+    if (!fs.existsSync(srcPath)) {
+      log(`  Missing reflex source: ${reflex}`);
+      continue;
+    }
+
+    fs.mkdirSync(dstDir, { recursive: true });
+    fs.copyFileSync(srcPath, dstPath);
+    installed++;
+  }
+
+  log(`Cognitive reflexes installed: ${installed}/${COGNITIVE_REFLEXES.length} to ${CLAUDE_SKILLS_DIR}`);
 }
 
 function installHooks(config) {
@@ -126,6 +165,18 @@ function uninstall() {
   }
 
   writeConfig(config);
+
+  // Remove cognitive reflexes
+  let removed = 0;
+  for (const reflex of COGNITIVE_REFLEXES) {
+    const dir = path.join(CLAUDE_SKILLS_DIR, reflex);
+    if (fs.existsSync(dir)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      removed++;
+    }
+  }
+  if (removed > 0) log(`Cognitive reflexes removed: ${removed}`);
+
   log('Uninstall complete. Restart Claude Code.');
 }
 
@@ -149,6 +200,7 @@ function install() {
   installMcp(config);
   installHooks(config);
   writeConfig(config);
+  installReflexes();
 
   log('');
   log('  Installation complete.');

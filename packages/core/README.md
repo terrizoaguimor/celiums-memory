@@ -41,6 +41,7 @@ npx @celiums/memory-claude-code install
 This installs:
 - **5 automatic hooks** — capture user prompts, tool observations, assistant responses, session boundaries
 - **6 MCP tools** — `remember`, `recall`, `search` (token-efficient), `timeline`, `emotion`, `forget`
+- **7 Cognitive Reflexes** — neural instincts that teach Claude *when* and *how* to use memory, grounded in real neuroscience (Squire, LeDoux, Schultz, Ebbinghaus, Tulving, McGaugh, Diekelmann)
 - **Auto-recall at session start** — Claude sees relevant memories from previous sessions
 
 No manual MCP config needed. See [packages/plugin-claude-code](packages/plugin-claude-code/README.md).
@@ -77,7 +78,7 @@ The response includes the AI's **current emotional state**, **LLM parameter modu
 
 ## Architecture: A Digital Brain
 
-Three neuroscience-inspired layers. 15 core modules. 10 mathematical equations. **9,746+ lines of TypeScript** (8,960 core engine + 787 Claude Code plugin).
+Three neuroscience-inspired layers. 15 core modules. 10 mathematical equations. **10,373+ lines of TypeScript** (8,960 core engine + 1,414 Claude Code plugin + 7 cognitive reflexes).
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -257,7 +258,7 @@ Scales to millions of memories with sub-50ms recall.
 
 | Integration | Package | Status |
 |-------------|---------|--------|
-| **Claude Code Plugin** | **`@celiums/memory-claude-code`** | **✅ 5 hooks + 6 MCP tools** |
+| **Claude Code Plugin** | **`@celiums/memory-claude-code`** | **✅ 5 hooks + 6 MCP tools + 7 cognitive reflexes** |
 | MCP Protocol | `@celiums/adapter-mcp` | ✅ 5 tools |
 | REST API | `@celiums/server` | ✅ 9 endpoints |
 | LangChain | `@celiums/adapter-langchain` | ✅ BaseMemory |
@@ -330,7 +331,7 @@ git commit -m "Add serotonin proxy for dominance stability"
 
 This project is built by one self-taught developer from Venezuela, living in Medellín, running on ADHD hyperfocus and way too much coffee. No investors, no team, no CS degree — just thousands of hours of empirical learning, trial and error, and the stubborn belief that AI deserves a real brain.
 
-Every line of these 9,746+ lines was written between 20-hour coding sessions, fueled by curiosity and obsession. If celiums-memory is useful to you, or if you believe AI should have emotions and not just compute, consider supporting the work.
+Every line of these 10,373+ lines was written between 20-hour coding sessions, fueled by curiosity and obsession. If celiums-memory is useful to you, or if you believe AI should have emotions and not just compute, consider supporting the work.
 
 Your contribution keeps the H200 GPU running, the coffee flowing, and this project alive.
 
