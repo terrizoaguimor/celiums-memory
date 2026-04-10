@@ -215,55 +215,36 @@ SQLite mode uses **FTS5** for full-text search and stores embeddings as BLOBs fo
 
 ---
 
-## 🆕 Claude Code Plugin — One Command Install
+## 🆕 Claude Code Plugin — Local-first, one command
 
 Give Claude Code **automatic persistent memory + emotions** in a single command:
 
 ```bash
-npx @celiums/memory-claude-code install
+npx @celiums/memory-claude-code
 ```
 
+**Local-first by default.** Your memories live ONLY on your machine in `~/.celiums/memory.db` (SQLite). Nothing is sent anywhere. Each developer has their own private brain.
+
 This installs:
-- **5 automatic hooks** — capture user prompts, tool observations, assistant responses, session boundaries
+- **5 lifecycle hooks** — capture user prompts, tool observations, assistant responses, session boundaries
 - **6 MCP tools** — `remember`, `recall`, `search` (token-efficient), `timeline`, `emotion`, `forget`
 - **9 Cognitive Reflexes** — neural instincts that fire automatically based on context, including the meta-reflex `reflex-create` that generates new reflexes from observed patterns
 - **Auto-recall at session start** — Claude sees relevant memories from previous sessions
 
-No manual MCP config needed. See [packages/plugin-claude-code](packages/plugin-claude-code/README.md).
-
----
-
-## Quick Start (30 seconds)
-
+To opt into a shared remote server (e.g. for a team):
 ```bash
-# 1. Clone and install
-git clone https://github.com/terrizoaguimor/celiums-memory.git
-cd celiums-memory && npm install
-
-# 2. Start the engine (in-memory mode, no DBs needed)
-npm start
-
-# 3. Store a memory with emotions
-curl -X POST http://localhost:3210/store \
-  -H "Content-Type: application/json" \
-  -d '{"content": "I love building AI systems! This is amazing!"}'
-
-# 4. Recall memories
-curl -X POST http://localhost:3210/recall \
-  -H "Content-Type: application/json" \
-  -d '{"query": "What do I enjoy?"}'
-
-# 5. Check the AI emotional state
-curl http://localhost:3210/emotion
+CELIUMS_MEMORY_URL=https://memory.your-company.com \
+  CELIUMS_API_KEY=cmk_user_... \
+  npx @celiums/memory-claude-code
 ```
 
-The response includes the AI's **current emotional state**, **LLM parameter modulation** (temperature, topK adjusted by emotion), and **memory relevance scores** with limbic resonance.
+See [packages/plugin-claude-code](packages/plugin-claude-code/README.md) for full docs.
 
 ---
 
 ## Architecture: A Digital Brain
 
-Three neuroscience-inspired layers. 15 core modules. 10 mathematical equations. **11,161+ lines of TypeScript** (9,747 core engine + 1,414 Claude Code plugin, 7 cognitive reflexes, SQLite store).
+Three neuroscience-inspired layers. 15 core modules. 10 mathematical equations. **12,000+ lines of TypeScript** (core engine + Claude Code plugin + 9 cognitive reflexes + SQLite store + multi-key auth).
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -424,15 +405,12 @@ Every module is backed by peer-reviewed neuroscience, translated into math. Skip
 
 ## Production Stack
 
-For production, celiums-memory uses a triple-store architecture:
-
-```bash
-docker compose -f docker/docker-compose.yml up -d
-```
+For production, celiums-memory uses a triple-store architecture (auto-deployed by `docker compose up -d` from the repo root):
 
 - **PostgreSQL 17 + pgvector** — Long-term memory (neocortex)
 - **Qdrant** — Semantic vector search (hippocampal pattern completion)
 - **Valkey** — Working memory cache + distributed mutex (prefrontal cortex)
+- **Multi-key auth** — auto-enabled in triple-store mode (see Authentication section above)
 
 Scales to millions of memories with sub-50ms recall.
 
@@ -442,57 +420,37 @@ Scales to millions of memories with sub-50ms recall.
 
 | Integration | Package | Status |
 |-------------|---------|--------|
-| **Claude Code Plugin** | **`@celiums/memory-claude-code`** | **✅ 5 hooks + 6 MCP tools + 7 cognitive reflexes** |
-| MCP Protocol | `@celiums/adapter-mcp` | ✅ 5 tools |
-| REST API | `@celiums/server` | ✅ 9 endpoints |
-| LangChain | `@celiums/adapter-langchain` | ✅ BaseMemory |
-| LlamaIndex | `@celiums/adapter-llamaindex` | ✅ BaseChatStore |
-| CLI | `@celiums/cli` | ✅ 6 commands |
+| **Claude Code Plugin** | **`@celiums/memory-claude-code`** | **✅ 5 hooks + 6 MCP tools + 9 cognitive reflexes** |
+| **Memory engine** | **`@celiums/memory`** | **✅ 3 storage modes + multi-key auth** |
+| **TypeScript types** | **`@celiums/memory-types`** | **✅ Full type defs** |
+| REST API | quickstart server (in `@celiums/memory`) | ✅ /store /recall /emotion /admin/keys |
+| MCP Protocol | bundled in plugin | ✅ 6 tools |
 
 ---
 
 ## Connect to Claude Code
 
-Give Claude persistent memory with emotions in **2 commands**:
+**One command, fully local:**
 
 ```bash
-# 1. Start the memory server (zero config, in-memory)
-npx @celiums/memory
-
-# 2. Install the plugin (configures hooks + MCP automatically)
-npx @celiums/memory-claude-code install
+npx @celiums/memory-claude-code
 ```
 
-Restart Claude Code. Done.
+That's it. Restart Claude Code. The plugin:
+- Creates `~/.celiums/memory.db` for your private SQLite brain
+- Wires 5 lifecycle hooks to capture every interaction
+- Installs 6 MCP tools (`remember`, `recall`, `search`, `timeline`, `emotion`, `forget`)
+- Drops 9 cognitive reflexes into `~/.claude/skills/`
+- Nothing leaves your machine
 
-**What you get automatically:**
-
-- **5 lifecycle hooks** capture everything:
-  - `SessionStart` — Recalls relevant memories from previous sessions, injects as context
-  - `UserPromptSubmit` — Stores your prompts with PAD emotional analysis
-  - `PostToolUse` — Captures tool observations (edits, commands, searches)
-  - `Stop` — Stores assistant responses
-  - `SessionEnd` — Triggers memory consolidation (dedup + tier migration)
-
-- **6 MCP tools** accessible from Claude:
-  - `remember(content, tags?)` — Explicit storage
-  - `recall(query, limit?)` — Full semantic + emotional search
-  - `search(query, limit?)` — **Token-efficient** compact search (~10x cheaper)
-  - `timeline(hours?)` — Recent memories chronologically
-  - `emotion()` — Current PAD state + feeling label
-  - `forget(memoryIds[])` — Delete by ID
-
-**Production mode (persistent databases):**
+**Team mode (shared remote server):**
 
 ```bash
-docker compose -f docker/docker-compose.yml up -d
-DATABASE_URL=postgresql://user:pass@localhost:5432/celiums_memory \
-QDRANT_URL=http://localhost:6333 \
-VALKEY_URL=redis://localhost:6379 \
-npx @celiums/memory
+# Each developer points at their company server with their own key
+CELIUMS_MEMORY_URL=https://memory.your-company.com \
+  CELIUMS_API_KEY=cmk_user_... \
+  npx @celiums/memory-claude-code
 ```
-
-Same plugin, no code changes.
 
 Ask Claude: *"What do you remember about me?"* — and watch it recall across sessions.
 

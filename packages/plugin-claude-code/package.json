@@ -1,6 +1,6 @@
 {
   "name": "@celiums/memory-claude-code",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Local-first persistent memory for Claude Code. Each user gets their own SQLite brain in ~/.celiums/memory.db. 5 hooks + 6 MCP tools + 9 Cognitive Reflexes. Zero servers, zero accounts, zero data leakage.",
   "keywords": [
     "claude-code",
@@ -43,7 +43,7 @@
     "bridge": "node ./src/bridge.mjs"
   },
   "dependencies": {
-    "@celiums/memory": "^0.4.2",
+    "@celiums/memory": "^0.5.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "zod": "^3.23.0"
   },
