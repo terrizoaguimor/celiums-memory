@@ -5,7 +5,7 @@
 Neuroscience-grounded persistent memory for AI agents that feel, forget, adapt, and evolve — like a real brain.
 
 [![License](https://img.shields.io/github/license/terrizoaguimor/celiums-memory?color=green)](https://github.com/terrizoaguimor/celiums-memory/blob/main/LICENSE)
-[![npm version](https://img.shields.io/npm/v/@celiums-memory/core?color=green)](https://www.npmjs.com/package/@celiums-memory/core)
+[![npm version](https://img.shields.io/npm/v/@celiums/memory?color=green)](https://www.npmjs.com/package/@celiums/memory)
 [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![GitHub Stars](https://img.shields.io/github/stars/terrizoaguimor/celiums-memory?style=social)](https://github.com/terrizoaguimor/celiums-memory)
 
@@ -22,11 +22,28 @@ Neuroscience-grounded persistent memory for AI agents that feel, forget, adapt, 
 Your agent remembers *how it felt* when something happened. It gets bored of repetitive praise. It calms down when the user panics. It sleeps, wakes up, and adapts its personality to the conversation. **No other memory system does this.**
 
 ```bash
-npm install @celiums-memory/core
+npm install @celiums/memory
 npm start
 ```
 
 That's it. Zero databases needed for dev — runs entirely in-memory.
+
+---
+
+## 🆕 Claude Code Plugin — One Command Install
+
+Give Claude Code **automatic persistent memory + emotions** in a single command:
+
+```bash
+npx @celiums/memory-claude-code install
+```
+
+This installs:
+- **5 automatic hooks** — capture user prompts, tool observations, assistant responses, session boundaries
+- **6 MCP tools** — `remember`, `recall`, `search` (token-efficient), `timeline`, `emotion`, `forget`
+- **Auto-recall at session start** — Claude sees relevant memories from previous sessions
+
+No manual MCP config needed. See [packages/plugin-claude-code](packages/plugin-claude-code/README.md).
 
 ---
 
@@ -60,7 +77,7 @@ The response includes the AI's **current emotional state**, **LLM parameter modu
 
 ## Architecture: A Digital Brain
 
-Three neuroscience-inspired layers. 14 core modules. 10 mathematical equations. 6,800+ lines of TypeScript.
+Three neuroscience-inspired layers. 15 core modules. 10 mathematical equations. **9,746+ lines of TypeScript** (8,960 core engine + 787 Claude Code plugin).
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -69,6 +86,7 @@ Three neuroscience-inspired layers. 14 core modules. 10 mathematical equations. 
 │  theory_of_mind.ts — Empathic Friction Matrix (3x3)          │
 │  habituation.ts    — Dopamine satiation (kills praise spam)  │
 │  pfc.ts            — "Bite your tongue" regulation           │
+│  autonomy.ts       — Delegation policy + 7 safety guards     │
 └──────────────────────────┬───────────────────────────────────┘
                            ▼
 ┌──────────────────────────────────────────────────────────────┐
@@ -120,7 +138,7 @@ Their agents forget like goldfish. Ours evolve like humans. 🧬
 ### Store and recall with emotions
 
 ```typescript
-import { createMemoryEngine } from '@celiums-memory/core';
+import { createMemoryEngine } from '@celiums/memory';
 
 const engine = await createMemoryEngine({
   personality: 'celiums', // enthusiastic, technical, direct
@@ -239,122 +257,57 @@ Scales to millions of memories with sub-50ms recall.
 
 | Integration | Package | Status |
 |-------------|---------|--------|
-| MCP Protocol | `@celiums-memory/adapter-mcp` | ✅ 5 tools |
-| REST API | `@celiums-memory/server` | ✅ 9 endpoints |
-| Claude Code | MCP bridge | ✅ 4 tools |
-| LangChain | `@celiums-memory/adapter-langchain` | ✅ BaseMemory |
-| LlamaIndex | `@celiums-memory/adapter-llamaindex` | ✅ BaseChatStore |
-| CLI | `@celiums-memory/cli` | ✅ 6 commands |
+| **Claude Code Plugin** | **`@celiums/memory-claude-code`** | **✅ 5 hooks + 6 MCP tools** |
+| MCP Protocol | `@celiums/adapter-mcp` | ✅ 5 tools |
+| REST API | `@celiums/server` | ✅ 9 endpoints |
+| LangChain | `@celiums/adapter-langchain` | ✅ BaseMemory |
+| LlamaIndex | `@celiums/adapter-llamaindex` | ✅ BaseChatStore |
+| CLI | `@celiums/cli` | ✅ 6 commands |
 
 ---
 
 ## Connect to Claude Code
 
-Give Claude persistent memory with emotions in 3 steps:
-
-### Step 1: Start the memory server
+Give Claude persistent memory with emotions in **2 commands**:
 
 ```bash
-# Option A: In-memory mode (quick, no databases)
-git clone https://github.com/terrizoaguimor/celiums-memory.git
-cd celiums-memory && npm install && npm start
-# Server runs at http://localhost:3210
+# 1. Start the memory server (zero config, in-memory)
+npx @celiums/memory
 
-# Option B: Production mode (persistent, requires Docker)
+# 2. Install the plugin (configures hooks + MCP automatically)
+npx @celiums/memory-claude-code install
+```
+
+Restart Claude Code. Done.
+
+**What you get automatically:**
+
+- **5 lifecycle hooks** capture everything:
+  - `SessionStart` — Recalls relevant memories from previous sessions, injects as context
+  - `UserPromptSubmit` — Stores your prompts with PAD emotional analysis
+  - `PostToolUse` — Captures tool observations (edits, commands, searches)
+  - `Stop` — Stores assistant responses
+  - `SessionEnd` — Triggers memory consolidation (dedup + tier migration)
+
+- **6 MCP tools** accessible from Claude:
+  - `remember(content, tags?)` — Explicit storage
+  - `recall(query, limit?)` — Full semantic + emotional search
+  - `search(query, limit?)` — **Token-efficient** compact search (~10x cheaper)
+  - `timeline(hours?)` — Recent memories chronologically
+  - `emotion()` — Current PAD state + feeling label
+  - `forget(memoryIds[])` — Delete by ID
+
+**Production mode (persistent databases):**
+
+```bash
 docker compose -f docker/docker-compose.yml up -d
 DATABASE_URL=postgresql://user:pass@localhost:5432/celiums_memory \
 QDRANT_URL=http://localhost:6333 \
 VALKEY_URL=redis://localhost:6379 \
-npm start
+npx @celiums/memory
 ```
 
-### Step 2: Create the MCP bridge
-
-Save this as `~/.claude/celiums-memory-bridge.mjs`:
-
-```javascript
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { z } from "zod";
-import https from "node:https";
-
-const MEMORY_URL = process.env.CELIUMS_MEMORY_URL || "http://localhost:3210";
-const USER_ID = process.env.CELIUMS_USER_ID || "default";
-
-function request(path, method, body) {
-  return new Promise((resolve, reject) => {
-    const url = new URL(path, MEMORY_URL);
-    const mod = url.protocol === "https:" ? https : await import("node:http");
-    const postData = body ? JSON.stringify(body) : null;
-    const req = (url.protocol === "https:" ? https : mod).request({
-      hostname: url.hostname, port: url.port || (url.protocol === "https:" ? 443 : 80),
-      path: url.pathname + url.search, method,
-      headers: { "User-Agent": "celiums-memory-bridge/1.0", "Content-Type": "application/json",
-        ...(postData ? { "Content-Length": Buffer.byteLength(postData) } : {}) },
-    }, (res) => {
-      let data = "";
-      res.on("data", (c) => data += c);
-      res.on("end", () => { try { resolve(JSON.parse(data)); } catch { resolve({ error: data.substring(0, 200) }); } });
-    });
-    req.on("error", reject);
-    if (postData) req.write(postData);
-    req.end();
-  });
-}
-
-const server = new McpServer({ name: "celiums-memory", version: "1.0.0" });
-
-server.tool("remember", "Store a memory with emotional context. Persists forever.",
-  { content: z.string(), tags: z.array(z.string()).optional() },
-  async ({ content, tags }) => {
-    const data = await request("/store", "POST", { content, userId: USER_ID, tags });
-    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
-  });
-
-server.tool("recall", "Recall memories by semantic and emotional relevance.",
-  { query: z.string() },
-  async ({ query }) => {
-    const data = await request("/recall", "POST", { query, userId: USER_ID, limit: 10 });
-    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
-  });
-
-server.tool("emotion", "Get AI emotional state (Pleasure, Arousal, Dominance).",
-  {},
-  async () => {
-    const data = await request("/emotion?userId=" + USER_ID, "GET");
-    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
-  });
-
-const transport = new StdioServerTransport();
-await server.connect(transport);
-```
-
-Then install dependencies:
-
-```bash
-cd ~/.claude && npm install @modelcontextprotocol/sdk zod
-```
-
-### Step 3: Add to Claude Code settings
-
-Add this to your project's MCP servers in `~/.claude.json` (NOT `~/.claude/settings.json`):
-
-```json
-{
-  "mcpServers": {
-    "celiums-memory": {
-      "command": "node",
-      "args": ["~/.claude/celiums-memory-bridge.mjs"],
-      "env": {
-        "CELIUMS_MEMORY_URL": "http://localhost:3210",
-        "CELIUMS_USER_ID": "your-name"
-      }
-    }
-  }
-}
-```
-
-Restart Claude Code. You now have 4 tools: `remember`, `recall`, `emotion`, `forget`.
+Same plugin, no code changes.
 
 Ask Claude: *"What do you remember about me?"* — and watch it recall across sessions.
 
@@ -377,7 +330,7 @@ git commit -m "Add serotonin proxy for dominance stability"
 
 This project is built by one self-taught developer from Venezuela, living in Medellín, running on ADHD hyperfocus and way too much coffee. No investors, no team, no CS degree — just thousands of hours of empirical learning, trial and error, and the stubborn belief that AI deserves a real brain.
 
-Every line of these 7,800+ lines was written between 20-hour coding sessions, fueled by curiosity and obsession. If celiums-memory is useful to you, or if you believe AI should have emotions and not just compute, consider supporting the work.
+Every line of these 9,746+ lines was written between 20-hour coding sessions, fueled by curiosity and obsession. If celiums-memory is useful to you, or if you believe AI should have emotions and not just compute, consider supporting the work.
 
 Your contribution keeps the H200 GPU running, the coffee flowing, and this project alive.
 
