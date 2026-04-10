@@ -4,10 +4,36 @@
 
 Persistent memory for AI agents. Stores content + the emotional context around it. Recalls based on semantic match AND emotional resonance. Survives context death.
 
+[![Deploy to DO](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/terrizoaguimor/celiums-memory/tree/main)
 [![License](https://img.shields.io/github/license/terrizoaguimor/celiums-memory?color=green)](https://github.com/terrizoaguimor/celiums-memory/blob/main/LICENSE)
 [![npm version](https://img.shields.io/npm/v/@celiums/memory?color=green)](https://www.npmjs.com/package/@celiums/memory)
 [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![GitHub Stars](https://img.shields.io/github/stars/terrizoaguimor/celiums-memory?style=social)](https://github.com/terrizoaguimor/celiums-memory)
+
+## 🚀 1-Click Deploy on DigitalOcean
+
+[![Deploy to DO](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/terrizoaguimor/celiums-memory/tree/main)
+
+One click. Full triple-store production stack:
+- celiums-memory API server
+- Managed PostgreSQL (long-term memory)
+- Managed Valkey/Redis (working memory + distributed mutex)
+- Qdrant vector store (semantic search)
+- Schema migration runs automatically on first boot
+- Health checks wired in
+
+After deploy, your endpoint:
+```bash
+curl https://YOUR-APP.ondigitalocean.app/health
+curl -X POST https://YOUR-APP.ondigitalocean.app/store \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"AI agents need memory that survives restarts","userId":"alice"}'
+```
+
+Runs anywhere else with one command:
+```bash
+docker compose up -d
+```
 
 ---
 

@@ -91,10 +91,14 @@ const CREATE_TYPES_SQL = `
   EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 `;
 
+// NOTE: All id columns are TEXT (not UUID) so the API can use opaque
+// string identifiers like "mario", "alice", "project-x" without needing
+// UUID generation on the client side. The default still uses
+// gen_random_uuid()::TEXT for auto-generated IDs.
 const CREATE_USERS_SQL = `
   CREATE TABLE IF NOT EXISTS users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    external_id VARCHAR(255) UNIQUE NOT NULL,
+    id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+    external_id VARCHAR(255) UNIQUE,
     timezone VARCHAR(50) NOT NULL DEFAULT 'UTC',
     communication_style TEXT,
     preferences JSONB DEFAULT '{}',
@@ -108,8 +112,8 @@ const CREATE_USERS_SQL = `
 
 const CREATE_PROJECTS_SQL = `
   CREATE TABLE IF NOT EXISTS projects (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+    user_id TEXT NOT NULL,
     name VARCHAR(255) NOT NULL,
     description TEXT,
     tech_stack TEXT[] DEFAULT '{}',
@@ -127,9 +131,9 @@ const CREATE_PROJECTS_SQL = `
 
 const CREATE_SESSIONS_SQL = `
   CREATE TABLE IF NOT EXISTS sessions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    project_id UUID REFERENCES projects(id) ON DELETE SET NULL,
+    id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+    user_id TEXT NOT NULL,
+    project_id TEXT,
     started_at TIMESTAMPTZ DEFAULT NOW(),
     ended_at TIMESTAMPTZ,
     is_consolidated BOOLEAN DEFAULT false,
@@ -145,10 +149,10 @@ const CREATE_SESSIONS_SQL = `
 
 const CREATE_MEMORIES_SQL = `
   CREATE TABLE IF NOT EXISTS memories (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    project_id UUID REFERENCES projects(id) ON DELETE SET NULL,
-    session_id UUID REFERENCES sessions(id) ON DELETE SET NULL,
+    id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+    user_id TEXT NOT NULL,
+    project_id TEXT,
+    session_id TEXT,
 
     content TEXT NOT NULL,
     summary TEXT NOT NULL,
@@ -170,7 +174,7 @@ const CREATE_MEMORIES_SQL = `
     consolidated_at TIMESTAMPTZ,
     consolidation_count INTEGER NOT NULL DEFAULT 0,
 
-    linked_memory_ids UUID[] DEFAULT '{}',
+    linked_memory_ids TEXT[] DEFAULT '{}',
     source_message_ids TEXT[] DEFAULT '{}',
     tags TEXT[] DEFAULT '{}',
     entities JSONB DEFAULT '[]',
