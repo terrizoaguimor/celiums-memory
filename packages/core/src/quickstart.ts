@@ -16,6 +16,19 @@ import http from 'node:http';
 const PORT = parseInt(process.env.PORT ?? '3210', 10);
 const HOST = process.env.HOST ?? '0.0.0.0';
 
+// Auto-detect storage mode from environment
+const databaseUrl = process.env.DATABASE_URL;
+const qdrantUrl = process.env.QDRANT_URL;
+const qdrantApiKey = process.env.QDRANT_API_KEY;
+const valkeyUrl = process.env.VALKEY_URL;
+const sqlitePath = process.env.SQLITE_PATH;
+
+const mode = (databaseUrl && qdrantUrl)
+  ? 'triple-store (PG + Qdrant + Valkey)'
+  : sqlitePath
+  ? `sqlite (${sqlitePath})`
+  : 'in-memory (zero deps, volatile)';
+
 async function main() {
   console.log(`
   ╔══════════════════════════════════════════════════╗
@@ -23,14 +36,19 @@ async function main() {
   ║   🧠  celiums-memory                             ║
   ║   Neuroscience-grounded AI memory with emotions  ║
   ║                                                  ║
-  ║   Mode: in-memory (zero dependencies)            ║
-  ║   Personality: celiums (enthusiastic, technical)  ║
+  ║   Mode: ${mode.padEnd(40, ' ')} ║
+  ║   Personality: celiums                            ║
   ║                                                  ║
   ╚══════════════════════════════════════════════════╝
   `);
 
   const engine = await createMemoryEngine({
     personality: process.env.PERSONALITY ?? 'celiums',
+    ...(databaseUrl ? { databaseUrl } : {}),
+    ...(qdrantUrl ? { qdrantUrl } : {}),
+    ...(qdrantApiKey ? { qdrantApiKey } : {}),
+    ...(valkeyUrl ? { valkeyUrl } : {}),
+    ...(sqlitePath ? { sqlitePath } : {}),
   });
 
   console.log('[celiums-memory] Engine initialized. Starting REST API...');

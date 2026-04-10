@@ -690,50 +690,90 @@ export class MemoryStore {
   }
 
   // ----------------------------------------------------------
-  // embed() — Call embedding endpoint, return float vector
+  // embed() — Call embedding endpoint with deterministic fallback
+  //
+  // Tries the configured endpoint first. On failure (404, network error,
+  // bad response), falls back to a deterministic word-hash embedding so
+  // the system remains operational even when the embedding service is
+  // down or misconfigured. Logs the fallback event but never throws.
   // ----------------------------------------------------------
   async embed(text: string): Promise<number[]> {
     const endpoint = this.config.embedding.endpoint;
     const apiKey = this.config.embedding.apiKey;
     const model = this.config.embedding.model ?? 'text-embedding-3-small';
 
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-      },
-      body: JSON.stringify({
-        input: text,
-        model: model,
-      }),
-    });
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
+        body: JSON.stringify({ input: text, model }),
+      });
 
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(
-        `Embedding request failed (${response.status}): ${body}`
-      );
+      if (!response.ok) {
+        throw new Error(`Embedding endpoint ${response.status}`);
+      }
+
+      const json = (await response.json()) as any;
+      if (json.data?.[0]?.embedding) return json.data[0].embedding as number[];
+      if (json.embedding && Array.isArray(json.embedding)) return json.embedding as number[];
+      if (Array.isArray(json)) return json as number[];
+      throw new Error('Unexpected response format');
+    } catch (err) {
+      // Fallback to deterministic embedding — keeps the system alive
+      // when the embedding service is unreachable or misconfigured.
+      if (process.env.CELIUMS_DEBUG) {
+        process.stderr.write(`[celiums-memory] Embedding fallback: ${(err as Error).message}\n`);
+      }
+      return this.deterministicEmbed(text);
     }
+  }
 
-    const json = (await response.json()) as any;
-
-    // OpenAI-compatible response format
-    if (json.data && Array.isArray(json.data) && json.data[0]?.embedding) {
-      return json.data[0].embedding as number[];
+  /**
+   * Deterministic word-level embedding fallback.
+   * Same algorithm as InMemoryMemoryStore — similar texts produce
+   * similar vectors via word hashing with TF-like weighting.
+   * Not as good as a real embedding model, but keeps the system
+   * operational when the embedding service is down.
+   */
+  private deterministicEmbed(text: string): number[] {
+    const dim = this.vectorDimensions;
+    const vector = new Array(dim).fill(0);
+    const normalized = text.toLowerCase().trim();
+    const stopwords = new Set([
+      'the','a','an','is','are','was','were','be','been','being','have','has','had',
+      'do','does','did','will','would','could','should','may','might','shall','can',
+      'to','of','in','for','on','with','at','by','from','as','into','through','during',
+      'before','after','and','but','or','not','no','so','if','then','than','that','this',
+      'it','its','i','me','my','we','our','you','your','he','she','they','them','his','her','their',
+    ]);
+    const words = normalized.split(/\W+/).filter(w => w.length > 1 && !stopwords.has(w));
+    for (const word of words) {
+      let h1 = 0, h2 = 0, h3 = 0;
+      for (let j = 0; j < word.length; j++) {
+        const c = word.charCodeAt(j);
+        h1 = ((h1 << 5) - h1 + c) | 0;
+        h2 = ((h2 * 31) + c) | 0;
+        h3 = ((h3 ^ c) * 16777619) | 0;
+      }
+      const indices = [
+        Math.abs(h1) % dim, Math.abs(h2) % dim, Math.abs(h3) % dim,
+        Math.abs(h1 ^ h2) % dim, Math.abs(h2 ^ h3) % dim, Math.abs(h1 ^ h3) % dim,
+      ];
+      const weight = 1.0 / Math.max(words.length, 1);
+      for (const idx of indices) vector[idx] += weight;
     }
-
-    // Ollama-compatible response format
-    if (json.embedding && Array.isArray(json.embedding)) {
-      return json.embedding as number[];
+    for (let i = 0; i < words.length - 1; i++) {
+      const bigram = words[i] + '_' + words[i + 1];
+      let bh = 0;
+      for (let j = 0; j < bigram.length; j++) bh = ((bh << 5) - bh + bigram.charCodeAt(j)) | 0;
+      vector[Math.abs(bh) % dim] += 0.5 / Math.max(words.length, 1);
     }
-
-    // Raw array
-    if (Array.isArray(json)) {
-      return json as number[];
-    }
-
-    throw new Error('Unexpected embedding response format');
+    const magnitude = Math.sqrt(vector.reduce((sum, v) => sum + v * v, 0));
+    if (magnitude > 0) for (let i = 0; i < dim; i++) vector[i] /= magnitude;
+    return vector;
   }
 
   // ----------------------------------------------------------

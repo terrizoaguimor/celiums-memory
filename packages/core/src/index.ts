@@ -100,6 +100,59 @@ export interface CeliumsMemoryConfig extends MemoryConfig {
   personality?: PersonalityTraits | string;
   /** Path to SQLite database file for single-file persistence mode */
   sqlitePath?: string;
+  /** Optional Qdrant API key for production triple-store mode */
+  qdrantApiKey?: string;
+}
+
+// ============================================================
+// Config adapter — flat env vars → nested StoreConfig
+// ============================================================
+
+/**
+ * Convert the flat CeliumsMemoryConfig (env-var friendly) into the
+ * nested StoreConfig that MemoryStore expects.
+ *
+ * Parses URLs like:
+ *   postgresql://user:pass@host:5432/db
+ *   redis://:password@host:6379
+ */
+function buildStoreConfig(config: CeliumsMemoryConfig): any {
+  const pg = new URL(config.databaseUrl!);
+  const valkey = config.valkeyUrl ? new URL(config.valkeyUrl) : null;
+
+  return {
+    postgres: {
+      host: pg.hostname,
+      port: parseInt(pg.port || '5432', 10),
+      database: pg.pathname.replace(/^\//, ''),
+      user: decodeURIComponent(pg.username),
+      password: decodeURIComponent(pg.password),
+      ssl: pg.searchParams.get('sslmode') === 'require',
+    },
+    qdrant: {
+      url: config.qdrantUrl!,
+      apiKey: config.qdrantApiKey,
+      collectionName: 'celiums_memories',
+    },
+    valkey: valkey ? {
+      host: valkey.hostname,
+      port: parseInt(valkey.port || '6379', 10),
+      password: valkey.password ? decodeURIComponent(valkey.password) : undefined,
+      keyPrefix: 'celiums:mem:',
+    } : {
+      host: 'localhost',
+      port: 6379,
+    },
+    embedding: {
+      endpoint: config.embeddingEndpoint || 'http://localhost:8080/embed',
+      apiKey: config.embeddingApiKey,
+      model: config.embeddingModel || 'nomic-embed-text-v2',
+      // 384 = standard for sentence-transformers/all-MiniLM-L6-v2 and the
+      // deterministic fallback. Matches existing celiums_memories Qdrant
+      // collection. Override via embeddingDimensions for custom models.
+      dimensions: config.embeddingDimensions || 384,
+    },
+  };
 }
 
 // ============================================================
@@ -137,7 +190,9 @@ export async function createMemoryEngine(config: CeliumsMemoryConfig): Promise<M
     console.log(`[celiums-memory] SQLite persistence: ${config.sqlitePath}`);
   } else if (useFullDb) {
     const { MemoryStore } = await import('./store.js');
-    store = new MemoryStore(config as any);
+    // Adapter: convert flat CeliumsMemoryConfig → nested StoreConfig
+    const storeConfig = buildStoreConfig(config);
+    store = new MemoryStore(storeConfig);
   } else {
     store = new InMemoryMemoryStore(config);
     console.log('[celiums-memory] Running in-memory mode (no persistence)');
