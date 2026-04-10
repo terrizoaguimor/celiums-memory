@@ -98,6 +98,8 @@ import { extractPAD, analyzeForMemory } from './importance.js';
 export interface CeliumsMemoryConfig extends MemoryConfig {
   /** Big Five personality traits (or preset name) */
   personality?: PersonalityTraits | string;
+  /** Path to SQLite database file for single-file persistence mode */
+  sqlitePath?: string;
 }
 
 // ============================================================
@@ -120,22 +122,29 @@ export async function createMemoryEngine(config: CeliumsMemoryConfig): Promise<M
   });
 
   // Layer 2: Limbic — parameterized by personality
-  // Auto-detect mode: if no DB URLs → in-memory (dev/demo)
-  //                   if DB URLs → full production stack (PG+Qdrant+Valkey)
-  const isInMemoryMode = !config.databaseUrl && !config.qdrantUrl;
+  // Store mode auto-detection:
+  //   sqlitePath           → SqliteMemoryStore (single-file persistence)
+  //   databaseUrl/qdrantUrl → MemoryStore (PG + Qdrant + Valkey, production)
+  //   neither              → InMemoryMemoryStore (dev/demo, volatile)
+  const useSqlite  = !!config.sqlitePath && !config.databaseUrl && !config.qdrantUrl;
+  const useFullDb  = !!config.databaseUrl || !!config.qdrantUrl;
+  const useInMem   = !useSqlite && !useFullDb;
+
   let store: any;
-  if (isInMemoryMode) {
-    store = new InMemoryMemoryStore(config);
-  } else {
-    // Dynamic import — only loads pg/ioredis/qdrant when actually needed
+  if (useSqlite) {
+    const { SqliteMemoryStore } = await import('./store-sqlite.js');
+    store = new SqliteMemoryStore(config);
+    console.log(`[celiums-memory] SQLite persistence: ${config.sqlitePath}`);
+  } else if (useFullDb) {
     const { MemoryStore } = await import('./store.js');
     store = new MemoryStore(config as any);
-  }
-
-  if (isInMemoryMode) {
-    console.log('[celiums-memory] Running in-memory mode (no databases required)');
+  } else {
+    store = new InMemoryMemoryStore(config);
+    console.log('[celiums-memory] Running in-memory mode (no persistence)');
+    console.log('[celiums-memory] For single-file persistence, set sqlitePath');
     console.log('[celiums-memory] For production, set DATABASE_URL, QDRANT_URL, VALKEY_URL');
   }
+  const isInMemoryMode = useInMem;
 
   // Production: ValkeyLimbicMutex (distributed lock via SET NX EX + Lua)
   // Development: InMemoryLimbicMutex (single-process guard)

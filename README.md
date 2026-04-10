@@ -28,6 +28,39 @@ npm start
 
 That's it. Zero databases needed for dev — runs entirely in-memory.
 
+## Three Storage Modes
+
+Pick the one that fits. Same API, zero code changes to switch.
+
+| Mode | Config | Use case | Persistence |
+|---|---|---|---|
+| **In-memory** | _(default)_ | Dev, demos, tests | ❌ volatile |
+| **SQLite** | `sqlitePath: './memory.db'` | Single-user, personal assistants, local apps | ✅ single file |
+| **Triple-store** | `databaseUrl` + `qdrantUrl` + `valkeyUrl` | Multi-user production, concurrent writes, > 1M memories | ✅ distributed |
+
+```typescript
+import { createMemoryEngine } from '@celiums/memory';
+
+// Mode 1: In-memory (volatile, no dependencies)
+const dev = await createMemoryEngine({ personality: 'celiums' });
+
+// Mode 2: SQLite (single-file persistence, survives restarts)
+const local = await createMemoryEngine({
+  personality: 'celiums',
+  sqlitePath: './my-assistant.db',
+});
+
+// Mode 3: Production (PG + Qdrant + Valkey, distributed)
+const prod = await createMemoryEngine({
+  personality: 'celiums',
+  databaseUrl: process.env.DATABASE_URL,
+  qdrantUrl: process.env.QDRANT_URL,
+  valkeyUrl: process.env.VALKEY_URL,
+});
+```
+
+SQLite mode uses **FTS5** for full-text search and stores embeddings as BLOBs for pure-JS cosine similarity. Handles up to ~500K memories comfortably on commodity hardware. Requires `better-sqlite3` (installed as an optional dependency).
+
 ---
 
 ## 🆕 Claude Code Plugin — One Command Install
@@ -78,7 +111,7 @@ The response includes the AI's **current emotional state**, **LLM parameter modu
 
 ## Architecture: A Digital Brain
 
-Three neuroscience-inspired layers. 15 core modules. 10 mathematical equations. **10,373+ lines of TypeScript** (8,960 core engine + 1,414 Claude Code plugin + 7 cognitive reflexes).
+Three neuroscience-inspired layers. 15 core modules. 10 mathematical equations. **11,161+ lines of TypeScript** (9,747 core engine + 1,414 Claude Code plugin, 7 cognitive reflexes, SQLite store).
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -331,7 +364,7 @@ git commit -m "Add serotonin proxy for dominance stability"
 
 This project is built by one self-taught developer from Venezuela, living in Medellín, running on ADHD hyperfocus and way too much coffee. No investors, no team, no CS degree — just thousands of hours of empirical learning, trial and error, and the stubborn belief that AI deserves a real brain.
 
-Every line of these 10,373+ lines was written between 20-hour coding sessions, fueled by curiosity and obsession. If celiums-memory is useful to you, or if you believe AI should have emotions and not just compute, consider supporting the work.
+Every line of these 11,161+ lines was written between 20-hour coding sessions, fueled by curiosity and obsession. If celiums-memory is useful to you, or if you believe AI should have emotions and not just compute, consider supporting the work.
 
 Your contribution keeps the H200 GPU running, the coffee flowing, and this project alive.
 
