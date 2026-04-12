@@ -39,7 +39,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-celiums}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-celiums_secret_change_me}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-celiums_memory}
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
@@ -122,7 +122,7 @@ services:
       --loglevel ${VALKEY_LOG_LEVEL:-notice}
       --maxmemory ${VALKEY_MAX_MEMORY:-256mb}
       --maxmemory-policy allkeys-lru
-      --requirepass ${VALKEY_PASSWORD:-valkey_secret_change_me}
+      --requirepass ${VALKEY_PASSWORD:?Set VALKEY_PASSWORD in .env}
       --appendonly yes
       --appendfsync everysec
     volumes:
@@ -133,7 +133,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "valkey-cli -a ${VALKEY_PASSWORD:-valkey_secret_change_me} ping | grep -q PONG"
+          "valkey-cli -a ${VALKEY_PASSWORD:?Set VALKEY_PASSWORD in .env} ping | grep -q PONG"
         ]
       interval: 10s
       timeout: 5s
@@ -173,7 +173,7 @@ services:
       CELIUMS_CORS_ORIGINS: ${CELIUMS_CORS_ORIGINS:-*}
 
       # PostgreSQL
-      POSTGRES_URL: postgresql://${POSTGRES_USER:-celiums}:${POSTGRES_PASSWORD:-celiums_secret_change_me}@postgres:5432/${POSTGRES_DB:-celiums_memory}
+      POSTGRES_URL: postgresql://${POSTGRES_USER:-celiums}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-celiums_memory}
 
       # Qdrant
       QDRANT_URL: http://qdrant:6333
@@ -181,11 +181,10 @@ services:
       QDRANT_COLLECTION: ${QDRANT_COLLECTION:-celiums_memories}
 
       # Valkey
-      VALKEY_URL: redis://:${VALKEY_PASSWORD:-valkey_secret_change_me}@valkey:6379
+      VALKEY_URL: redis://:${VALKEY_PASSWORD:?Set VALKEY_PASSWORD in .env}@valkey:6379
 
       # Embeddings
       EMBEDDINGS_PROVIDER: ${EMBEDDINGS_PROVIDER:-openai}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
       COHERE_API_KEY: ${COHERE_API_KEY:-}

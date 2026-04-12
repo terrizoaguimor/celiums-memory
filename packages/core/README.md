@@ -196,14 +196,14 @@ const engine = await createMemoryEngine({
 
 // Store — PAD vector is extracted automatically
 await engine.store([{
-  userId: 'mario',
+  userId: 'developer',
   content: 'We decided to use Gemma 4 for the on-device model',
 }]);
 
 // Recall — ranked by semantic + emotional resonance
 const result = await engine.recall({
   query: 'What model are we using?',
-  userId: 'mario',
+  userId: 'developer',
 });
 
 console.log(result.limbicState);
@@ -377,7 +377,7 @@ git commit -m "Add serotonin proxy for dominance stability"
 
 ## Support This Project
 
-This project is built by one self-taught developer from Venezuela, living in Medellín, running on ADHD hyperfocus and way too much coffee. No investors, no team, no CS degree — just thousands of hours of empirical learning, trial and error, and the stubborn belief that AI deserves a real brain.
+This project is built by one self-taught developer running on ADHD hyperfocus and way too much coffee. No investors, no team, no CS degree — just thousands of hours of empirical learning, trial and error, and the stubborn belief that AI deserves a real brain.
 
 Every line of these 11,161+ lines was written between 20-hour coding sessions, fueled by curiosity and obsession. If celiums-memory is useful to you, or if you believe AI should have emotions and not just compute, consider supporting the work.
 

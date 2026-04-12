@@ -90,7 +90,31 @@ import type {
   LimbicState,
   LLMModulation,
   PersonalityTraits,
+  CircadianTelemetry,
+  CircadianFactors,
+  UserCircadianConfig,
 } from '@celiums/memory-types';
+
+// Per-user circadian: pure function from circadian.ts
+import { computeCircadianFor } from './circadian.js';
+
+/**
+ * FIX M1 2026-04-11: typed interface for per-user profile methods on the store.
+ * Avoids scattering `(store as any)` casts throughout createMemoryEngine.
+ * Store implementations that support per-user profiles (MemoryStore with PG)
+ * implement these; in-memory/sqlite stores don't.
+ */
+interface PerUserStore {
+  ensureCircadianProfile(userId: string): Promise<any>;
+  updateCircadianConfig(userId: string, patch: any): Promise<any>;
+  persistUserPad(userId: string, pad: { pleasure: number; arousal: number; dominance: number }): Promise<void>;
+  persistUserFactors(userId: string, factors: any): Promise<void>;
+  touchUserInteraction(userId: string): Promise<void>;
+}
+
+function asPerUser(s: unknown): PerUserStore | null {
+  return (s && typeof s === 'object' && 'ensureCircadianProfile' in s) ? s as PerUserStore : null;
+}
 
 // === Implementations ===
 import { PersonalityEngine } from './personality.js';
@@ -249,6 +273,10 @@ export async function createMemoryEngine(config: CeliumsMemoryConfig): Promise<M
   // Initialize database
   await store.initialize();
 
+  // FIX M1 2026-04-11: typed reference to per-user store methods.
+  // Null in in-memory/sqlite mode where user_profiles table doesn't exist.
+  const perUser = asPerUser(store);
+
   return {
     async store(memories: Partial<MemoryRecord>[]): Promise<MemoryRecord[]> {
       const results: MemoryRecord[] = [];
@@ -270,6 +298,24 @@ export async function createMemoryEngine(config: CeliumsMemoryConfig): Promise<M
           'user_feedback',
         );
 
+        // PER-USER STATE HYDRATION (2026-04-11):
+        // Load this user's stored PAD into the limbic engine BEFORE processing
+        // so the update operates on their state, not someone else's.
+        const uidStore = partial.userId || 'default';
+        if (perUser) {
+          try {
+            const userProfile = await perUser!.ensureCircadianProfile(uidStore);
+            limbic.setState({
+              pleasure: userProfile.pad.pleasure,
+              arousal: userProfile.pad.arousal,
+              dominance: userProfile.pad.dominance,
+              timestamp: new Date(),
+            });
+          } catch {
+            /* fall through to global state if profile load fails */
+          }
+        }
+
         // Full limbic update with all systems (async — acquires distributed mutex)
         await limbic.updateStateFull(
           processedPAD,
@@ -282,6 +328,22 @@ export async function createMemoryEngine(config: CeliumsMemoryConfig): Promise<M
 
         // PFC regulation
         pfc.regulate(limbic.getState());
+
+        // PER-USER STATE PERSISTENCE (2026-04-11):
+        // After the limbic engine processed this user's interaction, write the
+        // resulting PAD back to user_profiles so future requests see it.
+        if (perUser) {
+          try {
+            const finalState = limbic.getState();
+            await perUser!.persistUserPad(uidStore, {
+              pleasure: finalState.pleasure,
+              arousal: finalState.arousal,
+              dominance: finalState.dominance,
+            });
+          } catch {
+            /* non-fatal — memory still saved */
+          }
+        }
 
         const record: MemoryRecord = {
           id: partial.id ?? '',
@@ -383,7 +445,28 @@ export async function createMemoryEngine(config: CeliumsMemoryConfig): Promise<M
     },
 
     async consolidate(userId: string, conversationText: string): Promise<ConsolidationResult> {
+      // Hydrate per-user PAD before consolidation (FIX H1 2026-04-11: was using global singleton)
+      if (perUser) {
+        try {
+          const profile = await perUser!.ensureCircadianProfile(userId);
+          limbic.setState({
+            pleasure: profile.pad.pleasure,
+            arousal: profile.pad.arousal,
+            dominance: profile.pad.dominance,
+            timestamp: new Date(),
+          });
+        } catch { /* fall through to global state */ }
+      }
       const result = await consolidator.consolidateText(userId, conversationText);
+      // Persist post-consolidation PAD
+      if (perUser) {
+        try {
+          const s = limbic.getState();
+          await perUser!.persistUserPad(userId, {
+            pleasure: s.pleasure, arousal: s.arousal, dominance: s.dominance,
+          });
+        } catch { /* non-fatal */ }
+      }
       return {
         ...result,
         finalLimbicState: limbic.getState(),
@@ -398,15 +481,110 @@ export async function createMemoryEngine(config: CeliumsMemoryConfig): Promise<M
       return recall.assembleContext(query, userId, null);
     },
 
-    async getLimbicState(_userId: string): Promise<LimbicState> {
-      // Return PFC-regulated state (safe for external consumption)
-      const regulation = pfc.regulate(limbic.getState());
+    // ============================================================
+    // Per-user state accessors (REFACTORED 2026-04-11)
+    // ============================================================
+    //
+    // These now actually use the userId. Each user has their own:
+    //   - Circadian config (timezone, peakHour, amplitude, ...)
+    //   - Persisted PAD vector
+    //   - Factor accumulators
+    //
+    // The data lives in user_profiles table. These methods load it,
+    // compute current circadian via the pure function, blend with the
+    // global limbic baseline, run pfc.regulate, and return.
+    //
+    // If the user doesn't have a row yet, ensureCircadianProfile() creates
+    // one with sane UTC defaults.
+
+    async getLimbicState(userId: string): Promise<LimbicState> {
+      const uid = userId || 'default';
+      // For in-memory mode (no PG store), fall back to legacy global state
+      if (!(perUser)) {
+        const regulation = pfc.regulate(limbic.getState());
+        return regulation.regulatedState;
+      }
+      const profile = await perUser!.ensureCircadianProfile(uid);
+      const tel = computeCircadianFor(
+        uid,
+        profile.circadian as UserCircadianConfig,
+        profile.factors as CircadianFactors,
+        profile.lastInteraction,
+      );
+      // Blend stored PAD with circadian-adjusted arousal
+      const blended: LimbicState = {
+        pleasure: profile.pad.pleasure,
+        arousal: tel.arousalAfterRegulation,
+        dominance: profile.pad.dominance,
+        timestamp: new Date(),
+      };
+      const regulation = pfc.regulate(blended);
       return regulation.regulatedState;
     },
 
-    async getModulation(_userId: string): Promise<LLMModulation> {
-      const regulation = pfc.regulate(limbic.getState());
+    async getModulation(userId: string): Promise<LLMModulation> {
+      // FIX M3 2026-04-11: don't use `this` on object literal — call getLimbicState
+      // via the returned engine reference. We inline the logic instead.
+      const uid = userId || 'default';
+      if (!(perUser)) {
+        const regulation = pfc.regulate(limbic.getState());
+        return ans.computeModulation(regulation.regulatedState);
+      }
+      const profile = await perUser!.ensureCircadianProfile(uid);
+      const tel = computeCircadianFor(
+        uid,
+        profile.circadian as UserCircadianConfig,
+        profile.factors as CircadianFactors,
+        profile.lastInteraction,
+      );
+      const blended: LimbicState = {
+        pleasure: profile.pad.pleasure,
+        arousal: tel.arousalAfterRegulation,
+        dominance: profile.pad.dominance,
+        timestamp: new Date(),
+      };
+      const regulation = pfc.regulate(blended);
       return ans.computeModulation(regulation.regulatedState);
+    },
+
+    /**
+     * Get the full circadian telemetry for a user. Pure read — no state mutation.
+     * Returns null if the store doesn't support per-user profiles (in-memory mode).
+     */
+    async getCircadianTelemetry(userId: string): Promise<CircadianTelemetry | null> {
+      const uid = userId || 'default';
+      if (!(perUser)) return null;
+      const profile = await perUser!.ensureCircadianProfile(uid);
+      return computeCircadianFor(
+        uid,
+        profile.circadian as UserCircadianConfig,
+        profile.factors as CircadianFactors,
+        profile.lastInteraction,
+      );
+    },
+
+    /**
+     * Load the full per-user profile (config + PAD + factors).
+     */
+    async getUserCircadianProfile(userId: string): Promise<any | null> {
+      const uid = userId || 'default';
+      if (!(perUser)) return null;
+      return perUser!.ensureCircadianProfile(uid);
+    },
+
+    /**
+     * Update a user's circadian config (timezone, peakHour, etc.).
+     * Used by PUT /profile.
+     */
+    async updateUserCircadianConfig(
+      userId: string,
+      patch: Partial<UserCircadianConfig>,
+    ): Promise<any> {
+      const uid = userId || 'default';
+      if (!('updateCircadianConfig' in store)) {
+        throw new Error('Per-user circadian profiles not supported in in-memory mode');
+      }
+      return perUser!.updateCircadianConfig(uid, patch);
     },
 
     async health(): Promise<HealthStatus> {

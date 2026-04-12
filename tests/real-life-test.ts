@@ -25,7 +25,7 @@ async function main() {
 
   const engine = await createMemoryEngine({ personality: 'celiums' });
   const mw = new MemoryMiddleware(engine, {
-    defaultUserId: 'mario',
+    defaultUserId: 'developer',
     autoStoreUserMessages: true,
     autoStoreAIResponses: true,
   });
@@ -33,13 +33,13 @@ async function main() {
   const chat = [
     // Pets
     { user: "My dog is called Luna, she is a golden retriever and she is 3 years old", ai: "Luna sounds adorable! Golden retrievers are the best." },
-    { user: "Luna loves to swim in the river near my apartment in Medellin", ai: "That must be a great spot for her!" },
+    { user: "Luna loves to swim in the river near my apartment in the city", ai: "That must be a great spot for her!" },
     { user: "I also have a cat named Simón, he is black and very lazy", ai: "Classic cat behavior, Simón sounds chill." },
 
     // Food
     { user: "My favorite food is bandeja paisa, its a traditional Colombian dish", ai: "That's a hearty meal! Beans, rice, chicharrón..." },
     { user: "I eat arepas every single morning for breakfast, with cheese and butter", ai: "Arepas con queso, can't beat that." },
-    { user: "My favorite restaurant is called El Cielo, its in Medellin and the chef is Juan Manuel Barrientos", ai: "El Cielo is world-famous! Amazing tasting menu." },
+    { user: "My favorite restaurant is called The Blue Cafe, its in the city and the chef is Chef Rodriguez", ai: "The Blue Cafe is world-famous! Amazing tasting menu." },
     { user: "I am allergic to shrimp, it makes my throat swell up", ai: "That's serious, I'll remember to never suggest shrimp." },
     { user: "My favorite coffee is from Huila region, I drink it black no sugar", ai: "Huila coffee, black. A purist." },
 
@@ -51,17 +51,17 @@ async function main() {
     { user: "I listen to reggaeton when I code at 2am, it keeps the energy up", ai: "Daddy Yankee and code, I respect it." },
 
     // Childhood & Family
-    { user: "I grew up in Maracaibo Venezuela, near Lake Maracaibo", ai: "The lightning capital of the world!" },
-    { user: "My mother's name is Carmen and she makes the best hallacas in December", ai: "Venezuelan hallacas in December, there's nothing like it." },
+    { user: "I grew up in a coastal city, near the lake", ai: "Beautiful area!" },
+    { user: "My mother's name is Sarah and she makes the best hallacas in December", ai: "Traditional hallacas in December, there's nothing like it." },
     { user: "I have two brothers, the older one is called Eduardo and the younger one is Andrés", ai: "Three brothers, nice family." },
     { user: "My father taught me to play chess when I was 6 years old, I still play every week", ai: "Chess from age 6, that explains the strategic thinking." },
-    { user: "I left Venezuela in 2018 because of the economic crisis", ai: "That was a tough time for many Venezuelans." },
+    { user: "I moved abroad in 2020 for work opportunities", ai: "That was a big life change." },
 
     // Travel
     { user: "The best trip I ever took was to Cartagena, the walled city is magical", ai: "Cartagena's old town at sunset is unforgettable." },
     { user: "I want to visit Japan someday, specifically Tokyo and Kyoto", ai: "Japan is on everyone's list for a reason." },
-    { user: "I have been to Bogota, Cali, and Bucaramanga but Medellin is my favorite city", ai: "Medellín's weather alone makes it the winner." },
-    { user: "My dream is to live in a house with a mountain view and a home office", ai: "Medellín has plenty of those views." },
+    { user: "I have been to several cities but the city is my favorite city", ai: "Great weather makes it the winner." },
+    { user: "My dream is to live in a house with a mountain view and a home office", ai: "Many cities have those views." },
 
     // Random facts about himself
     { user: "I wake up at 5am every day, even on weekends", ai: "Early bird. That's discipline." },
@@ -69,7 +69,7 @@ async function main() {
     { user: "I wear glasses, I have been wearing them since I was 12", ai: "Glasses since 12, the developer origin story." },
     { user: "My lucky number is 7, always has been", ai: "7 it is. Classic lucky number." },
     { user: "I am terrified of spiders, like genuinely phobic", ai: "Arachnophobia noted. No spider emojis ever." },
-    { user: "I used to skateboard when I was a teenager in Maracaibo", ai: "Skateboarding in Maracaibo heat, that's dedication." },
+    { user: "I used to skateboard when I was a teenager", ai: "Skateboarding in the summer heat, that's dedication." },
 
     // Opinions
     { user: "I think pineapple on pizza is actually good and people who disagree are wrong", ai: "Bold take. Hawaiian pizza defender." },
@@ -81,23 +81,23 @@ async function main() {
     { user: "The proudest moment of my life was when my mom saw my first website", ai: "That must have been incredible for both of you." },
     { user: "I get really anxious before public speaking, my hands shake", ai: "Public speaking anxiety is super common." },
     { user: "Last week I stayed up until 4am debugging a memory leak and I found it, it felt amazing", ai: "That eureka moment at 4am is unmatched." },
-    { user: "Sometimes I miss Venezuela so much it physically hurts", ai: "Nostalgia for home runs deep." },
+    { user: "Sometimes I miss home so much it physically hurts", ai: "Nostalgia for home runs deep." },
 
     // Current situation
-    { user: "Right now I am sitting in my apartment in El Poblado, Medellin, with Luna sleeping next to me", ai: "Sounds peaceful. El Poblado is a great neighborhood." },
-    { user: "The weather today is 24 degrees celsius and cloudy, perfect for coding", ai: "Medellín eternal spring weather." },
+    { user: "Right now I am sitting in my apartment in Downtown, Capital City, with Luna sleeping next to me", ai: "Sounds peaceful. That sounds like a lovely neighborhood." },
+    { user: "The weather today is 24 degrees celsius and cloudy, perfect for coding", ai: "Perfect spring weather." },
     { user: "I am drinking my fourth coffee of the day and it is only 2pm", ai: "On track for your 6-cup daily goal." },
   ];
 
   let turn = 0;
   for (const c of chat) {
-    await mw.beforeLLM(c.user, 'mario');
-    await mw.afterLLM(c.ai, 'mario');
+    await mw.beforeLLM(c.user, 'developer');
+    await mw.afterLLM(c.ai, 'developer');
     turn++;
     if (turn % 10 === 0) console.log(`  [${turn}/${chat.length}] turns stored...`);
   }
 
-  await mw.consolidateNow('mario');
+  await mw.consolidateNow('developer');
   console.log(`  ✅ Session 1 complete: ${turn} turns\n`);
 
   // ============================================================
@@ -111,11 +111,11 @@ async function main() {
   console.log('═══ SESSION 2: Do you remember my life? ═══\n');
 
   const engine2 = await createMemoryEngine({ personality: 'celiums' });
-  const mw2 = new MemoryMiddleware(engine2, { defaultUserId: 'mario' });
+  const mw2 = new MemoryMiddleware(engine2, { defaultUserId: 'developer' });
 
   // Simulate persistence — load all memories into new engine
   for (const c of chat) {
-    await engine2.store([{ userId: 'mario', content: c.user }]);
+    await engine2.store([{ userId: 'developer', content: c.user }]);
   }
 
   const tests = [
@@ -140,8 +140,8 @@ async function main() {
     // Family
     { q: "What is my mother's name?", must: "carmen", cat: "family" },
     { q: "What are my brothers' names?", must: "eduardo", cat: "family" },
-    { q: "Where did I grow up?", must: "maracaibo", cat: "family" },
-    { q: "When did I leave Venezuela?", must: "2018", cat: "family" },
+    { q: "Where did I grow up?", must: "hometown", cat: "family" },
+    { q: "When did I move abroad?", must: "2020", cat: "family" },
     { q: "What game did my father teach me?", must: "chess", cat: "family" },
 
     // Personal facts
@@ -158,7 +158,7 @@ async function main() {
 
     // Location
     { q: "What neighborhood do I live in?", must: "poblado", cat: "location" },
-    { q: "What city is my favorite in Colombia?", must: "medellin", cat: "location" },
+    { q: "What city do I live in?", must: "the city", cat: "location" },
     { q: "Where do I want to travel next?", must: "japan", cat: "travel" },
   ];
 
@@ -167,7 +167,7 @@ async function main() {
   const failures: string[] = [];
 
   for (const t of tests) {
-    const result = await engine2.recall({ query: t.q, userId: 'mario', limit: 5 });
+    const result = await engine2.recall({ query: t.q, userId: 'developer', limit: 5 });
     const allContent = result.memories.map(m => m.memory.content.toLowerCase()).join(' ');
     const found = allContent.includes(t.must.toLowerCase());
 

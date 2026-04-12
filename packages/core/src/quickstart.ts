@@ -18,6 +18,23 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 
+// 2026-04-11: Knowledge engine integration — the super software.
+// We import the ModuleStore directly (skipping createEngine which requires
+// Qdrant for semantic search). Full-text search via tsvector and direct
+// metadata/content lookups go through the store. Semantic search will be
+// added later when a 1024d Qdrant collection or pgvector path is wired.
+import { ModuleStore } from '@celiums/core';
+
+// 2026-04-11: MCP envelope (JSON-RPC over HTTP) — the protocol Claude Code,
+// Cursor and friends speak. dispatchMcp filters tools by capability gating
+// (OpenCore always, Fleet/Atlas if their env keys are set).
+import { dispatchMcp, listAvailableTools } from './mcp/dispatcher.js';
+import type { McpToolContext } from './mcp/types.js';
+
+// First-run onboarding + i18n
+import { runInit, printConnectionInstructions } from './init.js';
+import { detectLocale, t, type SupportedLocale } from './locales/index.js';
+
 const PORT = parseInt(process.env.PORT ?? '3210', 10);
 const HOST = process.env.HOST ?? '0.0.0.0';
 
@@ -145,13 +162,102 @@ async function main() {
     ...(sqlitePath ? { sqlitePath } : {}),
   });
 
-  console.log('[celiums-memory] Engine initialized. Starting REST API...');
+  console.log('[celiums-memory] Memory engine initialized.');
+
+  // ─── Knowledge engine bootstrap ──────────────────────────
+  // Connects to the celiums DB (451K modules in `skills` + `skills_content`,
+  // exposed via the `modules` and `modules_content` views created 2026-04-11).
+  // Uses the @celiums/core ModuleStore directly. Skipping createEngine() so
+  // we don't require Qdrant initialisation tonight.
+  let moduleStore: ModuleStore | null = null;
+  const knowledgeUrl = process.env.KNOWLEDGE_DATABASE_URL;
+  if (knowledgeUrl) {
+    try {
+      moduleStore = new ModuleStore({ connectionUrl: knowledgeUrl });
+      const kHealth = await moduleStore.health();
+      if (kHealth.ok) {
+        console.log(`[celiums-memory] Knowledge engine wired: ${kHealth.moduleCount} modules ready.`);
+      } else {
+        console.warn('[celiums-memory] Knowledge DB health check failed; routes will return 503.');
+        moduleStore = null;
+      }
+    } catch (err: any) {
+      console.warn(`[celiums-memory] Knowledge engine init failed: ${err.message}`);
+      moduleStore = null;
+    }
+  } else {
+    console.log('[celiums-memory] KNOWLEDGE_DATABASE_URL not set — knowledge routes disabled.');
+  }
+
+  // ─── First-run: auto-hydrate modules + create user profile ──
+  // If the modules table is empty (or doesn't exist), load the 5,100
+  // starter modules from @celiums/modules-starter. If no user profile
+  // exists, run the onboarding flow (interactive or env-var driven).
+  const serverLocale: SupportedLocale = (process.env.CELIUMS_LANGUAGE as SupportedLocale) || detectLocale();
+
+  if (moduleStore) {
+    try {
+      const h = await moduleStore.health();
+      if (h.moduleCount === 0) {
+        console.log(t(serverLocale, 'hydrating', { count: '5,100' }));
+        try {
+          const { hydrate } = await import('@celiums/modules-starter');
+          const knowledgeUrl = process.env.KNOWLEDGE_DATABASE_URL;
+          if (knowledgeUrl) {
+            const { Pool } = await import('pg');
+            const kUrl = new URL(knowledgeUrl);
+            const kPool = new Pool({
+              host: kUrl.hostname,
+              port: parseInt(kUrl.port || '5432', 10),
+              database: kUrl.pathname.replace(/^\//, ''),
+              user: decodeURIComponent(kUrl.username),
+              password: decodeURIComponent(kUrl.password),
+            });
+            const result = await hydrate({ pg: kPool });
+            console.log(t(serverLocale, 'hydrateComplete', {
+              inserted: result.inserted, ms: result.totalMs,
+            }));
+            await kPool.end();
+          }
+        } catch (err: any) {
+          console.warn(`[celiums-memory] Auto-hydrate failed: ${err.message}`);
+          console.warn('[celiums-memory] Install @celiums/modules-starter for 5,100 free modules');
+        }
+      }
+    } catch { /* health check failed, skip hydrate */ }
+  }
+
+  // First-run user profile creation (env-var driven for Docker, interactive for CLI)
+  if (memoryPool) {
+    try {
+      const r = await memoryPool.query(
+        "SELECT COUNT(*) FROM user_profiles WHERE user_id != 'default'",
+      );
+      const hasUsers = parseInt(r.rows[0]?.count ?? '0', 10) > 0;
+      if (!hasUsers && process.env.CELIUMS_USER_NAME) {
+        // Auto-create from env vars (Docker/VPS mode)
+        const init = await runInit({ defaults: true });
+        await memoryPool.query(
+          `INSERT INTO user_profiles (user_id, timezone_iana, timezone_offset, peak_hour, communication_style)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (user_id) DO NOTHING`,
+          [init.name, init.timezoneIana, init.timezoneOffset, init.peakHour, init.locale],
+        );
+        console.log(`[celiums-memory] User profile auto-created: ${init.name}`);
+      }
+    } catch { /* user_profiles table might not exist yet in sqlite mode */ }
+  }
+
+  console.log('[celiums-memory] Starting REST API...');
 
   // ─── Multi-key auth bootstrap (only in triple-store mode) ─
   // The api_keys table lives in the same Postgres as memories. For
   // sqlite/in-memory modes we fall back to the single SINGLE_API_KEY.
   // We open our own dedicated Pool so we don't depend on the store's
   // internal layout (which is private).
+  // memoryPool is hoisted out of the if-block so the MCP dispatcher
+  // (added 2026-04-11) can also use it for context/snapshot tables.
+  let memoryPool: import('pg').Pool | null = null;
   if (databaseUrl && qdrantUrl) {
     try {
       const { Pool } = await import('pg');
@@ -164,6 +270,7 @@ async function main() {
         password: decodeURIComponent(url.password),
         ssl: url.searchParams.get('sslmode') === 'require' ? { rejectUnauthorized: false } : undefined,
       });
+      memoryPool = pg;
       if (pg) {
         keyManager = new ApiKeyManager(new PgApiKeyStore(pg));
         const bootstrap = await keyManager.bootstrapIfEmpty('admin');
@@ -325,16 +432,300 @@ async function main() {
 
       // Health
       if (req.method === 'GET' && url.pathname === '/health') {
+        const uid = url.searchParams.get('userId') ?? 'default';
         const h = await engine.health();
-        const limbic = await engine.getLimbicState('default');
-        const mod = await engine.getModulation('default');
+        const limbic = await engine.getLimbicState(uid);
+        const mod = await engine.getModulation(uid);
+        // Per-user circadian telemetry — null in in-memory mode
+        const circadian = await (engine as any).getCircadianTelemetry?.(uid) ?? null;
+        // Knowledge engine health (module count)
+        let knowledge: { ok: boolean; moduleCount: number; latencyMs: number } | null = null;
+        if (moduleStore) {
+          try { knowledge = await moduleStore.health(); }
+          catch { knowledge = { ok: false, moduleCount: 0, latencyMs: 0 }; }
+        }
         res.writeHead(200);
         res.end(JSON.stringify({
           status: 'alive',
           mode: modeShort,
+          userId: uid,
           limbicState: limbic,
           modulation: mod,
+          circadian,
           stores: h,
+          knowledge,
+        }, null, 2));
+        return;
+      }
+
+      // ──────────────────────────────────────────────────────
+      // Per-user circadian profile + telemetry (added 2026-04-11)
+      // ──────────────────────────────────────────────────────
+
+      // GET /circadian?userId=X — full per-user rhythm telemetry
+      if (req.method === 'GET' && url.pathname === '/circadian') {
+        const enforcedUserId = (req as any).__enforcedUserId;
+        const uid = enforcedUserId ?? url.searchParams.get('userId') ?? 'default';
+        const tel = await (engine as any).getCircadianTelemetry?.(uid);
+        if (!tel) {
+          res.writeHead(503);
+          res.end(JSON.stringify({
+            error: 'circadian_unavailable',
+            hint: 'Per-user circadian requires triple-store mode (PG + Qdrant + Valkey)',
+          }));
+          return;
+        }
+        res.writeHead(200);
+        res.end(JSON.stringify(tel, null, 2));
+        return;
+      }
+
+      // GET /profile?userId=X — full per-user profile (config + PAD + factors)
+      if (req.method === 'GET' && url.pathname === '/profile') {
+        const enforcedUserId = (req as any).__enforcedUserId;
+        const uid = enforcedUserId ?? url.searchParams.get('userId') ?? 'default';
+        const profile = await (engine as any).getUserCircadianProfile?.(uid);
+        if (!profile) {
+          res.writeHead(503);
+          res.end(JSON.stringify({
+            error: 'profile_unavailable',
+            hint: 'Per-user profiles require triple-store mode',
+          }));
+          return;
+        }
+        res.writeHead(200);
+        res.end(JSON.stringify(profile, null, 2));
+        return;
+      }
+
+      // PUT /profile — update circadian config (timezone, peakHour, etc.)
+      // Body: { userId?, timezoneIana?, timezoneOffset?, peakHour?, amplitude?,
+      //         baseArousal?, lethargyRate?, hemisphere?, seasonalAmplitude? }
+      if (req.method === 'PUT' && url.pathname === '/profile') {
+        const body = await readBody(req);
+        const enforcedUserId = (req as any).__enforcedUserId;
+        const uid = enforcedUserId ?? body.userId ?? 'default';
+        const patch: any = {};
+        const allowed = [
+          'timezoneIana', 'timezoneOffset', 'peakHour', 'amplitude',
+          'baseArousal', 'lethargyRate', 'hemisphere', 'seasonalAmplitude',
+        ];
+        for (const k of allowed) {
+          if (body[k] !== undefined) patch[k] = body[k];
+        }
+        // Sanity bounds
+        if (patch.timezoneOffset !== undefined &&
+            (patch.timezoneOffset < -14 || patch.timezoneOffset > 14)) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'timezoneOffset must be in [-14, 14]' }));
+          return;
+        }
+        if (patch.peakHour !== undefined &&
+            (patch.peakHour < 0 || patch.peakHour >= 24)) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'peakHour must be in [0, 24)' }));
+          return;
+        }
+        if (patch.amplitude !== undefined &&
+            (patch.amplitude < 0 || patch.amplitude > 1)) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'amplitude must be in [0, 1]' }));
+          return;
+        }
+        if (patch.hemisphere !== undefined &&
+            patch.hemisphere !== 1 && patch.hemisphere !== -1) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'hemisphere must be 1 (N) or -1 (S)' }));
+          return;
+        }
+        try {
+          const updated = await (engine as any).updateUserCircadianConfig?.(uid, patch);
+          if (!updated) {
+            res.writeHead(503);
+            res.end(JSON.stringify({
+              error: 'profile_unavailable',
+              hint: 'Per-user profiles require triple-store mode',
+            }));
+            return;
+          }
+          res.writeHead(200);
+          res.end(JSON.stringify({
+            updated: true,
+            userId: uid,
+            patch,
+            profile: updated,
+          }, null, 2));
+        } catch (err: any) {
+          res.writeHead(500);
+          res.end(JSON.stringify({ error: safeErrorMessage(err) }));
+        }
+        return;
+      }
+
+      // ──────────────────────────────────────────────────────
+      // KNOWLEDGE ENGINE ROUTES (added 2026-04-11)
+      // Reads the celiums.skills DB (451K modules) via @celiums/core ModuleStore
+      // ──────────────────────────────────────────────────────
+
+      // GET /v1/modules?q=... — full-text search
+      // GET /v1/modules?category=... — filter by category
+      // GET /v1/modules — index (popular categories + counts)
+      if (req.method === 'GET' && url.pathname === '/v1/modules') {
+        if (!moduleStore) {
+          res.writeHead(503);
+          res.end(JSON.stringify({ error: 'knowledge_unavailable', hint: 'KNOWLEDGE_DATABASE_URL not configured' }));
+          return;
+        }
+        const q = url.searchParams.get('q');
+        const category = url.searchParams.get('category');
+        const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '10', 10), 100);
+        try {
+          let results;
+          if (q) {
+            results = await moduleStore.searchFullText(q, limit);
+          } else if (category) {
+            results = await moduleStore.getByCategory(category, limit);
+          } else {
+            const idx = await moduleStore.getIndex();
+            res.writeHead(200);
+            res.end(JSON.stringify(idx, null, 2));
+            return;
+          }
+          res.writeHead(200);
+          res.end(JSON.stringify({ count: results.length, modules: results }, null, 2));
+        } catch (err: any) {
+          res.writeHead(500);
+          res.end(JSON.stringify({ error: safeErrorMessage(err) }));
+        }
+        return;
+      }
+
+      // GET /v1/modules/:name — full module (metadata + content)
+      if (req.method === 'GET' && url.pathname.startsWith('/v1/modules/')) {
+        if (!moduleStore) {
+          res.writeHead(503);
+          res.end(JSON.stringify({ error: 'knowledge_unavailable' }));
+          return;
+        }
+        const name = decodeURIComponent(url.pathname.slice('/v1/modules/'.length));
+        if (!name) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'module name required' }));
+          return;
+        }
+        try {
+          const fullParam = url.searchParams.get('full') !== 'false';
+          const mod = fullParam
+            ? await moduleStore.getModule(name)
+            : await moduleStore.getModuleMeta(name);
+          if (!mod) {
+            res.writeHead(404);
+            res.end(JSON.stringify({ error: 'module_not_found', name }));
+            return;
+          }
+          res.writeHead(200);
+          res.end(JSON.stringify(mod, null, 2));
+        } catch (err: any) {
+          res.writeHead(500);
+          res.end(JSON.stringify({ error: safeErrorMessage(err) }));
+        }
+        return;
+      }
+
+      // GET /v1/categories — index of categories with counts (delegates to getIndex)
+      if (req.method === 'GET' && url.pathname === '/v1/categories') {
+        if (!moduleStore) {
+          res.writeHead(503);
+          res.end(JSON.stringify({ error: 'knowledge_unavailable' }));
+          return;
+        }
+        try {
+          const idx = await moduleStore.getIndex();
+          res.writeHead(200);
+          res.end(JSON.stringify(idx, null, 2));
+        } catch (err: any) {
+          res.writeHead(500);
+          res.end(JSON.stringify({ error: safeErrorMessage(err) }));
+        }
+        return;
+      }
+
+      // POST /v1/modules/search — body: { query, limit?, byName? }
+      if (req.method === 'POST' && url.pathname === '/v1/modules/search') {
+        if (!moduleStore) {
+          res.writeHead(503);
+          res.end(JSON.stringify({ error: 'knowledge_unavailable' }));
+          return;
+        }
+        const body = await readBody(req);
+        const query = body.query;
+        if (!query || typeof query !== 'string') {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'query required' }));
+          return;
+        }
+        const limit = Math.min(body.limit ?? 10, 100);
+        try {
+          const results = body.byName
+            ? await moduleStore.searchByName(query, limit)
+            : await moduleStore.searchFullText(query, limit);
+          res.writeHead(200);
+          res.end(JSON.stringify({ count: results.length, modules: results }, null, 2));
+        } catch (err: any) {
+          res.writeHead(500);
+          res.end(JSON.stringify({ error: safeErrorMessage(err) }));
+        }
+        return;
+      }
+
+      // ──────────────────────────────────────────────────────
+      // MCP envelope (JSON-RPC over HTTP) — added 2026-04-11
+      // POST /mcp        → dispatchMcp()  (handles initialize, tools/list, tools/call)
+      // GET  /mcp/tools  → human-readable list of currently-available tools
+      // ──────────────────────────────────────────────────────
+
+      if (req.method === 'POST' && url.pathname === '/mcp') {
+        const body = await readBody(req);
+        const enforcedUserId = (req as any).__enforcedUserId;
+        const uid = enforcedUserId || body.params?.arguments?.userId || body.params?.userId || 'default';
+        const mcpCtx: McpToolContext = {
+          userId: uid,
+          capabilities: { opencore: true, fleet: false, atlas: false }, // dispatcher overrides this
+          moduleStore: moduleStore as unknown,
+          memoryEngine: engine as unknown,
+          pool: memoryPool as unknown,
+        };
+        try {
+          const response = await dispatchMcp(body, mcpCtx, process.env);
+          res.writeHead(200);
+          res.end(JSON.stringify(response));
+        } catch (err: any) {
+          res.writeHead(500);
+          res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            id: body?.id ?? null,
+            error: { code: -32603, message: err?.message ?? 'internal error' },
+          }));
+        }
+        return;
+      }
+
+      // GET /mcp/tools — human-readable, capability-aware tool list
+      if (req.method === 'GET' && url.pathname === '/mcp/tools') {
+        const tools = listAvailableTools(process.env);
+        res.writeHead(200);
+        res.end(JSON.stringify({
+          count: tools.length,
+          capabilities: {
+            opencore: true,
+            fleet: !!process.env.CELIUMS_FLEET_API_KEY,
+            atlas: !!process.env.CELIUMS_ATLAS_API_KEY,
+          },
+          tools: tools.map((t) => ({
+            name: t.definition.name,
+            group: t.group,
+            description: t.definition.description,
+          })),
         }, null, 2));
         return;
       }
@@ -421,7 +812,7 @@ async function main() {
       ]}));
     } catch (err: any) {
       res.writeHead(500);
-      res.end(JSON.stringify({ error: err.message }));
+      res.end(JSON.stringify({ error: safeErrorMessage(err) }));
     }
   });
 
@@ -449,9 +840,16 @@ async function main() {
     `);
   });
 
-  process.on('SIGINT', () => {
+  process.on('SIGINT', async () => {
     console.log('\n[celiums-memory] Shutting down...');
     server.close();
+    // FIX L2 2026-04-11: close module store pool + memory pool on shutdown
+    if (moduleStore) {
+      try { await moduleStore.close(); } catch { /* best-effort */ }
+    }
+    if (memoryPool) {
+      try { await memoryPool.end(); } catch { /* best-effort */ }
+    }
     process.exit(0);
   });
 }
@@ -475,13 +873,37 @@ function getEmotionLabel(state: LimbicState): string {
   return 'neutral';
 }
 
+const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB — prevents DoS via giant POST
+
 async function readBody(req: http.IncomingMessage): Promise<any> {
   const chunks: Buffer[] = [];
+  let total = 0;
   for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buf.length;
+    if (total > MAX_BODY_BYTES) {
+      const err: any = new Error('Request body too large (max 10 MB)');
+      err.statusCode = 413;
+      throw err;
+    }
+    chunks.push(buf);
   }
   const raw = Buffer.concat(chunks).toString('utf8');
   return raw ? JSON.parse(raw) : {};
+}
+
+/**
+ * Sanitize an error for external consumption. Logs the real error server-side,
+ * returns a safe generic message that doesn't leak internals.
+ */
+function safeErrorMessage(err: any): string {
+  // Log full error for debugging
+  console.error('[celiums-memory] Internal error:', err?.message ?? err);
+  // Return generic message — never expose PG connection strings, file paths, etc.
+  if (err?.statusCode === 413) return err.message; // size limit is safe to show
+  if (err?.code === -32602) return err.message;     // invalid params is safe
+  if (err?.code === -32001) return err.message;     // tool not found is safe
+  return 'Internal server error';
 }
 
 main().catch(err => {

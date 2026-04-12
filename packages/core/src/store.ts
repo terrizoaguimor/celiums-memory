@@ -92,7 +92,7 @@ const CREATE_TYPES_SQL = `
 `;
 
 // NOTE: All id columns are TEXT (not UUID) so the API can use opaque
-// string identifiers like "mario", "alice", "project-x" without needing
+// string identifiers like "alice", "bob", "project-x" without needing
 // UUID generation on the client side. The default still uses
 // gen_random_uuid()::TEXT for auto-generated IDs.
 const CREATE_USERS_SQL = `
@@ -108,6 +108,50 @@ const CREATE_USERS_SQL = `
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
   );
+`;
+
+// 2026-04-11: per-user circadian + persisted limbic state.
+// Each user gets their OWN biological clock — timezone, chronotype, factors,
+// PAD vector. The previous global single-LimbicEngine model meant the rhythm
+// was hardcoded to the server owner's timezone.
+const CREATE_USER_PROFILES_SQL = `
+  CREATE TABLE IF NOT EXISTS user_profiles (
+    user_id           TEXT PRIMARY KEY,
+    timezone_iana     TEXT          NOT NULL DEFAULT 'UTC',
+    timezone_offset   NUMERIC(5,2)  NOT NULL DEFAULT 0,
+    peak_hour         NUMERIC(4,2)  NOT NULL DEFAULT 11.0,
+    amplitude         NUMERIC(4,3)  NOT NULL DEFAULT 0.300,
+    base_arousal      NUMERIC(4,3)  NOT NULL DEFAULT 0.000,
+    lethargy_rate     NUMERIC(5,4)  NOT NULL DEFAULT 0.0500,
+    hemisphere        SMALLINT      NOT NULL DEFAULT 1,
+    seasonal_amp      NUMERIC(4,3)  NOT NULL DEFAULT 0.000,
+    pad_pleasure      NUMERIC(5,4)  NOT NULL DEFAULT 0.0000,
+    pad_arousal       NUMERIC(5,4)  NOT NULL DEFAULT 0.0000,
+    pad_dominance     NUMERIC(5,4)  NOT NULL DEFAULT 0.0000,
+    session_activity  NUMERIC(5,4)  NOT NULL DEFAULT 0.0000,
+    stress_level      NUMERIC(5,4)  NOT NULL DEFAULT 0.0000,
+    caffeine_level    NUMERIC(5,4)  NOT NULL DEFAULT 0.0000,
+    sleep_debt        NUMERIC(5,4)  NOT NULL DEFAULT 0.0000,
+    cognitive_load    NUMERIC(5,4)  NOT NULL DEFAULT 0.0000,
+    emotional_acc     NUMERIC(5,4)  NOT NULL DEFAULT 0.0000,
+    exercise_level    NUMERIC(5,4)  NOT NULL DEFAULT 0.0000,
+    motivation_trend  NUMERIC(5,4)  NOT NULL DEFAULT 0.5000,
+    last_interaction  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    interaction_count BIGINT        NOT NULL DEFAULT 0,
+    communication_style TEXT        NOT NULL DEFAULT 'neutral',
+    preferences         JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    known_patterns      TEXT[]      NOT NULL DEFAULT ARRAY[]::TEXT[],
+    created_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_user_profiles_updated  ON user_profiles(updated_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_user_profiles_last_int ON user_profiles(last_interaction DESC);
+
+  -- Seed the anonymous default user
+  INSERT INTO user_profiles (user_id, timezone_iana, timezone_offset, peak_hour)
+  VALUES ('default', 'UTC', 0, 11)
+  ON CONFLICT (user_id) DO NOTHING;
 `;
 
 const CREATE_PROJECTS_SQL = `
@@ -286,6 +330,7 @@ export class MemoryStore {
       await client.query(CREATE_EXTENSIONS_SQL);
       await client.query(CREATE_TYPES_SQL);
       await client.query(CREATE_USERS_SQL);
+      await client.query(CREATE_USER_PROFILES_SQL);
       await client.query(CREATE_PROJECTS_SQL);
       await client.query(CREATE_SESSIONS_SQL);
       await client.query(CREATE_MEMORIES_SQL);
@@ -1212,6 +1257,231 @@ export class MemoryStore {
       pipeline.del(`${this.valkeyPrefix}${u.id}`);
     }
     await pipeline.exec();
+  }
+
+  // ============================================================
+  // Per-user circadian profile (user_profiles table) — added 2026-04-11
+  // ============================================================
+
+  /**
+   * Load a user's circadian profile + persisted PAD/factors.
+   * Returns null if the user has no row yet.
+   */
+  async loadCircadianProfile(userId: string): Promise<{
+    userId: string;
+    circadian: {
+      timezoneIana: string;
+      timezoneOffset: number;
+      peakHour: number;
+      amplitude: number;
+      baseArousal: number;
+      lethargyRate: number;
+      hemisphere: 1 | -1;
+      seasonalAmplitude: number;
+    };
+    pad: { pleasure: number; arousal: number; dominance: number };
+    factors: {
+      sessionActivity: number;
+      stressLevel: number;
+      caffeineLevel: number;
+      sleepDebt: number;
+      cognitiveLoad: number;
+      emotionalAccumulator: number;
+      exerciseLevel: number;
+      motivationTrend: number;
+    };
+    lastInteraction: Date;
+    interactionCount: number;
+    communicationStyle: string;
+    preferences: Record<string, any>;
+    knownPatterns: string[];
+    createdAt: Date;
+    updatedAt: Date;
+  } | null> {
+    const r = await this.pg.query(
+      'SELECT * FROM user_profiles WHERE user_id = $1',
+      [userId],
+    );
+    if (r.rows.length === 0) return null;
+    const row = r.rows[0];
+    return {
+      userId: row.user_id,
+      circadian: {
+        timezoneIana: row.timezone_iana,
+        timezoneOffset: Number(row.timezone_offset),
+        peakHour: Number(row.peak_hour),
+        amplitude: Number(row.amplitude),
+        baseArousal: Number(row.base_arousal),
+        lethargyRate: Number(row.lethargy_rate),
+        hemisphere: (Number(row.hemisphere) === -1 ? -1 : 1),
+        seasonalAmplitude: Number(row.seasonal_amp),
+      },
+      pad: {
+        pleasure: Number(row.pad_pleasure),
+        arousal: Number(row.pad_arousal),
+        dominance: Number(row.pad_dominance),
+      },
+      factors: {
+        sessionActivity: Number(row.session_activity),
+        stressLevel: Number(row.stress_level),
+        caffeineLevel: Number(row.caffeine_level),
+        sleepDebt: Number(row.sleep_debt),
+        cognitiveLoad: Number(row.cognitive_load),
+        emotionalAccumulator: Number(row.emotional_acc),
+        exerciseLevel: Number(row.exercise_level),
+        motivationTrend: Number(row.motivation_trend),
+      },
+      lastInteraction: new Date(row.last_interaction),
+      interactionCount: Number(row.interaction_count),
+      communicationStyle: row.communication_style,
+      preferences: row.preferences ?? {},
+      knownPatterns: row.known_patterns ?? [],
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at),
+    };
+  }
+
+  /**
+   * Get-or-create. If the profile doesn't exist, insert with sane defaults
+   * (UTC timezone, peakHour 11) and return it.
+   */
+  async ensureCircadianProfile(userId: string) {
+    const existing = await this.loadCircadianProfile(userId);
+    if (existing) return existing;
+    await this.pg.query(
+      `INSERT INTO user_profiles (user_id) VALUES ($1)
+       ON CONFLICT (user_id) DO NOTHING`,
+      [userId],
+    );
+    const created = await this.loadCircadianProfile(userId);
+    if (!created) {
+      throw new Error(`Failed to create user_profile for ${userId}`);
+    }
+    return created;
+  }
+
+  /**
+   * Update circadian config (timezone, peakHour, amplitude, etc.).
+   * Only the fields present in `patch` are touched. Returns the updated row.
+   */
+  async updateCircadianConfig(
+    userId: string,
+    patch: Partial<{
+      timezoneIana: string;
+      timezoneOffset: number;
+      peakHour: number;
+      amplitude: number;
+      baseArousal: number;
+      lethargyRate: number;
+      hemisphere: 1 | -1;
+      seasonalAmplitude: number;
+    }>,
+  ) {
+    // Make sure the row exists first
+    await this.ensureCircadianProfile(userId);
+
+    const sets: string[] = [];
+    const vals: any[] = [userId];
+    let i = 2;
+    const map: Record<string, string> = {
+      timezoneIana: 'timezone_iana',
+      timezoneOffset: 'timezone_offset',
+      peakHour: 'peak_hour',
+      amplitude: 'amplitude',
+      baseArousal: 'base_arousal',
+      lethargyRate: 'lethargy_rate',
+      hemisphere: 'hemisphere',
+      seasonalAmplitude: 'seasonal_amp',
+    };
+    for (const [k, col] of Object.entries(map)) {
+      if ((patch as any)[k] !== undefined) {
+        sets.push(`${col} = $${i++}`);
+        vals.push((patch as any)[k]);
+      }
+    }
+    if (sets.length === 0) {
+      return this.loadCircadianProfile(userId);
+    }
+    await this.pg.query(
+      `UPDATE user_profiles SET ${sets.join(', ')} WHERE user_id = $1`,
+      vals,
+    );
+    return this.loadCircadianProfile(userId);
+  }
+
+  /**
+   * Persist a user's PAD vector after the limbic engine processes an event.
+   * Also bumps last_interaction and interaction_count.
+   */
+  async persistUserPad(
+    userId: string,
+    pad: { pleasure: number; arousal: number; dominance: number },
+  ): Promise<void> {
+    await this.pg.query(
+      `UPDATE user_profiles
+         SET pad_pleasure = $2,
+             pad_arousal = $3,
+             pad_dominance = $4,
+             last_interaction = NOW(),
+             interaction_count = interaction_count + 1
+       WHERE user_id = $1`,
+      [userId, pad.pleasure, pad.arousal, pad.dominance],
+    );
+  }
+
+  /**
+   * Persist updated factor accumulators (caffeine, stress, etc.).
+   */
+  async persistUserFactors(
+    userId: string,
+    factors: {
+      sessionActivity: number;
+      stressLevel: number;
+      caffeineLevel: number;
+      sleepDebt: number;
+      cognitiveLoad: number;
+      emotionalAccumulator: number;
+      exerciseLevel: number;
+      motivationTrend: number;
+    },
+  ): Promise<void> {
+    await this.pg.query(
+      `UPDATE user_profiles
+         SET session_activity = $2,
+             stress_level = $3,
+             caffeine_level = $4,
+             sleep_debt = $5,
+             cognitive_load = $6,
+             emotional_acc = $7,
+             exercise_level = $8,
+             motivation_trend = $9
+       WHERE user_id = $1`,
+      [
+        userId,
+        factors.sessionActivity,
+        factors.stressLevel,
+        factors.caffeineLevel,
+        factors.sleepDebt,
+        factors.cognitiveLoad,
+        factors.emotionalAccumulator,
+        factors.exerciseLevel,
+        factors.motivationTrend,
+      ],
+    );
+  }
+
+  /**
+   * Lightweight last_interaction bump (no PAD change). Used by /recall when
+   * we want to count the user as active without altering emotional state.
+   */
+  async touchUserInteraction(userId: string): Promise<void> {
+    await this.pg.query(
+      `UPDATE user_profiles
+         SET last_interaction = NOW(),
+             interaction_count = interaction_count + 1
+       WHERE user_id = $1`,
+      [userId],
+    );
   }
 
   // ----------------------------------------------------------

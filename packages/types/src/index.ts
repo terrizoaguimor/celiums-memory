@@ -108,7 +108,7 @@ export interface MemoryRecord {
 }
 
 export interface Entity {
-  name: string;                        // "Mario", "Celiums", "TypeScript"
+  name: string;                        // "Alice", "Celiums", "TypeScript"
   type: EntityType;                    // person, project, technology, concept
   salience: number;                    // 0-1, how central to the memory
 }
@@ -444,15 +444,127 @@ export interface SurfacedMemory {
   surfacedAt: Date;
 }
 
+/**
+ * Per-user circadian factor accumulators. These represent transient state that
+ * decays/builds over time and modulates arousal alongside the rhythm itself.
+ *
+ * Each value is in roughly [0, 1] except motivationTrend which centers on 0.5.
+ */
+export interface CircadianFactors {
+  sessionActivity: number;
+  stressLevel: number;
+  caffeineLevel: number;
+  sleepDebt: number;
+  cognitiveLoad: number;
+  emotionalAccumulator: number;
+  exerciseLevel: number;
+  motivationTrend: number;
+}
+
+/**
+ * Per-user circadian/chronotype configuration. Each user has their own
+ * timezone, peak hour, and amplitude. Defaults to UTC + morning peak.
+ */
+export interface UserCircadianConfig {
+  /** IANA timezone, e.g. 'America/New_York'. Display only. */
+  timezoneIana: string;
+  /** Hours from UTC, signed. Used by the math (e.g. -5 for COT). */
+  timezoneOffset: number;
+  /** Hour of arousal peak (0-23.99). 9=lark, 11=morning peak, 14=owl. */
+  peakHour: number;
+  /** Rhythm amplitude (0..1). 0.30 = ±30% swing. */
+  amplitude: number;
+  /** Baseline arousal independent of rhythm (-1..1). */
+  baseArousal: number;
+  /** Inactivity decay rate (per hour). */
+  lethargyRate: number;
+  /** 1 = northern hemisphere, -1 = southern (for seasonal effects). */
+  hemisphere: 1 | -1;
+  /** Seasonal amplitude (0 = off, 0.1 = mild). */
+  seasonalAmplitude: number;
+}
+
+/**
+ * UserProfile — single source of truth for everything per-user that the
+ * cognitive engine cares about. Persisted in the user_profiles table.
+ *
+ * Backwards-compatible additive extension of the original UserProfile.
+ */
 export interface UserProfile {
   userId: string;
-  timezone: string;                    // CRITICAL for sleep scheduling
+
+  // ----- Original fields (kept for backward compatibility) -----
+  timezone: string;                    // CRITICAL for sleep scheduling (mirrors timezoneIana)
   communicationStyle: string;
   preferences: Record<string, string>;
   knownPatterns: string[];             // "gets frustrated when...", "prefers..."
   /** Personalized homeostatic baseline — unique to each user */
   homeostaticBaseline: PADVector;
   lastActiveAt: Date;
+
+  // ----- NEW: per-user circadian config -----
+  circadian: UserCircadianConfig;
+
+  // ----- NEW: per-user persisted limbic state -----
+  pad: PADVector;
+
+  // ----- NEW: per-user circadian factor accumulators -----
+  factors: CircadianFactors;
+
+  // ----- NEW: activity tracking -----
+  lastInteraction: Date;
+  interactionCount: number;
+
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * CircadianTelemetry — full snapshot of the rhythm state for a given user
+ * at a given moment. Returned by GET /circadian and /health.
+ *
+ * Pure read-only — no side effects when generating this.
+ */
+export interface CircadianTelemetry {
+  userId: string;
+  timestamp: string;                   // ISO
+
+  // Inputs
+  utcHour: number;                     // 0..23.99 (current UTC hour, fractional)
+  localHour: number;                   // user's local hour after applying tz offset
+  timezoneOffset: number;
+  timezoneIana: string;
+  peakHour: number;
+  amplitude: number;
+  baseArousal: number;
+  lethargyRate: number;
+
+  // Computed components
+  rhythmComponent: number;             // cos((h-φ)·2π/24), -1..1
+  lethargyFactor: number;              // exp(-λ · inactiveHours), 0..1
+  inactiveHours: number;
+  circadianContribution: number;       // amplitude · rhythm · lethargy
+
+  // Factor breakdown (which factor added/subtracted what to arousal)
+  factors: CircadianFactors;
+  factorContributions: {
+    sessionActivity: number;
+    stress: number;
+    caffeine: number;
+    sleepDebt: number;
+    cognitiveLoad: number;
+    emotional: number;
+    exercise: number;
+    motivation: number;
+  };
+
+  // Final assembled arousal value before pfc.regulate
+  arousalRaw: number;
+  arousalAfterRegulation: number;
+
+  // Semantic label for current phase
+  timeOfDay: 'deep-night' | 'morning-rise' | 'morning-peak' | 'afternoon-peak'
+           | 'afternoon-decline' | 'evening-wind-down' | 'night-rest';
 }
 
 export interface ProjectContext {
@@ -513,6 +625,25 @@ export interface MemoryEngine {
   getLimbicState(userId: string): Promise<LimbicState>;
   /** Get LLM modulation parameters based on current emotional state */
   getModulation(userId: string): Promise<LLMModulation>;
+  /**
+   * Get full per-user circadian telemetry (rhythm, factors, contributions).
+   * Returns null in in-memory mode where per-user profiles are unavailable.
+   * Added 2026-04-11.
+   */
+  getCircadianTelemetry?(userId: string): Promise<CircadianTelemetry | null>;
+  /**
+   * Get the full per-user circadian profile (config + PAD + factors).
+   * Added 2026-04-11.
+   */
+  getUserCircadianProfile?(userId: string): Promise<UserProfile | null>;
+  /**
+   * Update a user's circadian config (timezone, peakHour, amplitude, etc.).
+   * Throws in in-memory mode. Added 2026-04-11.
+   */
+  updateUserCircadianConfig?(
+    userId: string,
+    patch: Partial<UserCircadianConfig>,
+  ): Promise<UserProfile | null>;
   /** Health check across all stores */
   health(): Promise<HealthStatus>;
 }

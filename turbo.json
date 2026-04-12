@@ -83,7 +83,6 @@
     "POSTGRES_URL",
     "QDRANT_URL",
     "VALKEY_URL",
-    "OPENAI_API_KEY",
     "EMBEDDINGS_PROVIDER"
   ]
 }

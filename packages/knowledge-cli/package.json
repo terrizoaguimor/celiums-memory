@@ -1,0 +1,33 @@
+{
+  "name": "@celiums/cli",
+  "version": "0.1.1",
+  "description": "Command-line interface for the Celiums Knowledge Engine",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "celiums": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@celiums/core": "^0.1.0",
+    "@celiums/types": "^0.1.0",
+    "@celiums/adapter-mcp": "^0.1.0",
+    "@celiums/adapter-rest": "^0.1.0",
+    "@celiums/adapter-openai": "^0.1.0",
+    "@celiums/adapter-a2a": "^0.1.0",
+    "@celiums/modules-starter": "^0.1.0",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0"
+  }
+}

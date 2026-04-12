@@ -30,7 +30,7 @@ async function main() {
 
   const engine1 = await createMemoryEngine({ personality: 'celiums' });
   const mw1 = new MemoryMiddleware(engine1, {
-    defaultUserId: 'mario',
+    defaultUserId: 'developer',
     autoStoreUserMessages: true,
     autoStoreAIResponses: true,
   });
@@ -41,7 +41,7 @@ async function main() {
   const conversations = [
     // === Personal preferences ===
     { user: "I prefer dark mode in all my apps, light mode hurts my eyes", ai: "Got it, dark mode everywhere." },
-    { user: "My timezone is America/Bogota, GMT-5", ai: "Noted, Colombia timezone." },
+    { user: "My timezone is America/New_York, GMT-5", ai: "Noted, Eastern timezone." },
     { user: "I speak Spanish natively but write code in English", ai: "Bilingual workflow, understood." },
     { user: "I have ADHD, so I need clear context anchors to stay focused", ai: "I'll always provide context anchors." },
     { user: "Coffee is my fuel, I drink about 6 cups a day", ai: "Noted, heavy coffee drinker." },
@@ -61,7 +61,7 @@ async function main() {
     { user: "Memory tiers are hot warm cold archive, like S3 storage classes", ai: "4-tier memory lifecycle." },
 
     // === Business context ===
-    { user: "The company is Celiums Solutions LLC, based in Medellin Colombia", ai: "Celiums Solutions LLC, Medellín." },
+    { user: "The company is Celiums Solutions LLC, based in the US", ai: "Celiums Solutions LLC, US." },
     { user: "The infrastructure budget is maximum 500 dollars per month", ai: "$500/mo infrastructure cap." },
     { user: "We have zero employees, everything is run by AI agents", ai: "Zero employees, 100% AI-operated." },
     { user: "The product is open source under Apache 2.0 license", ai: "Apache 2.0 open source." },
@@ -84,8 +84,8 @@ async function main() {
 
   let turnCount = 0;
   for (const turn of conversations) {
-    const ctx = await mw1.beforeLLM(turn.user, 'mario');
-    await mw1.afterLLM(turn.ai, 'mario');
+    const ctx = await mw1.beforeLLM(turn.user, 'developer');
+    await mw1.afterLLM(turn.ai, 'developer');
     turnCount++;
     if (turnCount % 10 === 0) {
       console.log(`  [${turnCount}/${conversations.length}] turns stored... (recalled: ${ctx.memoriesRecalled})`);
@@ -93,11 +93,11 @@ async function main() {
   }
 
   // Consolidate session 1
-  await mw1.consolidateNow('mario');
+  await mw1.consolidateNow('developer');
   console.log(`\n  ✅ Session 1 complete: ${turnCount} turns stored and consolidated`);
 
   // Get final emotional state from session 1
-  const session1State = await engine1.getLimbicState('mario');
+  const session1State = await engine1.getLimbicState('developer');
   console.log(`  Emotional state at end: P=${session1State.pleasure.toFixed(3)} A=${session1State.arousal.toFixed(3)} D=${session1State.dominance.toFixed(3)}`);
 
   // ============================================================
@@ -117,7 +117,7 @@ async function main() {
 
   const engine2 = await createMemoryEngine({ personality: 'celiums' });
   const mw2 = new MemoryMiddleware(engine2, {
-    defaultUserId: 'mario',
+    defaultUserId: 'developer',
     autoStoreUserMessages: true,
     autoStoreAIResponses: false, // Don't pollute with test responses
   });
@@ -127,7 +127,7 @@ async function main() {
   // (This simulates what PG would have persisted)
   for (const turn of conversations) {
     await engine2.store([{
-      userId: 'mario',
+      userId: 'developer',
       content: turn.user,
     }]);
   }
@@ -164,10 +164,10 @@ async function main() {
   const failedTests: string[] = [];
 
   for (const test of recallTests) {
-    const ctx = await mw2.beforeLLM(test.query, 'mario');
+    const ctx = await mw2.beforeLLM(test.query, 'developer');
     const result = await engine2.recall({
       query: test.query,
-      userId: 'mario',
+      userId: 'developer',
       limit: 5,
     });
 
@@ -199,9 +199,9 @@ async function main() {
   console.log('\n═══ EMOTIONAL CONTINUITY TEST ═══\n');
 
   // Ask something emotional to see if the new session reacts
-  await mw2.beforeLLM('I feel stressed about the launch', 'mario');
-  const stressState = await engine2.getLimbicState('mario');
-  const stressMod = await engine2.getModulation('mario');
+  await mw2.beforeLLM('I feel stressed about the launch', 'developer');
+  const stressState = await engine2.getLimbicState('developer');
+  const stressMod = await engine2.getModulation('developer');
 
   console.log(`  After stress input:`);
   console.log(`    Pleasure:  ${stressState.pleasure.toFixed(3)} (should be < 0.15)`);
@@ -210,8 +210,8 @@ async function main() {
   console.log(`    LLM temp:  ${stressMod.temperature}`);
   console.log(`    Branch:    ${stressMod.activeBranch}`);
 
-  await mw2.beforeLLM('Actually you know what, everything is going great, Grok approved us!', 'mario');
-  const happyState = await engine2.getLimbicState('mario');
+  await mw2.beforeLLM('Actually you know what, everything is going great, Grok approved us!', 'developer');
+  const happyState = await engine2.getLimbicState('developer');
 
   console.log(`\n  After positive input:`);
   console.log(`    Pleasure:  ${happyState.pleasure.toFixed(3)} (should be > stress pleasure)`);
@@ -244,7 +244,7 @@ async function main() {
     console.log('\n⚠️  Some recalls failed. Review the results above.\n');
   }
 
-  await mw2.shutdown('mario');
+  await mw2.shutdown('developer');
 }
 
 main().catch(err => { console.error('FATAL:', err); process.exit(1); });

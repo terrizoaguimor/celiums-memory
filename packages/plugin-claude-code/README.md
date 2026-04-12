@@ -103,7 +103,7 @@ Environment variables (read at install time and by the MCP bridge):
 To change after install, re-run with new env vars:
 
 ```bash
-CELIUMS_MEMORY_USER_ID=mario npx @celiums/memory-claude-code install
+CELIUMS_MEMORY_USER_ID=developer npx @celiums/memory-claude-code install
 ```
 
 ---

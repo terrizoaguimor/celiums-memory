@@ -82,7 +82,7 @@ export const PERSONALITY_PRESETS: Record<string, PersonalityTraits> = {
     agreeableness: 0.7,
     neuroticism: 0.9,
   },
-  /** Mario's AI — enthusiastic, technical, direct */
+  /** Celiums default — enthusiastic, technical, direct */
   celiums: {
     openness: 0.7,
     conscientiousness: 0.8,

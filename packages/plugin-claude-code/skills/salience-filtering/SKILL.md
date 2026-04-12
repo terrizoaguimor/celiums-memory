@@ -25,7 +25,7 @@ If no — do not encode.
 |---|---|
 | **Decision** | "Using Qdrant over Pinecone because..." |
 | **Preference** | "User prefers concise answers, no preamble" |
-| **Identity** | "User is Mario, founder of Celiums, from Medellín" |
+| **Identity** | "User is the developer working on a TypeScript project" |
 | **Constraint** | "Cannot use AWS — decided to kill EC2 last month" |
 | **Pain point** | "Deploy failed 3 times because of env var mismatch" |
 | **Novel knowledge** | "The H200 has 141GB VRAM, not 80GB" |

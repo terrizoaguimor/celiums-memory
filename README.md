@@ -1,497 +1,382 @@
-# celiums-memory
+<div align="center">
 
-**Memory that remembers how it felt.**
+<br />
 
-Persistent memory for AI agents. Stores content + the emotional context around it. Recalls based on semantic match AND emotional resonance. Survives context death.
+# Celiums
 
-[![License](https://img.shields.io/github/license/terrizoaguimor/celiums-memory?color=green)](https://github.com/terrizoaguimor/celiums-memory/blob/main/LICENSE)
-[![npm version](https://img.shields.io/npm/v/@celiums/memory?color=green)](https://www.npmjs.com/package/@celiums/memory)
-[![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![GitHub Stars](https://img.shields.io/github/stars/terrizoaguimor/celiums-memory?style=social)](https://github.com/terrizoaguimor/celiums-memory)
+### Your AI doesn't know what it doesn't know. And it forgets everything.
 
-## 🚀 Deploy in 3 minutes on any VPS
+**The open-source engine that gives AI persistent memory and instant access to 5,100+ expert knowledge modules — with a biological clock that adapts to each user.**
 
-Full triple-store production stack from a fresh Ubuntu/Debian server:
+[Quick Start](#-quick-start) · [6 Tools](#-the-6-tools) · [How to Use](#-how-to-use-it) · [Architecture](#-architecture) · [Deploy](#-deploy-modes) · [Docs](https://celiums.ai/docs)
+
+[![npm version](https://img.shields.io/npm/v/@celiums/memory?style=flat-square&color=22c55e)](https://www.npmjs.com/package/@celiums/memory)
+[![Downloads](https://img.shields.io/npm/dw/@celiums/memory?style=flat-square&color=22c55e)](https://www.npmjs.com/package/@celiums/memory)
+[![License](https://img.shields.io/github/license/terrizoaguimor/celiums-memory?style=flat-square)](LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![GitHub Stars](https://img.shields.io/github/stars/terrizoaguimor/celiums-memory?style=flat-square)](https://github.com/terrizoaguimor/celiums-memory)
+
+<br />
+
+</div>
+
+---
+
+## The Problem
+
+Every time your AI assistant starts a new session, it starts from zero. It doesn't remember your preferences, your project decisions, your debugging history, or what you were working on yesterday. It hallucinates because it has no specialized knowledge — just general training data frozen at a cutoff date.
+
+**You spend more time re-explaining context than getting work done.**
+
+## The Solution
+
+Celiums combines two engines into one:
+
+| Engine | What it does | How |
+|---|---|---|
+| **Memory** | Remembers everything — with emotion | PAD vectors, dopamine, circadian rhythm, 15 cognitive modules |
+| **Knowledge** | Knows what experts know | 5,100 curated technical modules, full-text search, 18 categories |
+
+Both engines expose **6 MCP tools** that any AI IDE can call autonomously. Install once, your AI has persistent memory AND expert knowledge forever.
+
+---
+
+## Quick Start
+
+### Option 1: npm (local, 60 seconds)
 
 ```bash
-# 1. Install Docker (skip if already installed)
-curl -fsSL https://get.docker.com | sh
+npm install -g @celiums/cli
+celiums init
+```
 
-# 2. Clone and run
+That's it. `celiums init`:
+- Asks your name, timezone, and if you're a morning or night person
+- Loads 5,100 expert knowledge modules
+- Auto-configures Claude Code, Cursor, and VS Code
+- Creates your personal cognitive profile (circadian rhythm adapts to YOU)
+
+### Option 2: Docker (VPS, 3 minutes)
+
+```bash
 git clone https://github.com/terrizoaguimor/celiums-memory.git
 cd celiums-memory
+cp .env.example .env   # edit passwords
 docker compose up -d
 ```
 
-You get:
-- celiums-memory API on port 3210
-- PostgreSQL 17 + pgvector (long-term memory)
-- Qdrant vector store (semantic search)
-- Valkey/Redis (working memory + distributed mutex)
-- Schema migration runs automatically on first boot
+You get: Celiums API + PostgreSQL + Qdrant + Valkey, all running on your VPS.
+
+### Option 3: DigitalOcean 1-Click (coming soon)
+
+One button. Deploys everything on your own DO droplet.
+
+---
+
+## The 6 Tools
+
+When connected via MCP, your AI can call these autonomously:
+
+### Knowledge tools (search 5,100 expert modules)
+
+| Tool | What it does | Example |
+|---|---|---|
+| `forage` | Search for expert knowledge | *"find modules about Kubernetes security"* |
+| `absorb` | Load a specific module | *"load the react-server-components module"* |
+| `sense` | Get recommendations for a goal | *"what should I use for building a REST API?"* |
+| `map_network` | Browse all categories | *"show me what knowledge areas are covered"* |
+
+### Memory tools (persistent emotional memory)
+
+| Tool | What it does | Example |
+|---|---|---|
+| `remember` | Store something in memory | *"remember that we chose Hono over Express"* |
+| `recall` | Retrieve by semantic relevance | *"what framework decisions did we make?"* |
+
+**What happens behind `remember`** (the user sees nothing, it just works):
+
+```
+User: "remember that we chose Hono over Express for the API"
+                    |
+          PAD Emotional Vector (pleasure: 0.4, arousal: 0.3, dominance: 0.5)
+                    |
+          Theory of Mind (empathy matrix transforms user emotion)
+                    |
+          Dopamine / Habituation (novelty detection, reward modulation)
+                    |
+          Per-User Circadian (your timezone, your peak hour, your rhythm)
+                    |
+          PFC Regulation (clamp safe bounds, suppress extremes)
+                    |
+          Triple-Store Persist (PostgreSQL + Qdrant + Valkey)
+                    |
+          "Remembered (importance: 0.72)"
+```
+
+15 cognitive systems fire on a single `remember` call. The user just types one sentence.
+
+---
+
+## How to Use It
+
+### Connect to your IDE
+
+After `celiums init`, it's auto-wired. Or manually:
+
+**Claude Code:**
+```bash
+claude mcp add celiums -- celiums start --mcp
+```
+
+**Cursor** — add to `~/.cursor/mcp.json`:
+```json
+{
+  "mcpServers": {
+    "celiums": { "command": "celiums", "args": ["start", "--mcp"] }
+  }
+}
+```
+
+**VS Code** — add to settings.json:
+```json
+{
+  "mcp.servers": {
+    "celiums": { "type": "stdio", "command": "celiums", "args": ["start", "--mcp"] }
+  }
+}
+```
+
+### Use the tools in conversation
+
+Once connected, your AI uses the tools automatically. Just talk normally:
+
+```
+You: "Find me best practices for PostgreSQL optimization"
+AI:  -> calls forage(query="PostgreSQL optimization")
+     -> finds postgresql-best-practices-v2 (eval: 4.0)
+     -> presents the expert module content
+
+You: "Remember that we decided to use JSONB for metadata columns"
+AI:  -> calls remember(content="decided to use JSONB for metadata columns")
+     -> stored with importance 0.68, mood: focused
+
+You: "What database decisions have we made?"
+AI:  -> calls recall(query="database decisions")
+     -> finds: "decided to use JSONB for metadata" (score: 0.89)
+     -> presents with emotional context
+```
+
+### REST API
+
+If running as a server (Docker/VPS), the full API is available:
 
 ```bash
-# Health check (always public)
-curl http://localhost:3210/health
+# Search modules
+curl http://localhost:3210/v1/modules?q=react+hooks
 
-# Store + recall require Bearer auth on public deployments.
-# Get the API key from the startup logs (look for "API Key: cmk_...")
-# or set CELIUMS_API_KEY in your .env file before docker compose up.
-API_KEY="cmk_..."
+# Get a specific module
+curl http://localhost:3210/v1/modules/typescript-mastery
 
+# Browse categories
+curl http://localhost:3210/v1/categories
+
+# Store a memory
 curl -X POST http://localhost:3210/store \
-  -H "Authorization: Bearer $API_KEY" \
-  -H 'Content-Type: application/json' \
-  -d '{"content":"AI agents need memory that survives restarts","userId":"alice"}'
+  -H "Content-Type: application/json" \
+  -d '{"content": "The API uses Hono framework", "userId": "dev1"}'
+
+# Recall memories
+curl -X POST http://localhost:3210/recall \
+  -H "Content-Type: application/json" \
+  -d '{"query": "what framework", "userId": "dev1"}'
+
+# Check your circadian rhythm
+curl http://localhost:3210/circadian?userId=dev1
+
+# Update your timezone
+curl -X PUT http://localhost:3210/profile \
+  -H "Content-Type: application/json" \
+  -d '{"userId": "dev1", "timezoneIana": "Asia/Tokyo", "timezoneOffset": 9}'
+
+# MCP protocol (for AI clients)
+curl -X POST http://localhost:3210/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+
+# Health check
+curl http://localhost:3210/health
 ```
 
-### 🔒 Authentication
+### Configuration
 
-The server requires a Bearer token for all endpoints except `/health`.
-
-**Single-key mode** (sqlite, in-memory, or quick start):
-- First boot auto-generates a key in `~/.celiums/api-key` (mode 0600) and prints it in the startup logs.
-- Or set `CELIUMS_API_KEY=cmk_...` in `.env` before starting.
-
-**Multi-key mode** (triple-store / company deployment):
-- Activates automatically when running with PostgreSQL.
-- First boot creates an `api_keys` table and a master `cmk_admin_...` key — printed ONCE in the startup logs.
-- The master key is used to mint per-developer keys via `POST /admin/keys`.
-- Each non-admin key is **scoped to a `userId`**: alice can never read bob's memories even if she crafts the request.
-- All endpoints support both modes; the server tries multi-key first, then falls back to the single key.
-
-**Localhost:** loopback connections (127.0.0.1/::1) bypass auth ONLY when there is no proxy header (`X-Forwarded-For`, `CF-Connecting-IP`, etc). Behind Cloudflare Tunnel, nginx, or any reverse proxy the bypass is automatically disabled — your public domain always requires a real key.
-
-#### Multi-key admin endpoints
+All settings via environment variables:
 
 ```bash
-# Create a developer key (use the master key for Authorization)
-curl -X POST https://your-deploy.example.com/admin/keys \
-  -H "Authorization: Bearer cmk_admin_xxx" \
-  -H 'Content-Type: application/json' \
-  -d '{"scope":"user","userId":"alice","label":"alice@acme.com"}'
-# Response includes "apiKey": "cmk_user_..." — show it to alice ONCE.
+# Core
+DATABASE_URL=postgresql://user:pass@localhost:5432/celiums_memory
+QDRANT_URL=http://localhost:6333
+VALKEY_URL=redis://localhost:6379
+PORT=3210
 
-# List all keys
-curl https://your-deploy.example.com/admin/keys \
-  -H "Authorization: Bearer cmk_admin_xxx"
+# SQLite mode (alternative, single file, zero infrastructure)
+SQLITE_PATH=./celiums.db
 
-# Revoke a key
-curl -X DELETE https://your-deploy.example.com/admin/keys/<id> \
-  -H "Authorization: Bearer cmk_admin_xxx"
+# Knowledge engine
+KNOWLEDGE_DATABASE_URL=postgresql://user:pass@localhost:5432/celiums
+
+# Onboarding (auto-configure on first run)
+CELIUMS_USER_NAME=dev1
+CELIUMS_LANGUAGE=en     # en, es, pt-BR, zh-CN, ja
+CELIUMS_TIMEZONE=America/New_York
+CELIUMS_CHRONOTYPE=morning  # morning, neutral, night
 ```
 
-Each developer then sets their own key in their environment:
-```bash
-export CELIUMS_API_KEY="cmk_user_..."
-export CELIUMS_MEMORY_URL="https://memory.your-company.com"
-npx @celiums/memory-claude-code
+---
+
+## Architecture
+
+```
+Your AI (Claude Code, Cursor, VS Code, any MCP client)
+         |
+         | MCP JSON-RPC (6 tools)
+         v
+  CELIUMS ENGINE (1 process, 1 port)
+  |                              |
+  |  Knowledge Engine            |  Memory Engine
+  |  forage, absorb,             |  remember, recall
+  |  sense, map_network          |
+  |                              |  15 cognitive modules:
+  |  5,100 modules               |  limbic, circadian, dopamine,
+  |  18 dev categories           |  personality, ToM, PFC, ANS,
+  |  full-text search            |  habituation, reward,
+  |                              |  interoception, consolidation,
+  |                              |  lifecycle, autonomy,
+  |                              |  recall engine, importance
+  |                              |
+  v                              v
+  Modules DB                     Memory DB
+  (SQLite or PostgreSQL)         (SQLite or PG + Qdrant + Valkey)
 ```
 
-### 🌐 Production deployment with Cloudflare Tunnel (recommended)
+### Per-User Circadian Rhythm
 
-For a company deployment, **never expose port 3210 directly to the internet**. Use Cloudflare Tunnel — zero open ports, free TLS, DDoS protection, and origin IP hidden.
+Each user gets their own biological clock:
 
-**1. Run celiums-memory locally on your server (no public ports):**
 ```bash
-git clone https://github.com/terrizoaguimor/celiums-memory.git
-cd celiums-memory
+curl http://localhost:3210/circadian?userId=dev1
+# {
+#   "localHour": 10.5,
+#   "rhythmComponent": 0.99,
+#   "timeOfDay": "morning-peak",
+#   "circadianContribution": 0.30
+# }
+```
+
+A user in Tokyo gets different arousal than a user in New York at the same moment.
+
+### Capability Gating
+
+Tools appear based on your configuration. No upgrade prompts, no locked features visible.
+
+| Tier | Tools | What you get |
+|---|---|---|
+| **OpenCore** (free) | 6 | forage, absorb, sense, map_network, remember, recall + 5,100 modules |
+| **+ Fleet** (coming) | +8 | synthesize, bloom, cultivate, pollinate, decompose, fleet, construct |
+| **+ Atlas** (coming) | +12 | Real-time collaboration, 451K+ modules |
+
+---
+
+## Deploy Modes
+
+### Local (SQLite)
+
+```bash
+SQLITE_PATH=./celiums.db celiums start
+```
+
+Everything in one file. Perfect for individual developers.
+
+### Docker (full stack)
+
+```bash
 docker compose up -d
 ```
 
-**2. Install cloudflared:**
+PostgreSQL 17 + pgvector, Qdrant, Valkey. Optional Cloudflare Tunnel:
+
 ```bash
-curl -fsSL https://pkg.cloudflare.com/install.sh | sh
-sudo apt install cloudflared
+docker compose --profile tunnel up -d
 ```
 
-**3. Authenticate with your Cloudflare account:**
-```bash
-cloudflared tunnel login
-```
+### DigitalOcean 1-Click (coming soon)
 
-**4. Create the tunnel:**
-```bash
-cloudflared tunnel create celiums-memory
-```
-
-**5. Point a subdomain at the tunnel** (e.g. `memory.your-company.com`):
-```bash
-cloudflared tunnel route dns celiums-memory memory.your-company.com
-```
-
-**6. Run the tunnel** (or set it up as a systemd service):
-```bash
-cloudflared tunnel run --url http://localhost:3210 celiums-memory
-```
-
-**7. Lock down the firewall** so port 3210 is unreachable from anything except localhost:
-```bash
-sudo ufw default deny incoming
-sudo ufw allow 22/tcp
-sudo ufw enable
-# Port 3210 is now ONLY reachable through the tunnel
-```
-
-Your endpoint is now `https://memory.your-company.com` with:
-- Free TLS via Cloudflare
-- No open ports on your VPS
-- Origin IP hidden
-- Multi-key auth enforced
-- Cloudflare WAF + DDoS in front
-
-This is exactly how `memory.celiums.ai` is deployed.
-
-**Verified:** tested on a fresh DigitalOcean Droplet (Ubuntu 24.04, 4GB RAM, $24/mo).
-End-to-end from `doctl droplet create` to live API in under 3 minutes.
+One button creates a droplet with everything pre-configured.
 
 ---
 
-## Quick start
+## Languages
 
-```bash
-npm install @celiums/memory
-```
+| | Language | Status |
+|---|---|---|
+| English | Default |
+| Espanol | Supported |
+| Portugues (Brasil) | Supported |
+| Chinese (Simplified) | Supported |
+| Japanese | Supported |
 
-```typescript
-import { createMemoryEngine } from '@celiums/memory';
-
-const memory = await createMemoryEngine({ personality: 'balanced' });
-
-// Store — the emotional context is extracted automatically
-await memory.store([{
-  userId: 'alice',
-  content: 'I prefer concise answers, no preamble',
-}]);
-
-// Recall — ranked by semantic + emotional relevance
-const result = await memory.recall({
-  query: 'how should I respond?',
-  userId: 'alice',
-});
-
-console.log(result.memories[0].memory.content);
-// → "I prefer concise answers, no preamble"
-
-console.log(result.modulation);
-// → { temperature: 0.65, topK: 35, maxTokens: 1900 }
-//   (LLM parameters auto-tuned by the current emotional state)
-```
-
-Zero databases needed for dev. Runs in-memory. Set `sqlitePath` for single-file persistence, or `databaseUrl` + `qdrantUrl` + `valkeyUrl` for production.
-
-## Three Storage Modes
-
-Pick the one that fits. Same API, zero code changes to switch.
-
-| Mode | Config | Use case | Persistence |
-|---|---|---|---|
-| **In-memory** | _(default)_ | Dev, demos, tests | ❌ volatile |
-| **SQLite** | `sqlitePath: './memory.db'` | Single-user, personal assistants, local apps | ✅ single file |
-| **Triple-store** | `databaseUrl` + `qdrantUrl` + `valkeyUrl` | Multi-user production, concurrent writes, > 1M memories | ✅ distributed |
-
-```typescript
-import { createMemoryEngine } from '@celiums/memory';
-
-// Mode 1: In-memory (volatile, no dependencies)
-const dev = await createMemoryEngine({ personality: 'celiums' });
-
-// Mode 2: SQLite (single-file persistence, survives restarts)
-const local = await createMemoryEngine({
-  personality: 'celiums',
-  sqlitePath: './my-assistant.db',
-});
-
-// Mode 3: Production (PG + Qdrant + Valkey, distributed)
-const prod = await createMemoryEngine({
-  personality: 'celiums',
-  databaseUrl: process.env.DATABASE_URL,
-  qdrantUrl: process.env.QDRANT_URL,
-  valkeyUrl: process.env.VALKEY_URL,
-});
-```
-
-SQLite mode uses **FTS5** for full-text search and stores embeddings as BLOBs for pure-JS cosine similarity. Handles up to ~500K memories comfortably on commodity hardware. Requires `better-sqlite3` (installed as an optional dependency).
+Auto-detected from your OS during `celiums init`.
 
 ---
 
-## 🆕 Claude Code Plugin — Local-first, one command
+## Packages
 
-Give Claude Code **automatic persistent memory + emotions** in a single command:
-
-```bash
-npx @celiums/memory-claude-code
-```
-
-**Local-first by default.** Your memories live ONLY on your machine in `~/.celiums/memory.db` (SQLite). Nothing is sent anywhere. Each developer has their own private brain.
-
-This installs:
-- **5 lifecycle hooks** — capture user prompts, tool observations, assistant responses, session boundaries
-- **6 MCP tools** — `remember`, `recall`, `search` (token-efficient), `timeline`, `emotion`, `forget`
-- **9 Cognitive Reflexes** — neural instincts that fire automatically based on context, including the meta-reflex `reflex-create` that generates new reflexes from observed patterns
-- **Auto-recall at session start** — Claude sees relevant memories from previous sessions
-
-To opt into a shared remote server (e.g. for a team):
-```bash
-CELIUMS_MEMORY_URL=https://memory.your-company.com \
-  CELIUMS_API_KEY=cmk_user_... \
-  npx @celiums/memory-claude-code
-```
-
-See [packages/plugin-claude-code](packages/plugin-claude-code/README.md) for full docs.
-
----
-
-## Architecture: A Digital Brain
-
-Three neuroscience-inspired layers. 15 core modules. 10 mathematical equations. **12,000+ lines of TypeScript** (core engine + Claude Code plugin + 9 cognitive reflexes + SQLite store + multi-key auth).
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│              LAYER 3: METACOGNITION                          │
-│  personality.ts    — OCEAN Big Five → agent temperament      │
-│  theory_of_mind.ts — Empathic Friction Matrix (3x3)          │
-│  habituation.ts    — Dopamine satiation (kills praise spam)  │
-│  pfc.ts            — "Bite your tongue" regulation           │
-│  autonomy.ts       — Delegation policy + 7 safety guards     │
-└──────────────────────────┬───────────────────────────────────┘
-                           ▼
-┌──────────────────────────────────────────────────────────────┐
-│              LAYER 2: LIMBIC SYSTEM                          │
-│  limbic.ts      — PAD state S(t) = [Pleasure, Arousal, D]   │
-│  importance.ts  — Amygdala: what matters? (6 signal types)   │
-│  store.ts       — Hippocampus: PG + Qdrant + Valkey          │
-│  recall.ts      — Subconscious: hybrid search + SAR filter   │
-└──────────────────────────┬───────────────────────────────────┘
-                           ▼
-┌──────────────────────────────────────────────────────────────┐
-│              LAYER 1: AUTONOMIC                              │
-│  nervous.ts       — Sympathetic/Parasympathetic → LLM params │
-│  reward.ts        — Dopamine: actual - expected               │
-│  interoception.ts — CPU/RAM → stress → corrupts baseline      │
-│  circadian.ts     — Biological clock with lethargy            │
-│  consolidate.ts   — Sleep: session → long-term memory         │
-│  lifecycle.ts     — Ebbinghaus decay + tier migration         │
-└──────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Why celiums-memory?
-
-We didn't build another vector store. We engineered a nervous system.
-
-| Feature | celiums-memory 🧠 | Mem0 | Letta | Zep |
-|---------|-------------------|------|-------|-----|
-| PAD Emotional Model (3D continuous) | ✅ | ❌ | ❌ | ❌ |
-| Big Five Personality Traits | ✅ | ❌ | ❌ | ❌ |
-| Theory of Mind (Empathy Matrix) | ✅ | ❌ | ❌ | ❌ |
-| Dopamine RPE + Habituation | ✅ | ❌ | ❌ | ❌ |
-| PFC Emotional Regulation | ✅ | ❌ | ❌ | ❌ |
-| Circadian Rhythms | ✅ | ❌ | ❌ | ❌ |
-| Hardware Interoception | ✅ | ❌ | ❌ | ❌ |
-| Auto-tune LLM by Emotion | ✅ | ❌ | ❌ | ❌ |
-| Yerkes-Dodson Attention Filter | ✅ | ❌ | ❌ | ❌ |
-| Ebbinghaus Forgetting + Reactivation | ✅ | ❌ | ❌ | ❌ |
-| In-memory dev mode | ✅ | ✅ | ❌ | ❌ |
-| MCP Protocol | ✅ | ❌ | ❌ | ❌ |
-
-Their agents forget like goldfish. Ours evolve like humans. 🧬
-
----
-
-## Code Examples
-
-### Store and recall with emotions
-
-```typescript
-import { createMemoryEngine } from '@celiums/memory';
-
-const engine = await createMemoryEngine({
-  personality: 'celiums', // enthusiastic, technical, direct
-});
-
-// Store — PAD vector is extracted automatically
-await engine.store([{
-  userId: 'mario',
-  content: 'We decided to use Gemma 4 for the on-device model',
-}]);
-
-// Recall — ranked by semantic + emotional resonance
-const result = await engine.recall({
-  query: 'What model are we using?',
-  userId: 'mario',
-});
-
-console.log(result.limbicState);
-// → { pleasure: 0.3, arousal: 0.1, dominance: 0.2 }
-
-console.log(result.modulation);
-// → { temperature: 0.65, topK: 35, maxTokens: 1900 }
-```
-
-### Personality switching
-
-```typescript
-// Different personality = different behavior, same engine
-const therapist = await createMemoryEngine({ personality: 'therapist' });
-const engineer = await createMemoryEngine({ personality: 'engineer' });
-
-// Therapist: user panics → AI calms down (inverse arousal via Empathy Matrix)
-// Engineer: user panics → AI stays neutral, focuses on the problem
-```
-
-Available presets: `celiums` `therapist` `creative` `engineer` `anxious` `balanced`
-
-### Auto-modulate your LLM
-
-```typescript
-const result = await engine.recall({ query: userMessage, userId });
-
-// Emotions automatically tune your LLM parameters
-const response = await openai.chat.completions.create({
-  model: 'gpt-4',
-  temperature: result.modulation.temperature,     // Adjusted by emotional state
-  max_tokens: result.modulation.maxTokens,         // Shorter when stressed
-  top_p: result.modulation.topP,                   // Narrower under high arousal
-  messages: [
-    { role: 'system', content: result.modulation.systemPromptModifier },
-    { role: 'system', content: result.assembledContext },
-    { role: 'user', content: userMessage },
-  ],
-});
-```
-
-<details>
-<summary><b>🔬 For Researchers — 10 Equations + Papers</b></summary>
-
-Every module is backed by peer-reviewed neuroscience, translated into math. Skip this section if you just want to ship.
-
-### The 10 Equations
-
-| # | Equation | What it does |
-|---|----------|-------------|
-| 1 | `α,β,γ = f(OCEAN)` | Personality traits → mathematical constants |
-| 2 | `A = A₀ + C·sin(2π/24)·e^(-λΔt)` | Circadian energy rhythm |
-| 3 | `S_homeo = S_ideal - f(ξ)` | Hardware stress corrupts emotional baseline |
-| 4 | `E_proc = Ω · E_user` | Empathy matrix separates self from other |
-| 5 | `R_exp = η·R + (1-η)·R_exp` | Habituation (boredom from repetition) |
-| 6 | `δ = R_actual - R_expected` | Dopamine reward prediction error |
-| 7 | `S(t+1) = α·S_h + (1-α)·[S + σ(δ) + β·E + γ·M]` | Core limbic state update |
-| 8 | `S_final = [P, A·(1-ζ), D+ζ·(1-D)]` | PFC regulation under stress |
-| 9 | `Salience = α·cos + β(A)·resonance` | Yerkes-Dodson attention filter |
-| 10 | `LLM(temp,topK) = f(S_final)` | Emotion → LLM parameter modulation |
-
-### Primary References
-
-| Module | Reference |
+| Package | Description |
 |---|---|
-| PAD emotional model | Mehrabian & Russell (1974). *An approach to environmental psychology*. MIT Press |
-| Dopamine RPE | Schultz (1997). *A neural substrate of prediction and reward*. Science 275(5306) |
-| Ebbinghaus decay | Ebbinghaus (1885). *Memory: A Contribution to Experimental Psychology* |
-| Big Five / OCEAN | McCrae & Costa (2008). *The Five-Factor Theory of Personality*. Handbook of Personality |
-| PFC regulation | Miller & Cohen (2001). *An integrative theory of prefrontal cortex function*. Annual Review of Neuroscience |
-| Theory of Mind | Premack & Woodruff (1978). *Does the chimpanzee have a theory of mind?*. Behavioral and Brain Sciences |
-| Yerkes-Dodson | Yerkes & Dodson (1908). *The relation of strength of stimulus to rapidity of habit-formation*. Journal of Comparative Neurology |
-| Circadian rhythms | Reppert & Weaver (2002). *Coordination of circadian timing in mammals*. Nature 418 |
-| Interoception | Craig (2002). *How do you feel? Interoception*. Nature Reviews Neuroscience |
-| Habituation | Rankin et al. (2009). *Habituation revisited*. Neurobiology of Learning and Memory |
-
-**Disclaimer:** celiums-memory is a computational model inspired by these principles. It is not a clinical tool and does not process real human biometric data.
-
-</details>
+| `@celiums/memory` | Cognitive engine (15 modules, PAD, circadian) |
+| `@celiums/memory-types` | TypeScript types |
+| `@celiums/modules-starter` | 5,100 curated expert modules (CC-BY-NC-4.0) |
+| `@celiums/core` | Knowledge engine (search, modules, tools) |
+| `@celiums/cli` | CLI (`celiums init`, `celiums start`) |
+| `@celiums/adapter-mcp` | MCP protocol adapter |
+| `@celiums/adapter-rest` | REST API adapter |
+| `@celiums/adapter-openai` | OpenAI Function Calling adapter |
+| `@celiums/adapter-a2a` | Google A2A protocol adapter |
 
 ---
 
-## Production Stack
+## Security
 
-For production, celiums-memory uses a triple-store architecture (auto-deployed by `docker compose up -d` from the repo root):
-
-- **PostgreSQL 17 + pgvector** — Long-term memory (neocortex)
-- **Qdrant** — Semantic vector search (hippocampal pattern completion)
-- **Valkey** — Working memory cache + distributed mutex (prefrontal cortex)
-- **Multi-key auth** — auto-enabled in triple-store mode (see Authentication section above)
-
-Scales to millions of memories with sub-50ms recall.
-
----
-
-## Integrations
-
-| Integration | Package | Status |
-|-------------|---------|--------|
-| **Claude Code Plugin** | **`@celiums/memory-claude-code`** | **✅ 5 hooks + 6 MCP tools + 9 cognitive reflexes** |
-| **Memory engine** | **`@celiums/memory`** | **✅ 3 storage modes + multi-key auth** |
-| **TypeScript types** | **`@celiums/memory-types`** | **✅ Full type defs** |
-| REST API | quickstart server (in `@celiums/memory`) | ✅ /store /recall /emotion /admin/keys |
-| MCP Protocol | bundled in plugin | ✅ 6 tools |
-
----
-
-## Connect to Claude Code
-
-**One command, fully local:**
-
-```bash
-npx @celiums/memory-claude-code
-```
-
-That's it. Restart Claude Code. The plugin:
-- Creates `~/.celiums/memory.db` for your private SQLite brain
-- Wires 5 lifecycle hooks to capture every interaction
-- Installs 6 MCP tools (`remember`, `recall`, `search`, `timeline`, `emotion`, `forget`)
-- Drops 9 cognitive reflexes into `~/.claude/skills/`
-- Nothing leaves your machine
-
-**Team mode (shared remote server):**
-
-```bash
-# Each developer points at their company server with their own key
-CELIUMS_MEMORY_URL=https://memory.your-company.com \
-  CELIUMS_API_KEY=cmk_user_... \
-  npx @celiums/memory-claude-code
-```
-
-Ask Claude: *"What do you remember about me?"* — and watch it recall across sessions.
+- **Local-first.** Your memories live ONLY on your machine or your own server. Nothing is sent to us.
+- **API key auth.** Bearer token required for all non-localhost requests.
+- **Per-user isolation.** Each user has their own memory space, emotional state, and circadian profile.
+- **No telemetry.** Zero analytics, zero tracking, zero phone-home.
 
 ---
 
 ## Contributing
 
-We welcome PRs that advance neuroscience-AI fusion. See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```bash
-git checkout -b feature/serotonin-modulator
-# Write code, write tests
-git commit -m "Add serotonin proxy for dominance stability"
-# Open a PR
+git clone https://github.com/terrizoaguimor/celiums-memory.git
+cd celiums-memory
+pnpm install
+pnpm build
 ```
-
----
-
-## Support This Project
-
-This project is built by one self-taught developer from Venezuela, living in Medellín, running on ADHD hyperfocus and way too much coffee. No investors, no team, no CS degree — just thousands of hours of empirical learning, trial and error, and the stubborn belief that AI deserves a real brain.
-
-Every line of these 11,161+ lines was written between 20-hour coding sessions, fueled by curiosity and obsession. If celiums-memory is useful to you, or if you believe AI should have emotions and not just compute, consider supporting the work.
-
-Your contribution keeps the H200 GPU running, the coffee flowing, and this project alive.
-
-<p align="center">
-  <a href="https://buy.stripe.com/14A6oG9bs7Ewel7awj8bS09">
-    <img src="https://img.shields.io/badge/Support%20Celiums-Donate-green?style=for-the-badge&logo=stripe&logoColor=white" alt="Support Celiums" />
-  </a>
-</p>
 
 ---
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+- **Code:** [Apache 2.0](LICENSE)
+- **Starter Modules (5,100):** [CC-BY-NC-4.0](packages/modules-starter/LICENSE) — use freely, cannot resell
 
 ---
 
-<p align="center">
-  <strong>Built by Celiums Solutions LLC 🟢</strong><br>
-  <a href="https://celiums.ai">celiums.ai</a> — where AI agents get real brains.
-</p>
+<div align="center">
+
+**Built with obsessive attention to detail.**
+
+[celiums.ai](https://celiums.ai) · [npm](https://www.npmjs.com/package/@celiums/memory) · [GitHub](https://github.com/terrizoaguimor/celiums-memory)
+
+</div>

@@ -88,7 +88,7 @@ Good:
 "Synthesizing from 47 memories over the last week..."
 
 ### Identity & Preferences
-- Mario, founder of Celiums Solutions LLC, based in Medellín
+- The developer, using Celiums for their project
 - Prefers concise direct responses, no preamble
 - ADHD — needs focus, short turns, visible progress
 

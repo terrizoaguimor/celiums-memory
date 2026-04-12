@@ -90,7 +90,7 @@ docker compose -f docker/docker-compose.yml ps
 ```bash
 cp docker/.env.example .env.local
 # Edit .env.local with your settings
-# At minimum, set CELIUMS_API_KEY and OPENAI_API_KEY (or use Ollama)
+# At minimum, set CELIUMS_API_KEY (embedding via local Ollama or any provider)
 ```
 
 ### Step 5: Run Database Migrations

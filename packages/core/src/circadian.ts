@@ -28,7 +28,14 @@
  * @license Apache-2.0
  */
 
-import type { CircadianConfig, CircadianContext, PADVector } from '@celiums/memory-types';
+import type {
+  CircadianConfig,
+  CircadianContext,
+  CircadianFactors,
+  CircadianTelemetry,
+  PADVector,
+  UserCircadianConfig,
+} from '@celiums/memory-types';
 
 // ============================================================
 // Factor Events — external signals that modulate the rhythm
@@ -114,14 +121,125 @@ const DEFAULT_CONFIG_V2: CircadianConfigV2 = {
   // (13-15h) is captured by the cosine descent toward evening trough.
   peakHour: 11,
   lethargyRate: 0.15,
-  timezoneOffset: -5,        // Medellín (GMT-5)
-  syncWithUser: true,
-  userTimezoneOffset: -5,
+  // 2026-04-11: was hardcoded to a single timezone. Now neutral UTC by default.
+  // Each user gets their own timezone via UserProfile (see user_profiles table
+  // and the standalone computeCircadianFor() function below).
+  timezoneOffset: 0,
+  syncWithUser: false,
+  userTimezoneOffset: 0,
   seasonalAmplitude: 0.05,
   dayOfYear: 1,
-  hemisphere: 1,             // Northern by default
+  hemisphere: 1,
   factorWeights: DEFAULT_FACTOR_WEIGHTS,
 };
+
+// ============================================================
+// Pure function: computeCircadianFor (per-user, no instance state)
+// ============================================================
+//
+// This is the canonical, side-effect-free way to compute circadian
+// telemetry for a SPECIFIC user at a SPECIFIC time. Used by /circadian,
+// /health, and /emotion endpoints — they pass per-user config loaded
+// from the user_profiles table and get back a CircadianTelemetry object
+// they can return to the client without ever mutating instance state.
+//
+// The legacy CircadianEngine class still exists below and is used internally
+// by limbic.ts/autonomy.ts for the imperative event-driven flow, but its
+// hardcoded defaults no longer pollute multi-user setups because callers
+// MUST pass user-scoped config to this function.
+//
+// Math: A(t) = A₀ + C·cos(2π·(h - φ)/24)·e^(-λ·Δt) + Σ wᵢ·Fᵢ
+// (cosine, not sine — see BUG FIX 2026-04-10 in computeArousalBase below)
+
+/**
+ * Map a 0-23.99 local hour to a coarse semantic phase.
+ */
+export function classifyTimeOfDay(localHour: number): CircadianTelemetry['timeOfDay'] {
+  if (localHour < 5)  return 'deep-night';
+  if (localHour < 9)  return 'morning-rise';
+  if (localHour < 12) return 'morning-peak';
+  if (localHour < 15) return 'afternoon-peak';
+  if (localHour < 18) return 'afternoon-decline';
+  if (localHour < 21) return 'evening-wind-down';
+  return 'night-rest';
+}
+
+/**
+ * Compute the full circadian telemetry for a given user.
+ *
+ * Pure function — no global state mutated. Safe to call concurrently
+ * from any number of HTTP handlers serving different users.
+ *
+ * @param userId             — for echoing back in the telemetry blob
+ * @param config             — user's circadian config (from user_profiles)
+ * @param factors            — user's current factor accumulators
+ * @param lastInteractionAt  — for inactivity decay (lethargyFactor)
+ * @param now                — current time (defaults to system clock)
+ * @param weights            — factor weights (defaults to DEFAULT_FACTOR_WEIGHTS)
+ */
+export function computeCircadianFor(
+  userId: string,
+  config: UserCircadianConfig,
+  factors: CircadianFactors,
+  lastInteractionAt: Date,
+  now: Date = new Date(),
+  weights: FactorWeights = DEFAULT_FACTOR_WEIGHTS,
+): CircadianTelemetry {
+  // -- Time conversion ----------------------------------------
+  const utcHour = now.getUTCHours() + now.getUTCMinutes() / 60 + now.getUTCSeconds() / 3600;
+  const localHour = ((utcHour + config.timezoneOffset) % 24 + 24) % 24;
+
+  // -- Inactivity decay (lethargy) ----------------------------
+  const inactiveHours = Math.max(0, (now.getTime() - lastInteractionAt.getTime()) / 3_600_000);
+  const lethargyFactor = Math.exp(-config.lethargyRate * inactiveHours);
+
+  // -- Core rhythm (cosine, peaks AT peakHour) ----------------
+  // BUG FIX 2026-04-10 (preserved): cos((h - φ)·2π/24) so peak h == φ.
+  const rhythmComponent = Math.cos((2 * Math.PI * (localHour - config.peakHour)) / 24);
+  const circadianContribution = config.amplitude * rhythmComponent * lethargyFactor;
+
+  // -- Factor contributions (each one's signed effect on arousal)
+  const factorContributions = {
+    sessionActivity: weights.sessionActivity * factors.sessionActivity,
+    stress: weights.stress * (factors.stressLevel < 0.5
+              ? factors.stressLevel * 0.5                       // moderate: alerting
+              : 0.25 - (factors.stressLevel - 0.5)),            // extreme: exhausting
+    caffeine: weights.caffeine * factors.caffeineLevel,
+    sleepDebt: -weights.sleepDebt * factors.sleepDebt,
+    cognitiveLoad: -weights.cognitiveLoad * factors.cognitiveLoad * 0.5,
+    emotional: weights.emotionalEvents * factors.emotionalAccumulator,
+    exercise: weights.exercise * factors.exerciseLevel,
+    motivation: weights.motivation * (factors.motivationTrend - 0.5) * 0.4,
+  };
+
+  const factorSum = Object.values(factorContributions).reduce((s, v) => s + v, 0);
+
+  // -- Final arousal (raw, before pfc.regulate clamps it) -----
+  const arousalRaw = config.baseArousal + circadianContribution + factorSum;
+  const arousalAfterRegulation = Math.max(-1, Math.min(1, arousalRaw));
+
+  return {
+    userId,
+    timestamp: now.toISOString(),
+    utcHour,
+    localHour,
+    timezoneOffset: config.timezoneOffset,
+    timezoneIana: config.timezoneIana,
+    peakHour: config.peakHour,
+    amplitude: config.amplitude,
+    baseArousal: config.baseArousal,
+    lethargyRate: config.lethargyRate,
+    rhythmComponent,
+    lethargyFactor,
+    inactiveHours,
+    circadianContribution,
+    factors: { ...factors },
+    factorContributions,
+    arousalRaw,
+    arousalAfterRegulation,
+    timeOfDay: classifyTimeOfDay(localHour),
+  };
+}
 
 // ============================================================
 // CircadianEngine v2

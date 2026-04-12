@@ -82,7 +82,7 @@ async function main() {
   const memories = [
     'We chose React for the frontend because of component reusability',
     'The PostgreSQL database is hosted on DigitalOcean managed DB',
-    'Mario prefers dark mode in all applications',
+    'The user prefers dark mode in all applications',
     'The API response time must be under 200ms for production',
     'We use TypeScript strict mode for all projects',
     'The deployment pipeline uses GitHub Actions with Docker',

@@ -1,0 +1,32 @@
+{
+  "name": "@celiums/adapter-rest",
+  "version": "0.1.1",
+  "description": "REST API adapter for the Celiums Knowledge Engine \u2014 OpenAI-compatible endpoints",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@celiums/core": "^0.1.0",
+    "@celiums/types": "^0.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

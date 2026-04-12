@@ -21,7 +21,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: celiums
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-celiums_dev_password_change_me}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: celiums_memory
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -53,14 +53,14 @@ services:
     restart: unless-stopped
     command: >
       valkey-server
-      --requirepass ${VALKEY_PASSWORD:-celiums_dev_password_change_me}
+      --requirepass ${VALKEY_PASSWORD:-${VALKEY_PASSWORD}}
       --maxmemory 256mb
       --maxmemory-policy allkeys-lru
       --appendonly yes
     volumes:
       - valkey_data:/data
     healthcheck:
-      test: ["CMD-SHELL", "valkey-cli -a ${VALKEY_PASSWORD:-celiums_dev_password_change_me} ping | grep -q PONG"]
+      test: ["CMD-SHELL", "valkey-cli -a ${VALKEY_PASSWORD:-${VALKEY_PASSWORD}} ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -82,9 +82,9 @@ services:
       valkey:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://celiums:${POSTGRES_PASSWORD:-celiums_dev_password_change_me}@postgres:5432/celiums_memory
+      DATABASE_URL: postgresql://celiums:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/celiums_memory
       QDRANT_URL: http://qdrant:6333
-      VALKEY_URL: redis://:${VALKEY_PASSWORD:-celiums_dev_password_change_me}@valkey:6379
+      VALKEY_URL: redis://:${VALKEY_PASSWORD:-${VALKEY_PASSWORD}}@valkey:6379
       PORT: 3210
       PERSONALITY: ${PERSONALITY:-balanced}
       # IMPORTANT: Set CELIUMS_API_KEY in your .env file before exposing
@@ -92,6 +92,13 @@ services:
       # auto-generates one and prints it in the startup logs — copy it
       # to your clients.
       CELIUMS_API_KEY: ${CELIUMS_API_KEY:-}
+      # First-run onboarding (optional — auto-creates user profile)
+      CELIUMS_USER_NAME: ${CELIUMS_USER_NAME:-}
+      CELIUMS_LANGUAGE: ${CELIUMS_LANGUAGE:-}
+      CELIUMS_TIMEZONE: ${CELIUMS_TIMEZONE:-}
+      CELIUMS_CHRONOTYPE: ${CELIUMS_CHRONOTYPE:-}
+      # Knowledge engine (points to modules DB — same PG, different database)
+      KNOWLEDGE_DATABASE_URL: postgresql://celiums:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/celiums
     ports:
       - "${CELIUMS_PORT:-3210}:3210"
     healthcheck:
@@ -100,6 +107,19 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+
+  # ─── Cloudflare Tunnel (optional — expose to internet) ──
+  # To enable: set CLOUDFLARE_TUNNEL_TOKEN in your .env
+  # Get your token: https://dash.cloudflare.com → Zero Trust → Tunnels
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:-placeholder}
+    profiles:
+      - tunnel  # Only starts with: docker compose --profile tunnel up -d
+    depends_on:
+      celiums-memory:
+        condition: service_healthy
 
 volumes:
   postgres_data:

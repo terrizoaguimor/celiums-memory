@@ -40,3 +40,25 @@ __snapshots__/
 
 # Docker
 docker/.env
+
+# SQLite databases
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Certificates & keys
+*.pem
+*.key
+*.cert
+
+# Credentials
+credentials.json
+
+# Data dumps
+*.sql.gz
+*.tar.gz
+
+# Local celiums data
+.celiums/

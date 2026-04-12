@@ -27,7 +27,7 @@ const engine = await createMemoryEngine({
 // Create middleware — this is what makes memory automatic
 // ============================================================
 const memory = new MemoryMiddleware(engine, {
-  defaultUserId: 'mario',
+  defaultUserId: 'developer',
   autoStoreUserMessages: true,
   autoStoreAIResponses: true,
   autoConsolidate: true,
@@ -77,7 +77,7 @@ const turn1 = await memory.wrapLLMCall(
       ctx.modulation,
     );
   },
-  'mario',
+  'developer',
 );
 console.log(`  AI response: ${turn1.response}`);
 
@@ -96,7 +96,7 @@ const turn2 = await memory.wrapLLMCall(
       ctx.modulation,
     );
   },
-  'mario',
+  'developer',
 );
 console.log(`  AI response: ${turn2.response}`);
 
@@ -114,12 +114,12 @@ const turn3 = await memory.wrapLLMCall(
       ctx.modulation,
     );
   },
-  'mario',
+  'developer',
 );
 console.log(`  AI response: ${turn3.response}`);
 
 // Check final emotional state
-const finalState = await memory.getEmotionalState('mario');
+const finalState = await memory.getEmotionalState('developer');
 console.log(`\n=== Final Emotional State ===`);
 console.log(`  Pleasure:  ${finalState.state.pleasure.toFixed(3)}`);
 console.log(`  Arousal:   ${finalState.state.arousal.toFixed(3)}`);
@@ -128,7 +128,7 @@ console.log(`  Temperature: ${finalState.modulation.temperature}`);
 console.log(`  Branch: ${finalState.modulation.activeBranch}`);
 
 // Shutdown — final consolidation
-await memory.shutdown('mario');
+await memory.shutdown('developer');
 console.log('\n=== Memory consolidated. Session ended. ===');
 console.log('Next session will recall everything automatically.\n');
 

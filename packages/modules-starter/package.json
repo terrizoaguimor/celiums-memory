@@ -1,0 +1,40 @@
+{
+  "name": "@celiums/modules-starter",
+  "version": "0.1.0",
+  "description": "5,100 curated expert knowledge modules for the Celiums OpenCore. Covers 18 developer categories: software engineering, frontend, backend, DevOps, databases, security, AI/ML, and more.",
+  "keywords": [
+    "celiums", "knowledge", "modules", "ai", "mcp",
+    "developer-tools", "curated", "expert-knowledge"
+  ],
+  "homepage": "https://celiums.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/terrizoaguimor/celiums-memory.git",
+    "directory": "packages/modules-starter"
+  },
+  "license": "CC-BY-NC-4.0",
+  "author": {
+    "name": "Celiums Solutions LLC",
+    "email": "hello@celiums.ai",
+    "url": "https://celiums.ai"
+  },
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts"
+    }
+  },
+  "files": [
+    "src",
+    "data",
+    "LICENSE",
+    "README.md"
+  ],
+  "dependencies": {
+    "pg": "^8.13.0"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^11.5.0"
+  }
+}
