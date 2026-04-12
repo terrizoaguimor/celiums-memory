@@ -1,6 +1,6 @@
 {
   "name": "@celiums/adapter-rest",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "REST API adapter for the Celiums Knowledge Engine \u2014 OpenAI-compatible endpoints",
   "license": "Apache-2.0",
   "type": "module",
@@ -13,7 +13,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
   "scripts": {
     "build": "tsc",

@@ -1,6 +1,6 @@
 {
   "name": "@celiums/memory-types",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "TypeScript types for celiums-memory \u2014 neuroscience-grounded AI memory",
   "keywords": [
     "celiums",
