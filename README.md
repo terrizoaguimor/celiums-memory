@@ -366,6 +366,20 @@ pnpm build
 
 ---
 
+## Support This Project
+
+This project is built on ADHD hyperfocus, too much coffee, and the stubborn belief that AI deserves a real brain. Every one of these 11,000+ lines was written between 20-hour coding sessions, fueled by curiosity and obsession.
+
+If Celiums is useful to you, or if you believe AI should have emotions and not just compute, consider supporting the work.
+
+<a href="https://celiums.ai/support">
+  <img src="https://img.shields.io/badge/Support%20Celiums-Donate-green?style=for-the-badge&logo=stripe&logoColor=white" alt="Support Celiums" />
+</a>
+
+Your contribution keeps the GPUs running, the coffee flowing, and this project alive.
+
+---
+
 ## License
 
 - **Code:** [Apache 2.0](LICENSE)
