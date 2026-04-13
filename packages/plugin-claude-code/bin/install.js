@@ -169,7 +169,7 @@ function installHooks(config) {
     }
 
     config.hooks[eventName].push({
-      matcher: '*',
+      matcher: '',
       hooks: [
         {
           type: 'command',

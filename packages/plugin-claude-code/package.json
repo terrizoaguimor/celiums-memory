@@ -1,6 +1,6 @@
 {
   "name": "@celiums/memory-claude-code",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Local-first persistent memory for Claude Code. Each user gets their own SQLite brain in ~/.celiums/memory.db. 5 hooks + 6 MCP tools + 9 Cognitive Reflexes. Zero servers, zero accounts, zero data leakage.",
   "keywords": [
     "claude-code",
