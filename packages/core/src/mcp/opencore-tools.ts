@@ -163,6 +163,14 @@ const handleRemember: McpToolHandler = async (args, ctx) => {
     return ok('Memory not stored (empty content).');
   }
   const m = result[0] as any;
+  // Track interaction for circadian rhythm + PAD
+  try {
+    if (ctx.pool) {
+      const { createPgStore } = await import('../store.js');
+      const store = createPgStore(ctx.pool as any);
+      await store.touchUserInteraction(ctx.userId);
+    }
+  } catch { /* best-effort */ }
   // Pull post-store limbic state for transparency
   let mood = '';
   try {
@@ -191,6 +199,14 @@ const handleRecall: McpToolHandler = async (args, ctx) => {
     userId: ctx.userId,
     limit,
   });
+  // Track interaction for circadian rhythm + PAD
+  try {
+    if (ctx.pool) {
+      const { createPgStore } = await import('../store.js');
+      const store = createPgStore(ctx.pool as any);
+      await store.touchUserInteraction(ctx.userId);
+    }
+  } catch { /* best-effort */ }
   if (result.memories.length === 0) {
     return ok(`No memories found for query: "${query}"`);
   }

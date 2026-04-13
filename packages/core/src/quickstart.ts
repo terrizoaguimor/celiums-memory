@@ -24,6 +24,12 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 // metadata/content lookups go through the store. Semantic search will be
 // added later when a 1024d Qdrant collection or pgvector path is wired.
 import { ModuleStore } from '@celiums/core';
+// Lazy import to avoid circular — used only for touchUserInteraction
+let _pgStoreModule: any = null;
+async function getTouchFn() {
+  if (!_pgStoreModule) _pgStoreModule = await import('./store.js');
+  return _pgStoreModule.createPgStore;
+}
 
 // 2026-04-11: MCP envelope (JSON-RPC over HTTP) — the protocol Claude Code,
 // Cursor and friends speak. dispatchMcp filters tools by capability gating
@@ -740,6 +746,11 @@ async function main() {
           content: body.content,
           tags: body.tags,
         }]);
+        // Track interaction for circadian + PAD
+        if (memoryPool) {
+          const mkStore = await getTouchFn();
+          await mkStore(memoryPool).touchUserInteraction(userId).catch(() => {});
+        }
         const limbic = await engine.getLimbicState(userId);
         const mod = await engine.getModulation(userId);
         res.writeHead(200);
@@ -763,6 +774,11 @@ async function main() {
           userId,
           limit: body.limit ?? 10,
         });
+        // Track interaction for circadian + PAD
+        if (memoryPool) {
+          const mkStore = await getTouchFn();
+          await mkStore(memoryPool).touchUserInteraction(userId).catch(() => {});
+        }
         res.writeHead(200);
         res.end(JSON.stringify({
           found: result.memories.length,
