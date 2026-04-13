@@ -8,7 +8,7 @@
 
 **The open-source engine that gives AI persistent memory and instant access to 5,100+ expert knowledge modules — with a biological clock that adapts to each user.**
 
-[Quick Start](#-quick-start) · [6 Tools](#-the-6-tools) · [How to Use](#-how-to-use-it) · [Architecture](#-architecture) · [Deploy](#-deploy-modes) · [Docs](https://celiums.ai/docs)
+[Try the Live Demo](https://ask.celiums.ai) · [Quick Start](#-quick-start) · [6 Tools](#-the-6-tools) · [How to Use](#-how-to-use-it) · [Architecture](#-architecture) · [Deploy](#-deploy-modes) · [Docs](https://celiums.ai/docs)
 
 [![npm version](https://img.shields.io/npm/v/@celiums/memory?style=flat-square&color=22c55e)](https://www.npmjs.com/package/@celiums/memory)
 [![Downloads](https://img.shields.io/npm/dw/@celiums/memory?style=flat-square&color=22c55e)](https://www.npmjs.com/package/@celiums/memory)
@@ -38,6 +38,10 @@ Celiums combines two engines into one:
 | **Knowledge** | Knows what experts know | 5,100 curated technical modules, full-text search, 18 categories |
 
 Both engines expose **6 MCP tools** that any AI IDE can call autonomously. Install once, your AI has persistent memory AND expert knowledge forever.
+
+### See it in action: [ask.celiums.ai](https://ask.celiums.ai)
+
+> Talk to Celiums AI directly — it uses all 5,100 modules, remembers you across sessions, and has a real circadian rhythm. Zero-knowledge: your data is never used for training.
 
 ---
 
