@@ -522,7 +522,7 @@ export class ToolRegistry {
           Authorization: `Bearer ${this.config.inference.apiKey}`,
         },
         body: JSON.stringify({
-          model: this.config.inference.defaultModel ?? process.env.INFERENCE_MODEL || "default",
+          model: this.config.inference.defaultModel ?? (process.env.INFERENCE_MODEL || "default"),
           messages: [{ role: "user", content: prompt }],
           max_tokens: 4000,
           temperature: 0.3,

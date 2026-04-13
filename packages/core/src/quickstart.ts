@@ -227,6 +227,9 @@ async function main() {
     } catch { /* health check failed, skip hydrate */ }
   }
 
+  // memoryPool — declared here so first-run and MCP can use it.
+  let memoryPool: import('pg').Pool | null = null;
+
   // First-run user profile creation (env-var driven for Docker, interactive for CLI)
   if (memoryPool) {
     try {
@@ -253,11 +256,6 @@ async function main() {
   // ─── Multi-key auth bootstrap (only in triple-store mode) ─
   // The api_keys table lives in the same Postgres as memories. For
   // sqlite/in-memory modes we fall back to the single SINGLE_API_KEY.
-  // We open our own dedicated Pool so we don't depend on the store's
-  // internal layout (which is private).
-  // memoryPool is hoisted out of the if-block so the MCP dispatcher
-  // (added 2026-04-11) can also use it for context/snapshot tables.
-  let memoryPool: import('pg').Pool | null = null;
   if (databaseUrl && qdrantUrl) {
     try {
       const { Pool } = await import('pg');

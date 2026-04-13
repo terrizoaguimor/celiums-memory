@@ -1,21 +1,18 @@
-# celiums-memory — Production triple-store stack
+# ─────────────────────────────────────────────────────────
+#  Celiums — Production stack
 #
-# One command. Real persistence. Survives restarts.
+#  Quick start:
+#    1. cp .env.example .env        # edit passwords
+#    2. docker compose up -d        # start infra (PG + Qdrant + Valkey)
+#    3. pnpm install                # install deps
+#    4. pnpm start                  # start Celiums
 #
-#   docker compose up -d
-#
-# Then:
-#   curl http://localhost:3210/health
-#   curl -X POST http://localhost:3210/store -H 'Content-Type: application/json' \
-#     -d '{"content":"hello","userId":"alice"}'
-#   curl -X POST http://localhost:3210/recall -H 'Content-Type: application/json' \
-#     -d '{"query":"hello","userId":"alice"}'
+#  That's it. Health check: curl http://localhost:3210/health
+# ─────────────────────────────────────────────────────────
 
 services:
 
-  # ───────────────────────────────────────────
-  #  PostgreSQL 17 + pgvector — long-term memory
-  # ───────────────────────────────────────────
+  # ─── PostgreSQL 17 + pgvector ────────────────────────────
   postgres:
     image: pgvector/pgvector:pg17
     restart: unless-stopped
@@ -25,101 +22,57 @@ services:
       POSTGRES_DB: celiums_memory
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U celiums -d celiums_memory"]
       interval: 5s
       timeout: 3s
       retries: 10
 
-  # ───────────────────────────────────────────
-  #  Qdrant — vector store (semantic search)
-  # ───────────────────────────────────────────
+  # ─── Qdrant — vector store ──────────────────────────────
   qdrant:
     image: qdrant/qdrant:v1.14.0
     restart: unless-stopped
     volumes:
       - qdrant_data:/qdrant/storage
+    ports:
+      - "127.0.0.1:6333:6333"
     healthcheck:
       test: ["CMD-SHELL", "bash -c ':> /dev/tcp/localhost/6333' || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 10
 
-  # ───────────────────────────────────────────
-  #  Valkey — working memory cache + distributed mutex
-  # ───────────────────────────────────────────
+  # ─── Valkey — cache + distributed mutex ─────────────────
   valkey:
     image: valkey/valkey:8-alpine
     restart: unless-stopped
     command: >
       valkey-server
-      --requirepass ${VALKEY_PASSWORD:-${VALKEY_PASSWORD}}
+      --requirepass ${VALKEY_PASSWORD:?Set VALKEY_PASSWORD in .env}
       --maxmemory 256mb
       --maxmemory-policy allkeys-lru
       --appendonly yes
     volumes:
       - valkey_data:/data
+    ports:
+      - "127.0.0.1:6379:6379"
     healthcheck:
-      test: ["CMD-SHELL", "valkey-cli -a ${VALKEY_PASSWORD:-${VALKEY_PASSWORD}} ping | grep -q PONG"]
+      test: ["CMD-SHELL", "valkey-cli -a ${VALKEY_PASSWORD} ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 10
 
-  # ───────────────────────────────────────────
-  #  celiums-memory server
-  # ───────────────────────────────────────────
-  celiums-memory:
-    image: celiums/memory:latest
-    build:
-      context: .
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      qdrant:
-        condition: service_healthy
-      valkey:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: postgresql://celiums:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/celiums_memory
-      QDRANT_URL: http://qdrant:6333
-      VALKEY_URL: redis://:${VALKEY_PASSWORD:-${VALKEY_PASSWORD}}@valkey:6379
-      PORT: 3210
-      PERSONALITY: ${PERSONALITY:-balanced}
-      # IMPORTANT: Set CELIUMS_API_KEY in your .env file before exposing
-      # this server to the internet. If you leave it unset, the server
-      # auto-generates one and prints it in the startup logs — copy it
-      # to your clients.
-      CELIUMS_API_KEY: ${CELIUMS_API_KEY:-}
-      # First-run onboarding (optional — auto-creates user profile)
-      CELIUMS_USER_NAME: ${CELIUMS_USER_NAME:-}
-      CELIUMS_LANGUAGE: ${CELIUMS_LANGUAGE:-}
-      CELIUMS_TIMEZONE: ${CELIUMS_TIMEZONE:-}
-      CELIUMS_CHRONOTYPE: ${CELIUMS_CHRONOTYPE:-}
-      # Knowledge engine (points to modules DB — same PG, different database)
-      KNOWLEDGE_DATABASE_URL: postgresql://celiums:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/celiums
-    ports:
-      - "${CELIUMS_PORT:-3210}:3210"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fs http://localhost:3210/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-
-  # ─── Cloudflare Tunnel (optional — expose to internet) ──
-  # To enable: set CLOUDFLARE_TUNNEL_TOKEN in your .env
-  # Get your token: https://dash.cloudflare.com → Zero Trust → Tunnels
+  # ─── Cloudflare Tunnel (optional) ───────────────────────
+  # Enable with: docker compose --profile tunnel up -d
+  # Set CLOUDFLARE_TUNNEL_TOKEN in your .env
   cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
     command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:-placeholder}
     profiles:
-      - tunnel  # Only starts with: docker compose --profile tunnel up -d
-    depends_on:
-      celiums-memory:
-        condition: service_healthy
+      - tunnel
 
 volumes:
   postgres_data:

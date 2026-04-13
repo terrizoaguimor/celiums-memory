@@ -24,7 +24,8 @@
   "packageManager": "pnpm@9.4.0",
   "scripts": {
     "start": "tsx packages/core/src/quickstart.ts",
-    "demo": "tsx packages/core/src/quickstart.ts",
+    "setup": "pnpm run build:knowledge && pnpm start",
+    "build:knowledge": "cd packages/knowledge-types && npx tsc && cd ../knowledge && npx tsc && cd ../types && npx tsup src/index.ts --format esm,cjs --dts --clean",
     "build": "turbo run build",
     "dev": "turbo run dev --parallel",
     "test": "turbo run test",

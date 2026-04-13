@@ -105,26 +105,29 @@ export async function hydrate(target: {
 
 const PG_CREATE_TABLE = `
 CREATE TABLE IF NOT EXISTS modules (
-  name          TEXT PRIMARY KEY,
-  display_name  TEXT NOT NULL,
-  description   TEXT NOT NULL DEFAULT '',
-  category      TEXT NOT NULL DEFAULT 'general',
-  keywords      TEXT[] NOT NULL DEFAULT '{}',
-  line_count    INTEGER NOT NULL DEFAULT 0,
-  eval_score    NUMERIC(4,1),
-  version       TEXT NOT NULL DEFAULT '2.0',
-  content       TEXT NOT NULL DEFAULT '',
-  search_tsv    TSVECTOR GENERATED ALWAYS AS (
+  name            TEXT PRIMARY KEY,
+  display_name    TEXT NOT NULL DEFAULT '',
+  description     TEXT NOT NULL DEFAULT '',
+  category        TEXT NOT NULL DEFAULT 'general',
+  keywords        TEXT[] NOT NULL DEFAULT '{}',
+  line_count      INTEGER NOT NULL DEFAULT 0,
+  has_references  BOOLEAN NOT NULL DEFAULT false,
+  reference_count INTEGER NOT NULL DEFAULT 0,
+  eval_score      NUMERIC(4,1),
+  version         TEXT NOT NULL DEFAULT '2.0',
+  content         TEXT NOT NULL DEFAULT '',
+  search_tsv      TSVECTOR GENERATED ALWAYS AS (
     setweight(to_tsvector('english', coalesce(name, '')), 'A') ||
     setweight(to_tsvector('english', coalesce(display_name, '')), 'A') ||
     setweight(to_tsvector('english', coalesce(description, '')), 'B') ||
     setweight(to_tsvector('english', coalesce(array_to_string(keywords, ' '), '')), 'C')
   ) STORED,
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_modules_category    ON modules(category);
 CREATE INDEX IF NOT EXISTS idx_modules_search_tsv  ON modules USING GIN(search_tsv);
+CREATE INDEX IF NOT EXISTS idx_modules_eval        ON modules(eval_score DESC NULLS LAST);
 CREATE INDEX IF NOT EXISTS idx_modules_eval        ON modules(eval_score DESC NULLS LAST);
 `;
 
@@ -159,15 +162,17 @@ async function hydratePg(pool: any, t0: number) {
 
 const SQLITE_CREATE_TABLE = `
 CREATE TABLE IF NOT EXISTS modules (
-  name          TEXT PRIMARY KEY,
-  display_name  TEXT NOT NULL,
-  description   TEXT NOT NULL DEFAULT '',
-  category      TEXT NOT NULL DEFAULT 'general',
-  keywords      TEXT NOT NULL DEFAULT '',
-  line_count    INTEGER NOT NULL DEFAULT 0,
-  eval_score    REAL,
-  version       TEXT NOT NULL DEFAULT '2.0',
-  content       TEXT NOT NULL DEFAULT ''
+  name            TEXT PRIMARY KEY,
+  display_name    TEXT NOT NULL DEFAULT '',
+  description     TEXT NOT NULL DEFAULT '',
+  category        TEXT NOT NULL DEFAULT 'general',
+  keywords        TEXT NOT NULL DEFAULT '',
+  line_count      INTEGER NOT NULL DEFAULT 0,
+  has_references  INTEGER NOT NULL DEFAULT 0,
+  reference_count INTEGER NOT NULL DEFAULT 0,
+  eval_score      REAL,
+  version         TEXT NOT NULL DEFAULT '2.0',
+  content         TEXT NOT NULL DEFAULT ''
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS modules_fts USING fts5(

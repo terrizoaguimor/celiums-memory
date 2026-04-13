@@ -59,13 +59,25 @@ That's it. `celiums init`:
 ### Option 2: Docker (VPS, 3 minutes)
 
 ```bash
+# 1. Clone
 git clone https://github.com/terrizoaguimor/celiums-memory.git
 cd celiums-memory
+
+# 2. Configure
 cp .env.example .env   # edit passwords
+
+# 3. Start infrastructure (PostgreSQL + Qdrant + Valkey)
 docker compose up -d
+
+# 4. Install dependencies
+pnpm install
+
+# 5. Build + start Celiums
+pnpm setup
 ```
 
-You get: Celiums API + PostgreSQL + Qdrant + Valkey, all running on your VPS.
+You get: Celiums API on port 3210 + PostgreSQL + Qdrant + Valkey.
+On first run, 5,100 expert modules are loaded automatically.
 
 ### Option 3: DigitalOcean 1-Click (coming soon)
 
