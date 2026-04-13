@@ -84,15 +84,28 @@ export class ModuleStore {
    * Uses PostgreSQL GIN index for sub-millisecond performance.
    */
   async searchFullText(query: string, limit: number = 10): Promise<ModuleMeta[]> {
+    // Split query into words, join with OR for broader matching.
+    // "SvelteKit OAuth Google" → "sveltkit | oauth | googl" (stemmed by to_tsquery)
+    const words = query
+      .replace(/[^a-zA-Z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length > 1)
+      .map(w => w.toLowerCase());
+
+    if (words.length === 0) return [];
+
+    // Use OR between words for broad matching, then rank by relevance
+    const orQuery = words.join(' | ');
+
     const result = await this.pool.query(
       `SELECT name, display_name, description, category, keywords,
               line_count, has_references, reference_count, eval_score, version,
-              ts_rank(search_tsv, plainto_tsquery('english', $1)) AS rank
+              ts_rank(search_tsv, to_tsquery('english', $1)) AS rank
        FROM modules
-       WHERE search_tsv @@ plainto_tsquery('english', $1)
+       WHERE search_tsv @@ to_tsquery('english', $1)
        ORDER BY rank DESC
        LIMIT $2`,
-      [query, limit]
+      [orQuery, limit]
     );
 
     return result.rows.map((row) => this.rowToMeta(row));

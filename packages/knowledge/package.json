@@ -1,6 +1,6 @@
 {
   "name": "@celiums/core",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Core knowledge engine \u2014 search, retrieve, and serve expert modules",
   "license": "Apache-2.0",
   "type": "module",
