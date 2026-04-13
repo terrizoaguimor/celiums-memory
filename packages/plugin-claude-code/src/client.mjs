@@ -193,6 +193,17 @@ export const client = {
     };
   },
 
+  async circadian({ userId = DEFAULT_USER } = {}) {
+    if (REMOTE_URL) {
+      return safe(() => httpRequest(`/circadian?userId=${encodeURIComponent(userId)}`, 'GET'));
+    }
+    // Local mode: return basic time info
+    return safe(async () => {
+      const h = new Date().getHours() + new Date().getMinutes() / 60;
+      return { localHour: h, timeOfDay: h >= 5 && h < 12 ? 'morning' : h < 18 ? 'afternoon' : 'night', rhythmComponent: 0.5 };
+    });
+  },
+
   async consolidate({ conversation, userId = DEFAULT_USER }) {
     if (REMOTE_URL) {
       return safe(() => httpRequest('/consolidate', 'POST', { conversation, userId }));
