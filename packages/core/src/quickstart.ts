@@ -692,8 +692,10 @@ async function main() {
         const body = await readBody(req);
         const enforcedUserId = (req as any).__enforcedUserId;
         const uid = enforcedUserId || body.params?.arguments?.userId || body.params?.userId || 'default';
+        const pid = body.params?.arguments?.projectId || body.params?.projectId || null;
         const mcpCtx: McpToolContext = {
           userId: uid,
+          projectId: pid === 'global' ? null : pid,
           capabilities: { opencore: true, fleet: false, atlas: false }, // dispatcher overrides this
           moduleStore: moduleStore as unknown,
           memoryEngine: engine as unknown,
@@ -741,8 +743,10 @@ async function main() {
         // Admin scope (and localhost) can store as any userId.
         const enforcedUserId = (req as any).__enforcedUserId;
         const userId = enforcedUserId || body.userId || 'default';
+        const projectId = body.projectId || null;
         const result = await engine.store([{
           userId,
+          projectId,
           content: body.content,
           tags: body.tags,
         }]);

@@ -153,9 +153,11 @@ const handleMapNetwork: McpToolHandler = async (_args, ctx) => {
 const handleRemember: McpToolHandler = async (args, ctx) => {
   const content = requireString(args, 'content');
   const tags = Array.isArray(args.tags) ? args.tags.map(String) : undefined;
+  const projectId = (args.projectId as string) || ctx.projectId || null;
   const engine = getMemoryEngine(ctx);
   const result = await engine.store([{
     userId: ctx.userId,
+    projectId,
     content,
     ...(tags ? { tags } : {}),
   } as any]);
@@ -193,10 +195,12 @@ const handleRemember: McpToolHandler = async (args, ctx) => {
 const handleRecall: McpToolHandler = async (args, ctx) => {
   const query = requireString(args, 'query');
   const limit = safeLimit(args.limit, 10, 50);
+  const projectId = (args.projectId as string) || ctx.projectId || null;
   const engine = getMemoryEngine(ctx);
   const result = await engine.recall({
     query,
     userId: ctx.userId,
+    projectId,
     limit,
   });
   // Track interaction for circadian rhythm + PAD
@@ -292,12 +296,13 @@ export const OPENCORE_TOOLS: RegisteredTool[] = [
     group: 'opencore',
     definition: {
       name: 'remember',
-      description: 'Store something in your persistent emotional memory. Survives across all sessions, all machines. Behind the scenes: PAD emotional vector, importance scoring, dopamine modulation, circadian-adjusted limbic state, triple-store persistence.',
+      description: 'Store something in your persistent emotional memory. Survives across all sessions, all machines. Scoped to the current project by default.',
       inputSchema: {
         type: 'object',
         properties: {
-          content: { type: 'string', description: 'What to remember (any text)' },
-          tags:    { type: 'array', description: 'Optional tags for filtering' },
+          content:   { type: 'string', description: 'What to remember (any text)' },
+          tags:      { type: 'array', description: 'Optional tags for filtering' },
+          projectId: { type: 'string', description: 'Project scope (auto-detected from cwd if not set). Use "global" for cross-project memories.' },
         },
         required: ['content'],
       },
@@ -308,12 +313,13 @@ export const OPENCORE_TOOLS: RegisteredTool[] = [
     group: 'opencore',
     definition: {
       name: 'recall',
-      description: 'Recall memories by semantic + emotional relevance. Returns ranked results with mood snapshot. Behind the scenes: query embedding, hybrid retrieval, Theory-of-Mind processing, SAR filtering, per-user limbic update.',
+      description: 'Recall memories by semantic + emotional relevance. Searches current project + global by default. Pass projectId to search a specific project.',
       inputSchema: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'What you want to recall (free text)' },
-          limit: { type: 'number', description: 'Max results (default 10, max 50)' },
+          query:     { type: 'string', description: 'What you want to recall (free text)' },
+          limit:     { type: 'number', description: 'Max results (default 10, max 50)' },
+          projectId: { type: 'string', description: 'Search specific project. Default: current + global. Use "all" to search everywhere.' },
         },
         required: ['query'],
       },

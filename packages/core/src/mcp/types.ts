@@ -91,6 +91,8 @@ export function detectCapabilities(env: NodeJS.ProcessEnv = process.env): McpCap
  */
 export interface McpToolContext {
   userId: string;
+  /** Project scope — derived from cwd. Null = global memory. */
+  projectId?: string;
   capabilities: McpCapabilities;
   /** The store the handler can talk to (knowledge module store). */
   moduleStore?: unknown;
