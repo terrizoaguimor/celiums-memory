@@ -18,7 +18,7 @@
     "url": "https://github.com/terrizoaguimor/celiums-memory.git",
     "directory": "packages/modules-starter"
   },
-  "license": "CC-BY-NC-4.0",
+  "license": "Apache-2.0",
   "author": {
     "name": "Celiums Solutions LLC",
     "email": "hello@celiums.ai",
