@@ -350,7 +350,7 @@ Auto-detected from your OS during `celiums init`.
 |---|---|
 | `@celiums/memory` | Cognitive engine (15 modules, PAD, circadian) |
 | `@celiums/memory-types` | TypeScript types |
-| `@celiums/modules-starter` | 5,100 curated expert modules (CC-BY-NC-4.0) |
+| `@celiums/modules-starter` | 5,100 curated expert modules |
 | `@celiums/core` | Knowledge engine (search, modules, tools) |
 | `@celiums/cli` | CLI (`celiums init`, `celiums start`) |
 | `@celiums/adapter-mcp` | MCP protocol adapter |
@@ -398,8 +398,7 @@ Your contribution keeps the GPUs running, the coffee flowing, and this project a
 
 ## License
 
-- **Code:** [Apache 2.0](LICENSE)
-- **Starter Modules (5,100):** [CC-BY-NC-4.0](packages/modules-starter/LICENSE) — use freely, cannot resell
+Apache 2.0 — see [LICENSE](LICENSE)
 
 ---
 
