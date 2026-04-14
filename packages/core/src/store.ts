@@ -916,7 +916,7 @@ export class MemoryStore {
     if (projectId) {
       mustFilters.push({
         key: 'project_id',
-        match: { any: [projectId, ''] },
+        match: { any: [projectId, '', 'global'] },
       });
     }
 
@@ -949,7 +949,7 @@ export class MemoryStore {
       ? `SELECT id, similarity(content, $1) AS score
          FROM memories
          WHERE user_id = $2
-           AND (project_id = $3 OR scope = 'global')
+           AND (project_id = $3 OR project_id = '' OR project_id IS NULL OR scope = 'global')
            AND state NOT IN ('decayed')
            AND similarity(content, $1) > 0.05
          ORDER BY score DESC
