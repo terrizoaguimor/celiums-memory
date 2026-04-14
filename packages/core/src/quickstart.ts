@@ -835,27 +835,17 @@ async function main() {
   });
 
   server.listen(PORT, HOST, () => {
-    console.log(`
+    // Use stderr for startup banner to avoid polluting stdout (mcp-proxy reads stdout for JSON-RPC)
+    process.stderr.write(`
   [celiums-memory] API running at http://localhost:${PORT}
 
   Try it:
 
-    # Store a memory
-    curl -X POST http://localhost:${PORT}/store \\
-      -H "Content-Type: application/json" \\
-      -d '{"content": "I love building AI systems! This is amazing!"}'
-
-    # Recall memories
-    curl -X POST http://localhost:${PORT}/recall \\
-      -H "Content-Type: application/json" \\
-      -d '{"query": "What do I enjoy?"}'
-
-    # Check emotional state
+    curl -X POST http://localhost:${PORT}/store -H "Content-Type: application/json" -d '{"content": "hello"}'
+    curl -X POST http://localhost:${PORT}/recall -H "Content-Type: application/json" -d '{"query": "hello"}'
     curl http://localhost:${PORT}/emotion
-
-    # Health check
     curl http://localhost:${PORT}/health
-    `);
+\n`);
   });
 
   process.on('SIGINT', async () => {
