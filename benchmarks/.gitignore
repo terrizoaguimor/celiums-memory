@@ -1,0 +1,7 @@
+# Benchmark result files (large, reproducible)
+*.jsonl
+*.json
+!BENCHMARKS.md
+
+# Dataset (download via instructions in BENCHMARKS.md)
+LongMemEval/
