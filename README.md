@@ -15,6 +15,7 @@
 [![License](https://img.shields.io/github/license/terrizoaguimor/celiums-memory?style=flat-square)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![GitHub Stars](https://img.shields.io/github/stars/terrizoaguimor/celiums-memory?style=flat-square)](https://github.com/terrizoaguimor/celiums-memory)
+[![Glama](https://glama.ai/mcp/servers/terrizoaguimor/celiums-memory/badges/score.svg)](https://glama.ai/mcp/servers/terrizoaguimor/celiums-memory)
 
 <br />
 
