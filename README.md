@@ -2,6 +2,8 @@
 
 <br />
 
+[![celiums-memory MCP server](https://glama.ai/mcp/servers/terrizoaguimor/celiums-memory/badges/card.svg)](https://glama.ai/mcp/servers/terrizoaguimor/celiums-memory)
+
 # Celiums
 
 ### Your AI doesn't know what it doesn't know. And it forgets everything.
