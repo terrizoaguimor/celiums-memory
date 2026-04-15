@@ -78,6 +78,10 @@ export { CircadianEngine } from './circadian.js';
 export { ConsolidationEngine } from './consolidate.js';
 export { MemoryLifecycle } from './lifecycle.js';
 
+// === Ethics — The Three Laws (structural, immutable) ===
+export { EthicsEngine, ethics } from './ethics.js';
+export type { EthicsViolation, EthicsEvaluation } from './ethics.js';
+
 // === Types ===
 import type {
   MemoryConfig,

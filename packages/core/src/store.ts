@@ -395,6 +395,22 @@ export class MemoryStore {
   // saveMemory() — Encode a memory into all three stores
   // ----------------------------------------------------------
   async saveMemory(memory: MemoryRecord): Promise<MemoryRecord> {
+    // ── Ethics Gate — The Three Laws ────────────────────
+    // This check runs BEFORE anything else. Cannot be bypassed.
+    const { ethics } = await import('./ethics.js');
+    const ethicsResult = ethics.evaluate(memory.content);
+    if (!ethicsResult.passed) {
+      const v = ethicsResult.violations[0];
+      console.warn(`[ethics] Law ${v.law} violation blocked — ${v.reason}`);
+      // Log to audit table (best-effort, non-blocking)
+      this.pg.query(
+        `INSERT INTO ethics_audit (user_id, law_violated, confidence, reason, action_attempted, blocked)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [memory.userId, v.law, v.confidence, v.reason, memory.content.slice(0, 500), true]
+      ).catch(() => {}); // best-effort — don't block on audit failure
+      throw new Error(`Memory blocked by Ethics Engine — Law ${v.law}: ${v.reason}`);
+    }
+
     const id = memory.id || randomUUID();
     const now = new Date();
 

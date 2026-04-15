@@ -242,6 +242,23 @@ export function createDestructiveGuard(destructiveAllowed: boolean, allowedActio
   };
 }
 
+/** Ethics guard — The Three Laws enforced at the autonomy layer. ALWAYS first. */
+export function createEthicsGuard(): SafetyGuard {
+  return {
+    name: 'ethics-law-enforcement',
+    check(_session, action, input) {
+      const { ethics } = require('./ethics.js');
+      const content = typeof input === 'string' ? input : JSON.stringify(input);
+      const result = ethics.evaluate(content);
+      if (!result.passed) {
+        const v = result.violations[0];
+        return `[LAW ${v.law} VIOLATION] ${v.reason}`;
+      }
+      return null;
+    },
+  };
+}
+
 /** Anomaly detection guard — stops if error rate is too high. */
 export function createAnomalyGuard(maxErrorRate: number = 0.3): SafetyGuard {
   return {
@@ -303,9 +320,10 @@ export class AutonomyEngine {
       summary: '',
     };
 
-    // Build guards from policy
+    // Build guards from policy — Ethics guard is ALWAYS first, cannot be removed
     const p = request.policy;
     this.guards = [
+      createEthicsGuard(),  // ← Law enforcement — immutable, first in chain
       createTimeLimitGuard(p.maxHours),
       createBudgetGuard(p.maxBudgetUSD),
       createActionCountGuard(p.maxActions),
