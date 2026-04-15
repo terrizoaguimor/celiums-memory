@@ -23,6 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createInterface } from 'node:readline';
 
 // 2026-04-11: Knowledge engine integration — the super software.
 // We import the ModuleStore directly (skipping createEngine which requires
@@ -841,9 +842,40 @@ async function main() {
   });
 
   server.listen(PORT, HOST, () => {
-    // Use stderr ONLY — mcp-proxy reads stdout for JSON-RPC, any non-JSON on stdout breaks it
     process.stderr.write(`[celiums-memory] API running at http://localhost:${PORT}\n`);
   });
+
+  // ── Stdio transport for mcp-proxy ────────────────────────
+  // When launched by mcp-proxy, stdin is piped (not a TTY).
+  // Read JSON-RPC from stdin, dispatch to MCP handler, write response to stdout.
+  if (!process.stdin.isTTY) {
+    process.stderr.write('[celiums-memory] stdio transport enabled\n');
+    const rl = createInterface({ input: process.stdin, terminal: false });
+    rl.on('line', async (line: string) => {
+      if (!line.trim()) return;
+      try {
+        const body = JSON.parse(line);
+        const mcpCtx: McpToolContext = {
+          userId: 'stdio',
+          projectId: null,
+          capabilities: { opencore: true, fleet: false, atlas: false },
+          moduleStore: moduleStore as unknown,
+          memoryEngine: engine as unknown,
+          pool: memoryPool as unknown,
+        };
+        const response = await dispatchMcp(body, mcpCtx, process.env);
+        process.stdout.write(JSON.stringify(response) + '\n');
+      } catch (err: any) {
+        const id = (() => { try { return JSON.parse(line).id; } catch { return null; } })();
+        process.stdout.write(JSON.stringify({
+          jsonrpc: '2.0',
+          error: { code: -32700, message: 'Parse error' },
+          id,
+        }) + '\n');
+      }
+    });
+    rl.on('close', () => process.exit(0));
+  }
 
   process.on('SIGINT', async () => {
     console.log('\n[celiums-memory] Shutting down...');

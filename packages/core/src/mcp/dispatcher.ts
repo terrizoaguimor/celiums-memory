@@ -113,6 +113,11 @@ export async function dispatchMcp(
     });
   }
 
+  // ─── ping (liveness check from mcp-proxy) ─────────────────
+  if (rpc.method === 'ping') {
+    return rpcOk(rpc.id, {});
+  }
+
   // ─── notifications/initialized (no-op, no response needed) ─
   if (rpc.method === 'notifications/initialized') {
     // For HTTP we still return something — but the client should ignore it.
