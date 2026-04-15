@@ -13,10 +13,10 @@ importers:
     devDependencies:
       '@changesets/cli':
         specifier: ^2.27.7
-        version: 2.30.0(@types/node@22.19.17)
+        version: 2.30.0(@types/node@25.6.0)
       '@types/node':
-        specifier: ^22.0.0
-        version: 22.19.17
+        specifier: ^25.6.0
+        version: 25.6.0
       '@typescript-eslint/eslint-plugin':
         specifier: ^8.0.0
         version: 8.58.1(@typescript-eslint/parser@8.58.1(eslint@9.39.4)(typescript@5.9.3))(eslint@9.39.4)(typescript@5.9.3)
@@ -46,7 +46,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^2.0.5
-        version: 2.1.9(@types/node@22.19.17)
+        version: 2.1.9(@types/node@25.6.0)
 
   packages/adapter-langchain:
     dependencies:
@@ -97,7 +97,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.0.0
-        version: 3.2.4(@types/node@24.12.2)(tsx@4.21.0)
+        version: 3.2.4(@types/node@25.6.0)(tsx@4.21.0)
 
   packages/cli:
     dependencies:
@@ -160,13 +160,13 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.0.0
-        version: 3.2.4(@types/node@24.12.2)(tsx@4.21.0)
+        version: 3.2.4(@types/node@25.6.0)(tsx@4.21.0)
 
   packages/knowledge:
     dependencies:
       '@celiums/types':
-        specifier: workspace:*
-        version: link:../knowledge-types
+        specifier: ^0.1.0
+        version: 0.1.1
       '@qdrant/js-client-rest':
         specifier: ^1.12.0
         version: 1.17.0(typescript@5.9.3)
@@ -182,32 +182,32 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.0.0
-        version: 3.2.4(@types/node@24.12.2)(tsx@4.21.0)
+        version: 3.2.4(@types/node@25.6.0)(tsx@4.21.0)
 
   packages/knowledge-adapter-a2a:
     dependencies:
       '@celiums/core':
-        specifier: workspace:*
-        version: link:../knowledge
+        specifier: ^0.1.0
+        version: 0.1.5(typescript@5.9.3)
       '@celiums/types':
-        specifier: workspace:*
-        version: link:../knowledge-types
+        specifier: ^0.1.0
+        version: 0.1.1
     devDependencies:
       typescript:
         specifier: ^5.5.4
         version: 5.9.3
       vitest:
         specifier: ^3.0.0
-        version: 3.2.4(@types/node@24.12.2)(tsx@4.21.0)
+        version: 3.2.4(@types/node@25.6.0)(tsx@4.21.0)
 
   packages/knowledge-adapter-mcp:
     dependencies:
       '@celiums/core':
-        specifier: workspace:*
-        version: link:../knowledge
+        specifier: ^0.1.0
+        version: 0.1.5(typescript@5.9.3)
       '@celiums/types':
-        specifier: workspace:*
-        version: link:../knowledge-types
+        specifier: ^0.1.0
+        version: 0.1.1
       '@modelcontextprotocol/sdk':
         specifier: ^1.12.0
         version: 1.29.0(@cfworker/json-schema@4.1.1)(zod@3.25.76)
@@ -220,63 +220,63 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.0.0
-        version: 3.2.4(@types/node@24.12.2)(tsx@4.21.0)
+        version: 3.2.4(@types/node@25.6.0)(tsx@4.21.0)
 
   packages/knowledge-adapter-openai:
     dependencies:
       '@celiums/core':
-        specifier: workspace:*
-        version: link:../knowledge
+        specifier: ^0.1.0
+        version: 0.1.5(typescript@5.9.3)
       '@celiums/types':
-        specifier: workspace:*
-        version: link:../knowledge-types
+        specifier: ^0.1.0
+        version: 0.1.1
     devDependencies:
       typescript:
         specifier: ^5.5.4
         version: 5.9.3
       vitest:
         specifier: ^3.0.0
-        version: 3.2.4(@types/node@24.12.2)(tsx@4.21.0)
+        version: 3.2.4(@types/node@25.6.0)(tsx@4.21.0)
 
   packages/knowledge-adapter-rest:
     dependencies:
       '@celiums/core':
-        specifier: workspace:*
-        version: link:../knowledge
+        specifier: ^0.1.0
+        version: 0.1.5(typescript@5.9.3)
       '@celiums/types':
-        specifier: workspace:*
-        version: link:../knowledge-types
+        specifier: ^0.1.0
+        version: 0.1.1
     devDependencies:
       typescript:
         specifier: ^5.5.4
         version: 5.9.3
       vitest:
         specifier: ^3.0.0
-        version: 3.2.4(@types/node@24.12.2)(tsx@4.21.0)
+        version: 3.2.4(@types/node@25.6.0)(tsx@4.21.0)
 
   packages/knowledge-cli:
     dependencies:
       '@celiums/adapter-a2a':
-        specifier: workspace:*
-        version: link:../knowledge-adapter-a2a
+        specifier: ^0.1.0
+        version: 0.1.2(typescript@5.9.3)
       '@celiums/adapter-mcp':
-        specifier: workspace:*
-        version: link:../knowledge-adapter-mcp
+        specifier: ^0.1.0
+        version: 0.1.2(@cfworker/json-schema@4.1.1)(typescript@5.9.3)
       '@celiums/adapter-openai':
-        specifier: workspace:*
-        version: link:../knowledge-adapter-openai
+        specifier: ^0.1.0
+        version: 0.1.2(typescript@5.9.3)
       '@celiums/adapter-rest':
-        specifier: workspace:*
-        version: link:../knowledge-adapter-rest
+        specifier: ^0.1.0
+        version: 0.1.2(typescript@5.9.3)
       '@celiums/core':
-        specifier: workspace:*
-        version: link:../knowledge
+        specifier: ^0.1.0
+        version: 0.1.5(typescript@5.9.3)
       '@celiums/modules-starter':
-        specifier: workspace:*
-        version: link:../modules-starter
+        specifier: ^0.1.0
+        version: 0.1.1
       '@celiums/types':
-        specifier: workspace:*
-        version: link:../knowledge-types
+        specifier: ^0.1.0
+        version: 0.1.1
       pg:
         specifier: ^8.13.0
         version: 8.20.0
@@ -334,7 +334,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.0.0
-        version: 3.2.4(@types/node@24.12.2)(tsx@4.21.0)
+        version: 3.2.4(@types/node@25.6.0)(tsx@4.21.0)
 
   packages/types:
     devDependencies:
@@ -361,6 +361,28 @@ packages:
   '@babel/runtime@7.29.2':
     resolution: {integrity: sha512-JiDShH45zKHWyGe4ZNVRrCjBz8Nh9TMmZG1kh4QTK8hCBTWBi8Da+i7s1fJw7/lYpM4ccepSNfqzZ/QvABBi5g==}
     engines: {node: '>=6.9.0'}
+
+  '@celiums/adapter-a2a@0.1.2':
+    resolution: {integrity: sha512-BTfU0oAezBKc2v1/doVYOdpES0m/jQVdAguO85yfVXgzECHmaRYGUR5sTJ0rYfFsXKp3vTeTCp5GEu8L8A7sEg==}
+
+  '@celiums/adapter-mcp@0.1.2':
+    resolution: {integrity: sha512-BjbwrreN6wfhjN1XvWdqVSmGqN43+ZVy8L27ppFEpfyg/lWwBhlJ0F9HWYoS6mvfvl2HXppZhku6qU4UDQiLtQ==}
+    hasBin: true
+
+  '@celiums/adapter-openai@0.1.2':
+    resolution: {integrity: sha512-CczhwMzKj3V0OfSN+I0C93jTUwkF2uBWzdnybRgFJoSIIdJG+FEsMyc961EQEccQmSgZJtdgoz67tdS7emjZ4w==}
+
+  '@celiums/adapter-rest@0.1.2':
+    resolution: {integrity: sha512-BNMFEKNhOFMv55fnZrSOWfFEUDFCsnt1aSMXFAyqOCtlGpZ4mXCNtXif4ty2A00bT6wM6Y8i5vRiWUqJQfKzuQ==}
+
+  '@celiums/core@0.1.5':
+    resolution: {integrity: sha512-FW4BFeGnkTToMqKTHrISeV8/VHwUQZHKFwLO5bYS8dn/PvehrogZEqQUSwvn+Gj3cbx6Euf99kwb8Vf9naoWzA==}
+
+  '@celiums/modules-starter@0.1.1':
+    resolution: {integrity: sha512-gw7q3vUgICr0tcZAGbO4PO3EyIbYM8ITVA22NoKZt9kjKCMRtPUJMLFtTV1x4jPeTjD7Gzal2jR+8rSOSyEvSA==}
+
+  '@celiums/types@0.1.1':
+    resolution: {integrity: sha512-/rueobX6sZ0mps7UU7FFMByd7Oy6JdcWAsyodcbT5R7dtOTTvNXXLgGQrwIqyHWr3GcNX6KaQKvFNOmMg16+Mg==}
 
   '@cfworker/json-schema@4.1.1':
     resolution: {integrity: sha512-gAmrUZSGtKc3AiBL71iNWxDsyUC5uMaKKGdvzYsBoTW/xi42JQHl7eKV2OYzCUqvc+D2RCcf7EXY2iCyFIk6og==}
@@ -1145,6 +1167,9 @@ packages:
 
   '@types/node@24.12.2':
     resolution: {integrity: sha512-A1sre26ke7HDIuY/M23nd9gfB+nrmhtYyMINbjI1zHJxYteKR6qSMX56FsmjMcDb3SMcjJg5BiRRgOCC/yBD0g==}
+
+  '@types/node@25.6.0':
+    resolution: {integrity: sha512-+qIYRKdNYJwY3vRCZMdJbPLJAtGjQBudzZzdzwQYkEPQd+PJGixUL5QfvCLDaULoLv+RhT3LDkwEfKaAkgSmNQ==}
 
   '@types/pg@8.20.0':
     resolution: {integrity: sha512-bEPFOaMAHTEP1EzpvHTbmwR8UsFyHSKsRisLIHVMXnpNefSbGA1bD6CVy+qKjGSqmZqNqBDV2azOBo8TgkcVow==}
@@ -3077,6 +3102,9 @@ packages:
   undici-types@7.16.0:
     resolution: {integrity: sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw==}
 
+  undici-types@7.19.2:
+    resolution: {integrity: sha512-qYVnV5OEm2AW8cJMCpdV20CDyaN3g0AjDlOGf1OW4iaDEx8MwdtChUp4zu4H0VP3nDRF/8RKWH+IPp9uW0YGZg==}
+
   undici@6.24.1:
     resolution: {integrity: sha512-sC+b0tB1whOCzbtlx20fx3WgCXwkW627p4EA9uM+/tNNPkSS+eSEld6pAs9nDv7WbY1UUljBMYPtu9BCOrCWKA==}
     engines: {node: '>=18.17'}
@@ -3321,6 +3349,61 @@ snapshots:
 
   '@babel/runtime@7.29.2': {}
 
+  '@celiums/adapter-a2a@0.1.2(typescript@5.9.3)':
+    dependencies:
+      '@celiums/core': 0.1.5(typescript@5.9.3)
+      '@celiums/types': 0.1.1
+    transitivePeerDependencies:
+      - pg-native
+      - typescript
+
+  '@celiums/adapter-mcp@0.1.2(@cfworker/json-schema@4.1.1)(typescript@5.9.3)':
+    dependencies:
+      '@celiums/core': 0.1.5(typescript@5.9.3)
+      '@celiums/types': 0.1.1
+      '@modelcontextprotocol/sdk': 1.29.0(@cfworker/json-schema@4.1.1)(zod@3.25.76)
+      zod: 3.25.76
+    transitivePeerDependencies:
+      - '@cfworker/json-schema'
+      - pg-native
+      - supports-color
+      - typescript
+
+  '@celiums/adapter-openai@0.1.2(typescript@5.9.3)':
+    dependencies:
+      '@celiums/core': 0.1.5(typescript@5.9.3)
+      '@celiums/types': 0.1.1
+    transitivePeerDependencies:
+      - pg-native
+      - typescript
+
+  '@celiums/adapter-rest@0.1.2(typescript@5.9.3)':
+    dependencies:
+      '@celiums/core': 0.1.5(typescript@5.9.3)
+      '@celiums/types': 0.1.1
+    transitivePeerDependencies:
+      - pg-native
+      - typescript
+
+  '@celiums/core@0.1.5(typescript@5.9.3)':
+    dependencies:
+      '@celiums/types': 0.1.1
+      '@qdrant/js-client-rest': 1.17.0(typescript@5.9.3)
+      pg: 8.20.0
+    transitivePeerDependencies:
+      - pg-native
+      - typescript
+
+  '@celiums/modules-starter@0.1.1':
+    dependencies:
+      pg: 8.20.0
+    optionalDependencies:
+      better-sqlite3: 11.10.0
+    transitivePeerDependencies:
+      - pg-native
+
+  '@celiums/types@0.1.1': {}
+
   '@cfworker/json-schema@4.1.1': {}
 
   '@changesets/apply-release-plan@7.1.0':
@@ -3352,7 +3435,7 @@ snapshots:
     dependencies:
       '@changesets/types': 6.1.0
 
-  '@changesets/cli@2.30.0(@types/node@22.19.17)':
+  '@changesets/cli@2.30.0(@types/node@25.6.0)':
     dependencies:
       '@changesets/apply-release-plan': 7.1.0
       '@changesets/assemble-release-plan': 6.0.9
@@ -3368,7 +3451,7 @@ snapshots:
       '@changesets/should-skip-package': 0.1.2
       '@changesets/types': 6.1.0
       '@changesets/write': 0.4.0
-      '@inquirer/external-editor': 1.0.3(@types/node@22.19.17)
+      '@inquirer/external-editor': 1.0.3(@types/node@25.6.0)
       '@manypkg/get-packages': 1.1.3
       ansi-colors: 4.1.3
       enquirer: 2.4.1
@@ -3678,12 +3761,12 @@ snapshots:
 
   '@humanwhocodes/retry@0.4.3': {}
 
-  '@inquirer/external-editor@1.0.3(@types/node@22.19.17)':
+  '@inquirer/external-editor@1.0.3(@types/node@25.6.0)':
     dependencies:
       chardet: 2.1.1
       iconv-lite: 0.7.2
     optionalDependencies:
-      '@types/node': 22.19.17
+      '@types/node': 25.6.0
 
   '@ioredis/commands@1.5.1': {}
 
@@ -4051,6 +4134,10 @@ snapshots:
     dependencies:
       undici-types: 7.16.0
 
+  '@types/node@25.6.0':
+    dependencies:
+      undici-types: 7.19.2
+
   '@types/pg@8.20.0':
     dependencies:
       '@types/node': 22.19.17
@@ -4163,21 +4250,21 @@ snapshots:
       chai: 5.3.3
       tinyrainbow: 2.0.0
 
-  '@vitest/mocker@2.1.9(vite@5.4.21(@types/node@22.19.17))':
+  '@vitest/mocker@2.1.9(vite@5.4.21(@types/node@25.6.0))':
     dependencies:
       '@vitest/spy': 2.1.9
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 5.4.21(@types/node@22.19.17)
+      vite: 5.4.21(@types/node@25.6.0)
 
-  '@vitest/mocker@3.2.4(vite@7.3.2(@types/node@24.12.2)(tsx@4.21.0))':
+  '@vitest/mocker@3.2.4(vite@7.3.2(@types/node@25.6.0)(tsx@4.21.0))':
     dependencies:
       '@vitest/spy': 3.2.4
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 7.3.2(@types/node@24.12.2)(tsx@4.21.0)
+      vite: 7.3.2(@types/node@25.6.0)(tsx@4.21.0)
 
   '@vitest/pretty-format@2.1.9':
     dependencies:
@@ -6303,6 +6390,8 @@ snapshots:
 
   undici-types@7.16.0: {}
 
+  undici-types@7.19.2: {}
+
   undici@6.24.1: {}
 
   universalify@0.1.2: {}
@@ -6324,13 +6413,13 @@ snapshots:
 
   vary@1.1.2: {}
 
-  vite-node@2.1.9(@types/node@22.19.17):
+  vite-node@2.1.9(@types/node@25.6.0):
     dependencies:
       cac: 6.7.14
       debug: 4.4.3
       es-module-lexer: 1.7.0
       pathe: 1.1.2
-      vite: 5.4.21(@types/node@22.19.17)
+      vite: 5.4.21(@types/node@25.6.0)
     transitivePeerDependencies:
       - '@types/node'
       - less
@@ -6342,13 +6431,13 @@ snapshots:
       - supports-color
       - terser
 
-  vite-node@3.2.4(@types/node@24.12.2)(tsx@4.21.0):
+  vite-node@3.2.4(@types/node@25.6.0)(tsx@4.21.0):
     dependencies:
       cac: 6.7.14
       debug: 4.4.3
       es-module-lexer: 1.7.0
       pathe: 2.0.3
-      vite: 7.3.2(@types/node@24.12.2)(tsx@4.21.0)
+      vite: 7.3.2(@types/node@25.6.0)(tsx@4.21.0)
     transitivePeerDependencies:
       - '@types/node'
       - jiti
@@ -6363,16 +6452,16 @@ snapshots:
       - tsx
       - yaml
 
-  vite@5.4.21(@types/node@22.19.17):
+  vite@5.4.21(@types/node@25.6.0):
     dependencies:
       esbuild: 0.21.5
       postcss: 8.5.9
       rollup: 4.60.1
     optionalDependencies:
-      '@types/node': 22.19.17
+      '@types/node': 25.6.0
       fsevents: 2.3.3
 
-  vite@7.3.2(@types/node@24.12.2)(tsx@4.21.0):
+  vite@7.3.2(@types/node@25.6.0)(tsx@4.21.0):
     dependencies:
       esbuild: 0.27.7
       fdir: 6.5.0(picomatch@4.0.4)
@@ -6381,14 +6470,14 @@ snapshots:
       rollup: 4.60.1
       tinyglobby: 0.2.16
     optionalDependencies:
-      '@types/node': 24.12.2
+      '@types/node': 25.6.0
       fsevents: 2.3.3
       tsx: 4.21.0
 
-  vitest@2.1.9(@types/node@22.19.17):
+  vitest@2.1.9(@types/node@25.6.0):
     dependencies:
       '@vitest/expect': 2.1.9
-      '@vitest/mocker': 2.1.9(vite@5.4.21(@types/node@22.19.17))
+      '@vitest/mocker': 2.1.9(vite@5.4.21(@types/node@25.6.0))
       '@vitest/pretty-format': 2.1.9
       '@vitest/runner': 2.1.9
       '@vitest/snapshot': 2.1.9
@@ -6404,11 +6493,11 @@ snapshots:
       tinyexec: 0.3.2
       tinypool: 1.1.1
       tinyrainbow: 1.2.0
-      vite: 5.4.21(@types/node@22.19.17)
-      vite-node: 2.1.9(@types/node@22.19.17)
+      vite: 5.4.21(@types/node@25.6.0)
+      vite-node: 2.1.9(@types/node@25.6.0)
       why-is-node-running: 2.3.0
     optionalDependencies:
-      '@types/node': 22.19.17
+      '@types/node': 25.6.0
     transitivePeerDependencies:
       - less
       - lightningcss
@@ -6420,11 +6509,11 @@ snapshots:
       - supports-color
       - terser
 
-  vitest@3.2.4(@types/node@24.12.2)(tsx@4.21.0):
+  vitest@3.2.4(@types/node@25.6.0)(tsx@4.21.0):
     dependencies:
       '@types/chai': 5.2.3
       '@vitest/expect': 3.2.4
-      '@vitest/mocker': 3.2.4(vite@7.3.2(@types/node@24.12.2)(tsx@4.21.0))
+      '@vitest/mocker': 3.2.4(vite@7.3.2(@types/node@25.6.0)(tsx@4.21.0))
       '@vitest/pretty-format': 3.2.4
       '@vitest/runner': 3.2.4
       '@vitest/snapshot': 3.2.4
@@ -6442,11 +6531,11 @@ snapshots:
       tinyglobby: 0.2.16
       tinypool: 1.1.1
       tinyrainbow: 2.0.0
-      vite: 7.3.2(@types/node@24.12.2)(tsx@4.21.0)
-      vite-node: 3.2.4(@types/node@24.12.2)(tsx@4.21.0)
+      vite: 7.3.2(@types/node@25.6.0)(tsx@4.21.0)
+      vite-node: 3.2.4(@types/node@25.6.0)(tsx@4.21.0)
       why-is-node-running: 2.3.0
     optionalDependencies:
-      '@types/node': 24.12.2
+      '@types/node': 25.6.0
     transitivePeerDependencies:
       - jiti
       - less
