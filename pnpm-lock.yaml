@@ -165,8 +165,8 @@ importers:
   packages/knowledge:
     dependencies:
       '@celiums/types':
-        specifier: workspace:*
-        version: link:../knowledge-types
+        specifier: ^0.1.0
+        version: 0.1.1
       '@qdrant/js-client-rest':
         specifier: ^1.12.0
         version: 1.17.0(typescript@5.9.3)
@@ -187,11 +187,11 @@ importers:
   packages/knowledge-adapter-a2a:
     dependencies:
       '@celiums/core':
-        specifier: workspace:*
-        version: link:../knowledge
+        specifier: ^0.1.0
+        version: 0.1.5(typescript@5.9.3)
       '@celiums/types':
-        specifier: workspace:*
-        version: link:../knowledge-types
+        specifier: ^0.1.0
+        version: 0.1.1
     devDependencies:
       typescript:
         specifier: ^5.5.4
@@ -203,17 +203,17 @@ importers:
   packages/knowledge-adapter-mcp:
     dependencies:
       '@celiums/core':
-        specifier: workspace:*
-        version: link:../knowledge
+        specifier: ^0.1.0
+        version: 0.1.5(typescript@5.9.3)
       '@celiums/types':
-        specifier: workspace:*
-        version: link:../knowledge-types
+        specifier: ^0.1.0
+        version: 0.1.1
       '@modelcontextprotocol/sdk':
         specifier: ^1.12.0
-        version: 1.29.0(@cfworker/json-schema@4.1.1)(zod@3.25.76)
+        version: 1.29.0(@cfworker/json-schema@4.1.1)(zod@4.3.6)
       zod:
-        specifier: ^3.23.0
-        version: 3.25.76
+        specifier: ^4.3.6
+        version: 4.3.6
     devDependencies:
       typescript:
         specifier: ^5.5.4
@@ -225,11 +225,11 @@ importers:
   packages/knowledge-adapter-openai:
     dependencies:
       '@celiums/core':
-        specifier: workspace:*
-        version: link:../knowledge
+        specifier: ^0.1.0
+        version: 0.1.5(typescript@5.9.3)
       '@celiums/types':
-        specifier: workspace:*
-        version: link:../knowledge-types
+        specifier: ^0.1.0
+        version: 0.1.1
     devDependencies:
       typescript:
         specifier: ^5.5.4
@@ -241,11 +241,11 @@ importers:
   packages/knowledge-adapter-rest:
     dependencies:
       '@celiums/core':
-        specifier: workspace:*
-        version: link:../knowledge
+        specifier: ^0.1.0
+        version: 0.1.5(typescript@5.9.3)
       '@celiums/types':
-        specifier: workspace:*
-        version: link:../knowledge-types
+        specifier: ^0.1.0
+        version: 0.1.1
     devDependencies:
       typescript:
         specifier: ^5.5.4
@@ -257,26 +257,26 @@ importers:
   packages/knowledge-cli:
     dependencies:
       '@celiums/adapter-a2a':
-        specifier: workspace:*
-        version: link:../knowledge-adapter-a2a
+        specifier: ^0.1.0
+        version: 0.1.2(typescript@5.9.3)
       '@celiums/adapter-mcp':
-        specifier: workspace:*
-        version: link:../knowledge-adapter-mcp
+        specifier: ^0.1.0
+        version: 0.1.2(@cfworker/json-schema@4.1.1)(typescript@5.9.3)
       '@celiums/adapter-openai':
-        specifier: workspace:*
-        version: link:../knowledge-adapter-openai
+        specifier: ^0.1.0
+        version: 0.1.2(typescript@5.9.3)
       '@celiums/adapter-rest':
-        specifier: workspace:*
-        version: link:../knowledge-adapter-rest
+        specifier: ^0.1.0
+        version: 0.1.2(typescript@5.9.3)
       '@celiums/core':
-        specifier: workspace:*
-        version: link:../knowledge
+        specifier: ^0.1.0
+        version: 0.1.5(typescript@5.9.3)
       '@celiums/modules-starter':
-        specifier: workspace:*
-        version: link:../modules-starter
+        specifier: ^0.1.0
+        version: 0.1.1
       '@celiums/types':
-        specifier: workspace:*
-        version: link:../knowledge-types
+        specifier: ^0.1.0
+        version: 0.1.1
       pg:
         specifier: ^8.13.0
         version: 8.20.0
@@ -311,10 +311,10 @@ importers:
         version: link:../core
       '@modelcontextprotocol/sdk':
         specifier: ^1.0.0
-        version: 1.29.0(@cfworker/json-schema@4.1.1)(zod@3.25.76)
+        version: 1.29.0(@cfworker/json-schema@4.1.1)(zod@4.3.6)
       zod:
-        specifier: ^3.23.0
-        version: 3.25.76
+        specifier: ^4.3.6
+        version: 4.3.6
     optionalDependencies:
       better-sqlite3:
         specifier: ^11.5.0
@@ -361,6 +361,28 @@ packages:
   '@babel/runtime@7.29.2':
     resolution: {integrity: sha512-JiDShH45zKHWyGe4ZNVRrCjBz8Nh9TMmZG1kh4QTK8hCBTWBi8Da+i7s1fJw7/lYpM4ccepSNfqzZ/QvABBi5g==}
     engines: {node: '>=6.9.0'}
+
+  '@celiums/adapter-a2a@0.1.2':
+    resolution: {integrity: sha512-BTfU0oAezBKc2v1/doVYOdpES0m/jQVdAguO85yfVXgzECHmaRYGUR5sTJ0rYfFsXKp3vTeTCp5GEu8L8A7sEg==}
+
+  '@celiums/adapter-mcp@0.1.2':
+    resolution: {integrity: sha512-BjbwrreN6wfhjN1XvWdqVSmGqN43+ZVy8L27ppFEpfyg/lWwBhlJ0F9HWYoS6mvfvl2HXppZhku6qU4UDQiLtQ==}
+    hasBin: true
+
+  '@celiums/adapter-openai@0.1.2':
+    resolution: {integrity: sha512-CczhwMzKj3V0OfSN+I0C93jTUwkF2uBWzdnybRgFJoSIIdJG+FEsMyc961EQEccQmSgZJtdgoz67tdS7emjZ4w==}
+
+  '@celiums/adapter-rest@0.1.2':
+    resolution: {integrity: sha512-BNMFEKNhOFMv55fnZrSOWfFEUDFCsnt1aSMXFAyqOCtlGpZ4mXCNtXif4ty2A00bT6wM6Y8i5vRiWUqJQfKzuQ==}
+
+  '@celiums/core@0.1.5':
+    resolution: {integrity: sha512-FW4BFeGnkTToMqKTHrISeV8/VHwUQZHKFwLO5bYS8dn/PvehrogZEqQUSwvn+Gj3cbx6Euf99kwb8Vf9naoWzA==}
+
+  '@celiums/modules-starter@0.1.1':
+    resolution: {integrity: sha512-gw7q3vUgICr0tcZAGbO4PO3EyIbYM8ITVA22NoKZt9kjKCMRtPUJMLFtTV1x4jPeTjD7Gzal2jR+8rSOSyEvSA==}
+
+  '@celiums/types@0.1.1':
+    resolution: {integrity: sha512-/rueobX6sZ0mps7UU7FFMByd7Oy6JdcWAsyodcbT5R7dtOTTvNXXLgGQrwIqyHWr3GcNX6KaQKvFNOmMg16+Mg==}
 
   '@cfworker/json-schema@4.1.1':
     resolution: {integrity: sha512-gAmrUZSGtKc3AiBL71iNWxDsyUC5uMaKKGdvzYsBoTW/xi42JQHl7eKV2OYzCUqvc+D2RCcf7EXY2iCyFIk6og==}
@@ -3321,6 +3343,61 @@ snapshots:
 
   '@babel/runtime@7.29.2': {}
 
+  '@celiums/adapter-a2a@0.1.2(typescript@5.9.3)':
+    dependencies:
+      '@celiums/core': 0.1.5(typescript@5.9.3)
+      '@celiums/types': 0.1.1
+    transitivePeerDependencies:
+      - pg-native
+      - typescript
+
+  '@celiums/adapter-mcp@0.1.2(@cfworker/json-schema@4.1.1)(typescript@5.9.3)':
+    dependencies:
+      '@celiums/core': 0.1.5(typescript@5.9.3)
+      '@celiums/types': 0.1.1
+      '@modelcontextprotocol/sdk': 1.29.0(@cfworker/json-schema@4.1.1)(zod@3.25.76)
+      zod: 3.25.76
+    transitivePeerDependencies:
+      - '@cfworker/json-schema'
+      - pg-native
+      - supports-color
+      - typescript
+
+  '@celiums/adapter-openai@0.1.2(typescript@5.9.3)':
+    dependencies:
+      '@celiums/core': 0.1.5(typescript@5.9.3)
+      '@celiums/types': 0.1.1
+    transitivePeerDependencies:
+      - pg-native
+      - typescript
+
+  '@celiums/adapter-rest@0.1.2(typescript@5.9.3)':
+    dependencies:
+      '@celiums/core': 0.1.5(typescript@5.9.3)
+      '@celiums/types': 0.1.1
+    transitivePeerDependencies:
+      - pg-native
+      - typescript
+
+  '@celiums/core@0.1.5(typescript@5.9.3)':
+    dependencies:
+      '@celiums/types': 0.1.1
+      '@qdrant/js-client-rest': 1.17.0(typescript@5.9.3)
+      pg: 8.20.0
+    transitivePeerDependencies:
+      - pg-native
+      - typescript
+
+  '@celiums/modules-starter@0.1.1':
+    dependencies:
+      pg: 8.20.0
+    optionalDependencies:
+      better-sqlite3: 11.10.0
+    transitivePeerDependencies:
+      - pg-native
+
+  '@celiums/types@0.1.1': {}
+
   '@cfworker/json-schema@4.1.1': {}
 
   '@changesets/apply-release-plan@7.1.0':
@@ -3713,7 +3790,7 @@ snapshots:
       mustache: 4.2.0
       p-queue: 6.6.2
       uuid: 11.1.0
-      zod: 3.25.76
+      zod: 4.3.6
     transitivePeerDependencies:
       - '@opentelemetry/api'
       - '@opentelemetry/exporter-trace-otlp-proto'
