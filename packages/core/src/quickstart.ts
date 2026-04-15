@@ -318,16 +318,70 @@ async function main() {
     console.log('  Fallback: single CELIUMS_API_KEY');
   } else {
     console.log('  Mode:     single-key');
-    console.log(`  API Key:  ${SINGLE_API_KEY}`);
+    console.log(`  API Key:  ${SINGLE_API_KEY.substring(0, 8)}...(masked)`);
   }
   console.log('  Localhost requests bypass auth (loopback only).');
   console.log('  /health is always public.');
   console.log('  ──────────────────────────────────────────────────');
   console.log('');
 
+  // ── Rate limiting (per-IP, sliding window) ──────────────────────
+  const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+  const RATE_LIMIT_WINDOW = 60_000; // 1 minute
+  const RATE_LIMIT_MAX = 120;       // 120 req/min per IP
+
+  function getClientIp(req: http.IncomingMessage): string {
+    return (req.headers['cf-connecting-ip'] as string)
+      || (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
+      || req.socket.remoteAddress
+      || 'unknown';
+  }
+
+  function checkRateLimit(ip: string): boolean {
+    const now = Date.now();
+    const entry = rateLimitMap.get(ip);
+    if (!entry || now > entry.resetAt) {
+      rateLimitMap.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW });
+      return true;
+    }
+    entry.count++;
+    return entry.count <= RATE_LIMIT_MAX;
+  }
+
+  // Cleanup stale entries every 5 minutes
+  setInterval(() => {
+    const now = Date.now();
+    for (const [ip, entry] of rateLimitMap) {
+      if (now > entry.resetAt) rateLimitMap.delete(ip);
+    }
+  }, 300_000);
+
+  // ── CORS configuration ─────────────────────────────────────────
+  const CORS_ORIGINS = (process.env.CELIUMS_CORS_ORIGINS || '').split(',').filter(Boolean);
+
+  function getCorsOrigin(req: http.IncomingMessage): string {
+    const origin = req.headers.origin || '';
+    // If no CORS_ORIGINS configured, allow all (dev mode)
+    if (CORS_ORIGINS.length === 0) return '*';
+    // If origin matches whitelist, reflect it
+    if (CORS_ORIGINS.includes(origin)) return origin;
+    // Localhost always allowed for dev
+    if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) return origin;
+    return '';
+  }
+
   const server = http.createServer(async (req, res) => {
+    // Rate limit check
+    const clientIp = getClientIp(req);
+    if (!checkRateLimit(clientIp)) {
+      res.writeHead(429, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Too many requests. Try again later.' }));
+      return;
+    }
+
+    const corsOrigin = getCorsOrigin(req);
     res.setHeader('Content-Type', 'application/json');
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    if (corsOrigin) res.setHeader('Access-Control-Allow-Origin', corsOrigin);
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 

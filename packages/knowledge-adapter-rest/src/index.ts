@@ -67,7 +67,12 @@ export class RestAdapter implements CeliumsAdapter {
     this.server = createServer(async (req, res) => {
       // CORS headers
       if (this.config.cors !== false) {
-        res.setHeader("Access-Control-Allow-Origin", "*");
+        const allowedOrigins = (process.env.CELIUMS_CORS_ORIGINS || '').split(',').filter(Boolean);
+        const origin = req.headers.origin || '';
+        const corsOrigin = allowedOrigins.length === 0 ? '*'
+          : allowedOrigins.includes(origin) ? origin
+          : origin.startsWith('http://localhost:') ? origin : '';
+        if (corsOrigin) res.setHeader("Access-Control-Allow-Origin", corsOrigin);
         res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
         res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
         if (req.method === "OPTIONS") {
@@ -323,9 +328,19 @@ export class RestAdapter implements CeliumsAdapter {
   }
 
   private async readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-    return new Promise((resolve) => {
+    const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10MB
+    return new Promise((resolve, reject) => {
       let body = "";
-      req.on("data", (chunk) => { body += chunk; });
+      let bytes = 0;
+      req.on("data", (chunk) => {
+        bytes += chunk.length;
+        if (bytes > MAX_BODY_BYTES) {
+          req.destroy();
+          reject(new Error("Request body too large"));
+          return;
+        }
+        body += chunk;
+      });
       req.on("end", () => {
         try {
           resolve(JSON.parse(body));

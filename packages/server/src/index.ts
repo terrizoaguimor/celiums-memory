@@ -122,7 +122,9 @@ function sendJson<T>(
 ): void {
   res.statusCode = statusCode;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  const allowedOrigins = (process.env.CELIUMS_CORS_ORIGINS || '').split(',').filter(Boolean);
+  const corsOrigin = allowedOrigins.length === 0 ? '*' : allowedOrigins[0] || '';
+  res.setHeader('Access-Control-Allow-Origin', corsOrigin);
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.end(JSON.stringify(payload));
@@ -133,7 +135,9 @@ function sendJson<T>(
  */
 function sendNoContent(res: ServerResponse): void {
   res.statusCode = 204;
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  const allowedOrigins = (process.env.CELIUMS_CORS_ORIGINS || '').split(',').filter(Boolean);
+  const corsOrigin = allowedOrigins.length === 0 ? '*' : allowedOrigins[0] || '';
+  res.setHeader('Access-Control-Allow-Origin', corsOrigin);
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.end();

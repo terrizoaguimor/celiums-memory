@@ -404,7 +404,11 @@ export class InMemoryMemoryStore {
     const mem = this.memories.get(id);
     if (!mem) return null;
 
-    Object.assign(mem, updates, { updatedAt: new Date() });
+    // Safe merge — prevent prototype pollution
+    const safeUpdates = Object.fromEntries(
+      Object.entries(updates).filter(([k]) => !['__proto__', 'constructor', 'prototype'].includes(k))
+    );
+    Object.assign(mem, safeUpdates, { updatedAt: new Date() });
 
     // Re-embed if content changed
     if (updates.content) {
@@ -420,7 +424,10 @@ export class InMemoryMemoryStore {
   // ----------------------------------------------------------
   async updateSession(sessionId: string, updates: any): Promise<void> {
     const session = this.sessions.get(sessionId) ?? { id: sessionId };
-    Object.assign(session, updates);
+    const safeUpdates = Object.fromEntries(
+      Object.entries(updates).filter(([k]) => !['__proto__', 'constructor', 'prototype'].includes(k))
+    );
+    Object.assign(session, safeUpdates);
     this.sessions.set(sessionId, session);
   }
 
