@@ -9,6 +9,12 @@
  * no databases, no Docker, no config. Just works.
  */
 
+// Redirect all console output to stderr to keep stdout clean for MCP JSON-RPC
+const _origLog = console.log;
+const _origError = console.error;
+console.log = (...args: any[]) => process.stderr.write(args.join(' ') + '\n');
+console.error = (...args: any[]) => process.stderr.write(args.join(' ') + '\n');
+
 import { createMemoryEngine, ApiKeyManager, PgApiKeyStore, InMemoryApiKeyStore } from './index.js';
 import type { ApiKey } from './auth.js';
 import type { MemoryEngine, LimbicState, LLMModulation } from '@celiums/memory-types';
@@ -835,17 +841,8 @@ async function main() {
   });
 
   server.listen(PORT, HOST, () => {
-    // Use stderr for startup banner to avoid polluting stdout (mcp-proxy reads stdout for JSON-RPC)
-    process.stderr.write(`
-  [celiums-memory] API running at http://localhost:${PORT}
-
-  Try it:
-
-    curl -X POST http://localhost:${PORT}/store -H "Content-Type: application/json" -d '{"content": "hello"}'
-    curl -X POST http://localhost:${PORT}/recall -H "Content-Type: application/json" -d '{"query": "hello"}'
-    curl http://localhost:${PORT}/emotion
-    curl http://localhost:${PORT}/health
-\n`);
+    // Use stderr ONLY — mcp-proxy reads stdout for JSON-RPC, any non-JSON on stdout breaks it
+    process.stderr.write(`[celiums-memory] API running at http://localhost:${PORT}\n`);
   });
 
   process.on('SIGINT', async () => {
