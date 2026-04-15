@@ -241,12 +241,12 @@ export const OPENCORE_TOOLS: RegisteredTool[] = [
     group: 'opencore',
     definition: {
       name: 'forage',
-      description: 'Search the Celiums knowledge network for relevant expert modules by free-text query.',
+      description: 'Search 500,000+ expert knowledge modules by natural language query. Returns ranked results with titles, descriptions, and categories. Use when the user needs technical guidance, best practices, or domain expertise. Behavior: performs hybrid search (full-text + semantic) across the knowledge base, ranks by relevance, returns top N matches. Example queries: "kubernetes horizontal pod autoscaler", "react hooks best practices", "HIPAA compliance checklist".',
       inputSchema: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Natural-language search query' },
-          limit: { type: 'number', description: 'Max results (default 10, max 50)' },
+          query: { type: 'string', description: 'Natural-language search query describing the knowledge needed. Be specific for better results. Example: "how to set up PostgreSQL replication"' },
+          limit: { type: 'number', description: 'Maximum number of modules to return. Default: 10, max: 50. Use lower values (3-5) for focused results, higher (20-50) for broad exploration.' },
         },
         required: ['query'],
       },
@@ -257,11 +257,11 @@ export const OPENCORE_TOOLS: RegisteredTool[] = [
     group: 'opencore',
     definition: {
       name: 'absorb',
-      description: 'Load the full content of a specific knowledge module by name.',
+      description: 'Load the full content of a knowledge module by its exact name/slug. Returns the complete module text (typically 2,000-20,000 words) with code examples, best practices, and references. Use after forage to read a specific module in full. Behavior: looks up the module by slug, returns full markdown content. If not found, suggests using forage to search. Example: absorb("react-mastery") returns the complete React mastery guide.',
       inputSchema: {
         type: 'object',
         properties: {
-          name: { type: 'string', description: 'Module slug, e.g. "react-mastery"' },
+          name: { type: 'string', description: 'Exact module slug (kebab-case). Get slugs from forage results. Examples: "react-mastery", "kubernetes-hpa-guide", "owasp-top-10-checklist"' },
         },
         required: ['name'],
       },
@@ -272,11 +272,11 @@ export const OPENCORE_TOOLS: RegisteredTool[] = [
     group: 'opencore',
     definition: {
       name: 'sense',
-      description: 'Get module recommendations for a goal you describe (no AI, rank-based).',
+      description: 'Get personalized module recommendations based on a goal or task description. Uses keyword matching and category ranking (no AI inference). Faster than forage for broad exploration. Use when the user describes what they want to achieve and needs guidance on which modules to study. Behavior: analyzes the goal text, matches against module metadata, returns ranked suggestions grouped by relevance. Example: sense("I want to deploy a microservices app on Kubernetes with monitoring").',
       inputSchema: {
         type: 'object',
         properties: {
-          goal: { type: 'string', description: 'What you are trying to accomplish' },
+          goal: { type: 'string', description: 'Describe what you want to accomplish in natural language. Be descriptive for better recommendations. Example: "build a real-time chat app with WebSocket and React"' },
         },
         required: ['goal'],
       },
@@ -287,7 +287,7 @@ export const OPENCORE_TOOLS: RegisteredTool[] = [
     group: 'opencore',
     definition: {
       name: 'map_network',
-      description: 'Browse the complete Celiums knowledge biome organized by category.',
+      description: 'Browse the entire Celiums knowledge network organized by category. Returns all categories with module counts, top modules per category, and total statistics. Use to explore what knowledge is available, discover categories, or get an overview of the knowledge base. Behavior: queries the module index, groups by category, returns a structured map with counts. No parameters needed — returns the full network overview.',
       inputSchema: { type: 'object', properties: {} },
     },
     handler: handleMapNetwork,
@@ -296,13 +296,13 @@ export const OPENCORE_TOOLS: RegisteredTool[] = [
     group: 'opencore',
     definition: {
       name: 'remember',
-      description: 'Store something in your persistent emotional memory. Survives across all sessions, all machines. Scoped to the current project by default.',
+      description: 'Store information in persistent memory that survives across all sessions and machines. Memories are automatically classified by type (semantic, procedural, episodic) and importance. Use to save facts, preferences, decisions, context, or any information that should be recalled later. Behavior: stores the content with emotional analysis (PAD model), assigns importance score, updates circadian interaction tracking. Scoped to current project by default — use projectId="global" for cross-project memories like user preferences or business decisions.',
       inputSchema: {
         type: 'object',
         properties: {
-          content:   { type: 'string', description: 'What to remember (any text)' },
-          tags:      { type: 'array', description: 'Optional tags for filtering' },
-          projectId: { type: 'string', description: 'Project scope (auto-detected from cwd if not set). Use "global" for cross-project memories.' },
+          content:   { type: 'string', description: 'The information to remember. Can be any text: facts, decisions, preferences, code patterns, meeting notes, etc. Be descriptive — richer content enables better semantic recall later.' },
+          tags:      { type: 'array', description: 'Optional tags for categorization and filtering. Examples: ["architecture", "decision"], ["user-preference"], ["bug-fix", "auth"]', items: { type: 'string' } },
+          projectId: { type: 'string', description: 'Project scope. Auto-detected from working directory if not set. Use "global" for memories that should be accessible from any project (e.g., user info, business decisions).' },
         },
         required: ['content'],
       },
@@ -313,13 +313,13 @@ export const OPENCORE_TOOLS: RegisteredTool[] = [
     group: 'opencore',
     definition: {
       name: 'recall',
-      description: 'Recall memories by semantic + emotional relevance. Searches current project + global by default. Pass projectId to search a specific project.',
+      description: 'Search persistent memory using semantic + emotional relevance ranking. Returns memories sorted by relevance, recency, and emotional resonance. Searches current project + global memories by default. Use to retrieve previously stored facts, decisions, preferences, or context. Behavior: performs hybrid retrieval (vector similarity + full-text + emotional resonance), applies spaced activation recall (SAR) filtering, returns ranked results with content, type, importance, and relevance score.',
       inputSchema: {
         type: 'object',
         properties: {
-          query:     { type: 'string', description: 'What you want to recall (free text)' },
-          limit:     { type: 'number', description: 'Max results (default 10, max 50)' },
-          projectId: { type: 'string', description: 'Search specific project. Default: current + global. Use "all" to search everywhere.' },
+          query:     { type: 'string', description: 'What you want to recall, in natural language. Example: "what database did we choose for the auth service", "user preferences for code style", "last architecture decision"' },
+          limit:     { type: 'number', description: 'Maximum number of memories to return. Default: 10, max: 50. Use lower values (3-5) for focused recall, higher for comprehensive search.' },
+          projectId: { type: 'string', description: 'Search specific project scope. Default: current project + global. Use "all" to search across every project. Use a specific project ID to search only that project.' },
         },
         required: ['query'],
       },
