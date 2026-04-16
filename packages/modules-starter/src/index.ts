@@ -116,19 +116,30 @@ CREATE TABLE IF NOT EXISTS modules (
   eval_score      NUMERIC(4,1),
   version         TEXT NOT NULL DEFAULT '2.0',
   content         TEXT NOT NULL DEFAULT '',
-  search_tsv      TSVECTOR GENERATED ALWAYS AS (
-    setweight(to_tsvector('english', coalesce(name, '')), 'A') ||
-    setweight(to_tsvector('english', coalesce(display_name, '')), 'A') ||
-    setweight(to_tsvector('english', coalesce(description, '')), 'B') ||
-    setweight(to_tsvector('english', coalesce(array_to_string(keywords, ' '), '')), 'C')
-  ) STORED,
+  search_tsv      TSVECTOR,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_modules_category    ON modules(category);
 CREATE INDEX IF NOT EXISTS idx_modules_search_tsv  ON modules USING GIN(search_tsv);
 CREATE INDEX IF NOT EXISTS idx_modules_eval        ON modules(eval_score DESC NULLS LAST);
-CREATE INDEX IF NOT EXISTS idx_modules_eval        ON modules(eval_score DESC NULLS LAST);
+
+-- Trigger to auto-populate search_tsv on insert/update
+CREATE OR REPLACE FUNCTION modules_search_tsv_trigger() RETURNS trigger AS $$
+BEGIN
+  NEW.search_tsv :=
+    setweight(to_tsvector('english', coalesce(NEW.name, '')), 'A') ||
+    setweight(to_tsvector('english', coalesce(NEW.display_name, '')), 'A') ||
+    setweight(to_tsvector('english', coalesce(NEW.description, '')), 'B') ||
+    setweight(to_tsvector('english', coalesce(array_to_string(NEW.keywords, ' '), '')), 'C');
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_modules_search_tsv ON modules;
+CREATE TRIGGER trg_modules_search_tsv
+  BEFORE INSERT OR UPDATE ON modules
+  FOR EACH ROW EXECUTE FUNCTION modules_search_tsv_trigger();
 `;
 
 async function hydratePg(pool: any, t0: number) {

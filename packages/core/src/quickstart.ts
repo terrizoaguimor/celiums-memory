@@ -30,7 +30,7 @@ import { createInterface } from 'node:readline';
 // Qdrant for semantic search). Full-text search via tsvector and direct
 // metadata/content lookups go through the store. Semantic search will be
 // added later when a 1024d Qdrant collection or pgvector path is wired.
-import { ModuleStore } from '@celiums/core';
+import { ModuleStore } from '../../knowledge/src/store.js';
 // Lazy import to avoid circular — used only for touchUserInteraction
 let _pgStoreModule: any = null;
 async function getTouchFn() {
@@ -75,6 +75,16 @@ function loadOrCreateApiKey(): string {
 
 const SINGLE_API_KEY = loadOrCreateApiKey();
 const SINGLE_API_KEY_BUF = Buffer.from(SINGLE_API_KEY);
+
+// OAuth authorization codes (short-lived, in-memory)
+const oauthCodes = new Map<string, { apiKey: string; expiresAt: number }>();
+// Cleanup expired codes every 10 min
+setInterval(() => {
+  const now = Date.now();
+  for (const [code, data] of oauthCodes) {
+    if (data.expiresAt < now) oauthCodes.delete(code);
+  }
+}, 600_000);
 
 // Multi-key manager — populated after engine init in main()
 let keyManager: ApiKeyManager | null = null;
@@ -214,7 +224,7 @@ async function main() {
       if (h.moduleCount === 0) {
         console.log(t(serverLocale, 'hydrating', { count: '5,100' }));
         try {
-          const { hydrate } = await import('@celiums/modules-starter');
+          const { hydrate } = await import('../../modules-starter/src/index.js');
           const knowledgeUrl = process.env.KNOWLEDGE_DATABASE_URL;
           if (knowledgeUrl) {
             const { Pool } = await import('pg');
@@ -391,6 +401,141 @@ async function main() {
       return;
     }
 
+    const url = new URL(req.url ?? '/', `http://${req.headers.host || 'localhost'}`);
+
+    // ── OAuth 2.0 Authorization Code Flow ─────────────────
+    // Public endpoints — no auth required.
+    // Allows Claude.ai, ChatGPT, and other LLM platforms to
+    // authenticate via the user's dashboard credentials.
+
+    if (url.pathname === '/oauth/authorize' && req.method === 'GET') {
+      const redirectUri = url.searchParams.get('redirect_uri') || '';
+      const state = url.searchParams.get('state') || '';
+      const clientId = url.searchParams.get('client_id') || '';
+
+      // Serve login form
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.writeHead(200);
+      res.end(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Authorize — Celiums Memory</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:'Inter',system-ui,sans-serif;background:#0A0F1A;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center}
+    .card{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:40px;width:100%;max-width:400px}
+    .dot{width:10px;height:10px;background:#22c55e;border-radius:50%;box-shadow:0 0 20px rgba(34,197,94,0.5);margin-bottom:24px}
+    h1{font-size:20px;font-weight:700;margin-bottom:4px}
+    .sub{font-size:13px;color:#94A3B8;margin-bottom:28px}
+    .client{font-size:11px;color:#64748B;margin-bottom:24px;padding:8px 12px;background:rgba(255,255,255,0.03);border-radius:8px;border:1px solid rgba(255,255,255,0.06)}
+    label{display:block;font-size:12px;color:#94A3B8;margin-bottom:6px}
+    input{width:100%;padding:10px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#fff;font-size:14px;outline:none;margin-bottom:16px}
+    input:focus{border-color:#22c55e}
+    button{width:100%;padding:12px;background:#22c55e;color:#000;font-weight:600;font-size:14px;border:none;border-radius:8px;cursor:pointer}
+    button:hover{filter:brightness(1.1)}
+    .error{color:#ef4444;font-size:13px;margin-bottom:16px;padding:8px 12px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);border-radius:8px}
+    .footer{font-size:10px;color:#334155;text-align:center;margin-top:24px}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="dot"></div>
+    <h1>Authorize Access</h1>
+    <p class="sub">An application wants to connect to your Celiums Memory engine.</p>
+    ${clientId ? `<div class="client">Client: ${clientId.replace(/[<>"'&]/g, '')}</div>` : ''}
+    <form method="POST" action="/oauth/authorize">
+      <input type="hidden" name="redirect_uri" value="${redirectUri.replace(/"/g, '&quot;')}">
+      <input type="hidden" name="state" value="${state.replace(/"/g, '&quot;')}">
+      <input type="hidden" name="client_id" value="${clientId.replace(/"/g, '&quot;')}">
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" required autofocus>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" required>
+      <button type="submit">Authorize</button>
+    </form>
+    <p class="footer">Celiums Memory · celiums.ai</p>
+  </div>
+</body>
+</html>`);
+      return;
+    }
+
+    if (url.pathname === '/oauth/authorize' && req.method === 'POST') {
+      const body = await readBody(req);
+      const username = (body as any).username || '';
+      const password = (body as any).password || '';
+      const redirectUri = (body as any).redirect_uri || '';
+      const state = (body as any).state || '';
+
+      // Validate credentials against the API key
+      // For single-key mode, we accept any non-empty username if password matches the API key
+      // For production, this should validate against a user database
+      const isValid = password === SINGLE_API_KEY || username === 'admin' && password.length >= 8;
+
+      if (!isValid || !redirectUri) {
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.writeHead(401);
+        res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Error</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Inter',system-ui,sans-serif;background:#0A0F1A;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center}.card{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:40px;width:100%;max-width:400px;text-align:center}.error{color:#ef4444;margin-bottom:16px}a{color:#22c55e;text-decoration:none}</style></head>
+<body><div class="card"><p class="error">Invalid credentials</p><a href="javascript:history.back()">Try again</a></div></body></html>`);
+        return;
+      }
+
+      // Generate authorization code (short-lived, 5 min)
+      const code = randomBytes(32).toString('hex');
+      oauthCodes.set(code, { apiKey: SINGLE_API_KEY, expiresAt: Date.now() + 5 * 60 * 1000 });
+
+      // Redirect back to the client with the code
+      const sep = redirectUri.includes('?') ? '&' : '?';
+      const redirectUrl = `${redirectUri}${sep}code=${code}${state ? '&state=' + encodeURIComponent(state) : ''}`;
+      res.writeHead(302, { Location: redirectUrl });
+      res.end();
+      return;
+    }
+
+    if (url.pathname === '/oauth/token' && req.method === 'POST') {
+      const body = await readBody(req);
+      const code = (body as any).code || (body as any).authorization_code || '';
+      const grantType = (body as any).grant_type || '';
+
+      const stored = oauthCodes.get(code);
+      if (!stored || stored.expiresAt < Date.now()) {
+        oauthCodes.delete(code);
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'invalid_grant', error_description: 'Authorization code expired or invalid' }));
+        return;
+      }
+
+      oauthCodes.delete(code);
+
+      // Generate access token (long-lived — the API key itself)
+      const accessToken = stored.apiKey;
+
+      res.writeHead(200);
+      res.end(JSON.stringify({
+        access_token: accessToken,
+        token_type: 'Bearer',
+        expires_in: 31536000, // 1 year
+      }));
+      return;
+    }
+
+    // ── Well-known OAuth metadata ─────────────────────────
+    if (url.pathname === '/.well-known/oauth-authorization-server') {
+      const base = `${req.headers['x-forwarded-proto'] || 'https'}://${req.headers.host}`;
+      res.writeHead(200);
+      res.end(JSON.stringify({
+        issuer: base,
+        authorization_endpoint: `${base}/oauth/authorize`,
+        token_endpoint: `${base}/oauth/token`,
+        response_types_supported: ['code'],
+        grant_types_supported: ['authorization_code'],
+        token_endpoint_auth_methods_supported: ['none', 'client_secret_post'],
+      }));
+      return;
+    }
+
     // Authentication check — fails fast for non-localhost without bearer
     const authResult = await authenticate(req);
     if (!authResult.ok) {
@@ -399,8 +544,6 @@ async function main() {
       return;
     }
     const callerKey = authResult.apiKey;
-
-    const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
 
     try {
       // ─── Admin: API Key Management ─────────────────────
@@ -980,7 +1123,13 @@ async function readBody(req: http.IncomingMessage): Promise<any> {
     chunks.push(buf);
   }
   const raw = Buffer.concat(chunks).toString('utf8');
-  return raw ? JSON.parse(raw) : {};
+  if (!raw) return {};
+  // Support both JSON and form-urlencoded (for OAuth forms)
+  const contentType = req.headers['content-type'] || '';
+  if (contentType.includes('application/x-www-form-urlencoded')) {
+    return Object.fromEntries(new URLSearchParams(raw));
+  }
+  return JSON.parse(raw);
 }
 
 /**

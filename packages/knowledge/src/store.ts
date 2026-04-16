@@ -55,13 +55,13 @@ export class ModuleStore {
    * Joins metadata + content tables. Use sparingly for large modules.
    */
   async getModule(name: string): Promise<Module | null> {
+    // Try single-table first (hydrate schema), fall back to JOIN (legacy split schema)
     const result = await this.pool.query(
-      `SELECT m.name, m.display_name, m.description, m.category, m.keywords,
-              m.line_count, m.has_references, m.reference_count, m.eval_score, m.version,
-              mc.content, mc.content_hash, mc.content_size
-       FROM modules m
-       JOIN modules_content mc ON m.name = mc.name
-       WHERE m.name = $1`,
+      `SELECT name, display_name, description, category, keywords,
+              line_count, has_references, reference_count, eval_score, version,
+              content
+       FROM modules
+       WHERE name = $1`,
       [name]
     );
 
@@ -71,10 +71,10 @@ export class ModuleStore {
     return {
       ...this.rowToMeta(row),
       content: {
-        content: row.content,
-        references: {},  // References loaded separately if needed
-        contentSize: row.content_size,
-        contentHash: row.content_hash,
+        content: row.content || '',
+        references: {},
+        contentSize: row.content ? Buffer.byteLength(row.content) : 0,
+        contentHash: '',
       },
     };
   }
@@ -184,7 +184,11 @@ export class ModuleStore {
         moduleCount: parseInt(result.rows[0].c, 10),
         latencyMs: Math.round(performance.now() - start),
       };
-    } catch {
+    } catch (err: any) {
+      // Table doesn't exist yet — not a failure, just empty (pre-hydrate)
+      if (err.code === '42P01') { // undefined_table
+        return { ok: true, moduleCount: 0, latencyMs: Math.round(performance.now() - start) };
+      }
       return { ok: false, moduleCount: 0, latencyMs: Math.round(performance.now() - start) };
     }
   }
