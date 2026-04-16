@@ -1,0 +1,104 @@
+###############################################
+# Celiums Memory — Complete Stack
+# One command: docker compose up -d
+# Result: engine + dashboard + public URL
+###############################################
+
+services:
+  # ── Data Layer ──────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: celiums-pg
+    restart: always
+    environment:
+      POSTGRES_USER: celiums
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-celiums_local_2026}
+      POSTGRES_DB: celiums_memory
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U celiums"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.3
+    container_name: celiums-qdrant
+    restart: always
+    volumes:
+      - qdrantdata:/qdrant/storage
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    container_name: celiums-valkey
+    restart: always
+    command: valkey-server --requirepass ${VALKEY_PASSWORD:-celiums_local_2026}
+    volumes:
+      - valkeydata:/data
+
+  # ── Engine (port 3210, internal only) ───────
+  engine:
+    image: node:22-alpine
+    container_name: celiums-engine
+    restart: always
+    stdin_open: true
+    tty: true
+    working_dir: /app
+    command: >
+      sh -c "
+        if [ ! -d node_modules ]; then npm install --omit=dev; fi &&
+        npx tsx packages/core/src/quickstart.ts
+      "
+    volumes:
+      - ./engine:/app
+    environment:
+      DATABASE_URL: postgresql://celiums:${PG_PASSWORD:-celiums_local_2026}@postgres:5432/celiums_memory
+      QDRANT_URL: http://qdrant:6333
+      VALKEY_URL: redis://:${VALKEY_PASSWORD:-celiums_local_2026}@valkey:6379
+      PORT: "3210"
+      PERSONALITY: celiums
+      CELIUMS_API_KEY: ${API_KEY:-}
+      KNOWLEDGE_DATABASE_URL: postgresql://celiums:${PG_PASSWORD:-celiums_local_2026}@postgres:5432/celiums_memory
+      CELIUMS_CORS_ORIGINS: ""
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── Dashboard (port 8080, internal only) ────
+  dashboard:
+    image: node:22-alpine
+    container_name: celiums-dashboard
+    restart: always
+    working_dir: /app
+    command: >
+      sh -c "
+        if [ ! -d node_modules ]; then npm install --omit=dev; fi &&
+        node build/index.js
+      "
+    volumes:
+      - ./dashboard:/app
+      - uidata:/app/data
+    environment:
+      ENGINE_URL: http://engine:3210
+      ENGINE_KEY: ${API_KEY:-}
+      PORT: "8080"
+      ORIGIN: ${ORIGIN:-http://localhost:8080}
+      CELIUMS_UI_DB: /app/data/celiums-ui.db
+    depends_on:
+      - engine
+
+  # ── Tunnel (public URL, automatic) ──────────
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: celiums-tunnel
+    restart: always
+    command: tunnel --no-autoupdate --url http://dashboard:8080
+    depends_on:
+      - dashboard
+
+volumes:
+  pgdata:
+  qdrantdata:
+  valkeydata:
+  uidata:

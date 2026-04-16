@@ -1,6 +1,6 @@
 {
   "name": "@celiums/modules-starter",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "5,100 curated expert knowledge modules for the Celiums OpenCore. Covers 18 developer categories: software engineering, frontend, backend, DevOps, databases, security, AI/ML, and more.",
   "keywords": [
     "celiums",
