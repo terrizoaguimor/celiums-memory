@@ -53,7 +53,7 @@ export interface CreateApiKeyResult {
 
 // ─── Hashing primitives ──────────────────────────────
 const SCRYPT_KEYLEN = 64;
-const SCRYPT_N = 16384;     // 2^14, sweet spot for ~10ms verify
+const SCRYPT_N = 32768;     // 2^15, hardened for 2026 (H4 fix 2026-04-17)
 const SCRYPT_r = 8;
 const SCRYPT_p = 1;
 

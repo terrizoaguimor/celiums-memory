@@ -25,6 +25,22 @@ import os from 'node:os';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createInterface } from 'node:readline';
 
+// ─── Security: HTML escaping for OAuth form (C1 fix 2026-04-17) ──
+function escapeHtmlAttr(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\//g, '&#x2F;')
+    .replace(/`/g, '&#x60;');
+}
+
+function escapeHtmlContent(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 // 2026-04-11: Knowledge engine integration — the super software.
 // We import the ModuleStore directly (skipping createEngine which requires
 // Qdrant for semantic search). Full-text search via tsvector and direct
@@ -89,10 +105,22 @@ setInterval(() => {
 // Multi-key manager — populated after engine init in main()
 let keyManager: ApiKeyManager | null = null;
 
+// C2 fix 2026-04-17: Cover full 127.0.0.0/8 loopback range
+function isLoopback(addr: string): boolean {
+  if (!addr) return false;
+  if (addr === '::1') return true;
+  // Strip ::ffff: prefix (IPv4-mapped IPv6)
+  const normalized = addr.startsWith('::ffff:') ? addr.slice(7) : addr;
+  const parts = normalized.split('.');
+  if (parts.length === 4) {
+    const first = parseInt(parts[0], 10);
+    return first === 127; // entire 127.0.0.0/8
+  }
+  return false;
+}
+
 function isLocalhost(req: http.IncomingMessage): boolean {
-  // Defensive check: if there is ANY proxy header, the connection is NOT
-  // truly local — it's a tunneled request from the public internet that
-  // happens to terminate on a loopback socket. Refuse the bypass.
+  // Defensive: if ANY proxy header exists, connection is NOT truly local
   if (
     req.headers['x-forwarded-for'] ||
     req.headers['cf-connecting-ip'] ||
@@ -101,8 +129,7 @@ function isLocalhost(req: http.IncomingMessage): boolean {
   ) {
     return false;
   }
-  const addr = req.socket.remoteAddress || '';
-  return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+  return isLoopback(req.socket.remoteAddress || '');
 }
 
 /**
@@ -339,12 +366,16 @@ async function main() {
   const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
   const RATE_LIMIT_WINDOW = 60_000; // 1 minute
   const RATE_LIMIT_MAX = 120;       // 120 req/min per IP
+  // M1 fix 2026-04-17: per-key rate limiting
+  const RATE_LIMIT_MAX_PER_KEY = 200; // 200 req/min per API key
+  // M6 fix 2026-04-17: OAuth token exchange brute force limit
+  const oauthFailMap = new Map<string, { count: number; resetAt: number }>();
+  const OAUTH_FAIL_MAX = 10; // 10 failed attempts per IP per minute
 
+  // H1 fix 2026-04-17: NEVER trust proxy headers for rate limiting.
+  // Use socket IP only. Cloudflare/proxy IP extraction is separate concern.
   function getClientIp(req: http.IncomingMessage): string {
-    return (req.headers['cf-connecting-ip'] as string)
-      || (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
-      || req.socket.remoteAddress
-      || 'unknown';
+    return req.socket.remoteAddress || 'unknown';
   }
 
   function checkRateLimit(ip: string): boolean {
@@ -358,11 +389,39 @@ async function main() {
     return entry.count <= RATE_LIMIT_MAX;
   }
 
+  // M1: per-key rate limit check
+  function checkKeyRateLimit(keyId: string): boolean {
+    const now = Date.now();
+    const key = `key:${keyId}`;
+    const entry = rateLimitMap.get(key);
+    if (!entry || now > entry.resetAt) {
+      rateLimitMap.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW });
+      return true;
+    }
+    entry.count++;
+    return entry.count <= RATE_LIMIT_MAX_PER_KEY;
+  }
+
+  // M6: OAuth brute force check
+  function checkOAuthFailLimit(ip: string): boolean {
+    const now = Date.now();
+    const entry = oauthFailMap.get(ip);
+    if (!entry || now > entry.resetAt) {
+      oauthFailMap.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW });
+      return true;
+    }
+    entry.count++;
+    return entry.count <= OAUTH_FAIL_MAX;
+  }
+
   // Cleanup stale entries every 5 minutes
   setInterval(() => {
     const now = Date.now();
     for (const [ip, entry] of rateLimitMap) {
       if (now > entry.resetAt) rateLimitMap.delete(ip);
+    }
+    for (const [ip, entry] of oauthFailMap) {
+      if (now > entry.resetAt) oauthFailMap.delete(ip);
     }
   }, 300_000);
 
@@ -371,8 +430,8 @@ async function main() {
 
   function getCorsOrigin(req: http.IncomingMessage): string {
     const origin = req.headers.origin || '';
-    // If no CORS_ORIGINS configured, allow all (dev mode)
-    if (CORS_ORIGINS.length === 0) return '*';
+    // H2 fix 2026-04-17: No wildcard CORS by default — deny unless configured
+    if (CORS_ORIGINS.length === 0) return '';
     // If origin matches whitelist, reflect it
     if (CORS_ORIGINS.includes(origin)) return origin;
     // Localhost always allowed for dev
@@ -413,8 +472,12 @@ async function main() {
       const state = url.searchParams.get('state') || '';
       const clientId = url.searchParams.get('client_id') || '';
 
-      // Serve login form
+      // Serve login form — with security headers (M5 fix 2026-04-17)
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action *; frame-ancestors https://claude.ai https://*.claude.ai; base-uri 'self'");
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('X-Frame-Options', 'DENY');
+      res.setHeader('Referrer-Policy', 'no-referrer');
       res.writeHead(200);
       res.end(`<!DOCTYPE html>
 <html lang="en">
@@ -443,11 +506,11 @@ async function main() {
     <div class="dot"></div>
     <h1>Authorize Access</h1>
     <p class="sub">An application wants to connect to your Celiums Memory engine.</p>
-    ${clientId ? `<div class="client">Client: ${clientId.replace(/[<>"'&]/g, '')}</div>` : ''}
+    ${clientId ? `<div class="client">Client: ${escapeHtmlContent(clientId)}</div>` : ''}
     <form method="POST" action="/oauth/authorize">
-      <input type="hidden" name="redirect_uri" value="${redirectUri.replace(/"/g, '&quot;')}">
-      <input type="hidden" name="state" value="${state.replace(/"/g, '&quot;')}">
-      <input type="hidden" name="client_id" value="${clientId.replace(/"/g, '&quot;')}">
+      <input type="hidden" name="redirect_uri" value="${escapeHtmlAttr(redirectUri)}">
+      <input type="hidden" name="state" value="${escapeHtmlAttr(state)}">
+      <input type="hidden" name="client_id" value="${escapeHtmlAttr(clientId)}">
       <label for="username">Username</label>
       <input id="username" name="username" type="text" required autofocus>
       <label for="password">Password</label>
@@ -495,6 +558,14 @@ async function main() {
     }
 
     if (url.pathname === '/oauth/token' && req.method === 'POST') {
+      // M6 fix: brute force protection on token exchange
+      const tokenIp = getClientIp(req);
+      if (!checkOAuthFailLimit(tokenIp)) {
+        res.writeHead(429);
+        res.end(JSON.stringify({ error: 'too_many_requests', error_description: 'Too many failed attempts. Try again later.' }));
+        return;
+      }
+
       const body = await readBody(req);
       const code = (body as any).code || (body as any).authorization_code || '';
       const grantType = (body as any).grant_type || '';
@@ -544,6 +615,13 @@ async function main() {
       return;
     }
     const callerKey = authResult.apiKey;
+
+    // M1 fix: per-key rate limiting (if authenticated with a specific key)
+    if (callerKey && !checkKeyRateLimit(callerKey.id)) {
+      res.writeHead(429);
+      res.end(JSON.stringify({ error: 'Too many requests for this API key. Try again later.' }));
+      return;
+    }
 
     try {
       // ─── Admin: API Key Management ─────────────────────
@@ -900,7 +978,7 @@ async function main() {
         const mcpCtx: McpToolContext = {
           userId: uid,
           projectId: pid === 'global' ? null : pid,
-          capabilities: { opencore: true, fleet: false, atlas: false }, // dispatcher overrides this
+          capabilities: { opencore: true, atlas: false }, // dispatcher overrides this
           moduleStore: moduleStore as unknown,
           memoryEngine: engine as unknown,
           pool: memoryPool as unknown,
@@ -928,7 +1006,6 @@ async function main() {
           count: tools.length,
           capabilities: {
             opencore: true,
-            fleet: !!process.env.CELIUMS_FLEET_API_KEY,
             atlas: !!process.env.CELIUMS_ATLAS_API_KEY,
           },
           tools: tools.map((t) => ({
@@ -1055,7 +1132,7 @@ async function main() {
         const mcpCtx: McpToolContext = {
           userId: 'stdio',
           projectId: null,
-          capabilities: { opencore: true, fleet: false, atlas: false },
+          capabilities: { opencore: true, atlas: false },
           moduleStore: moduleStore as unknown,
           memoryEngine: engine as unknown,
           pool: memoryPool as unknown,
@@ -1107,7 +1184,7 @@ function getEmotionLabel(state: LimbicState): string {
   return 'neutral';
 }
 
-const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB — prevents DoS via giant POST
+const MAX_BODY_BYTES = 1_048_576; // 1 MB — H3 fix 2026-04-17 (was 10MB)
 
 async function readBody(req: http.IncomingMessage): Promise<any> {
   const chunks: Buffer[] = [];

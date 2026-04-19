@@ -191,7 +191,9 @@ export function classifyImportance(text: string): {
   signals: ImportanceSignals;
 } {
   const signals = extractSignals(text);
-  const score = scoreImportance(text);
+  const baseScore = scoreImportance(text);
+  const contentBoost = analyzeContentBoost(text);
+  const score = Math.min(1.0, baseScore + contentBoost);
   return { score, signals };
 }
 
@@ -526,4 +528,48 @@ export function analyzeForMemory(text: string): {
     memoryType: classifyMemoryType(text),
     entities: extractEntities(text),
   };
+}
+// ─────────────────────────────────────────────────────────────────────────────
+// CELIUMS FIX 2026-04-19: Foundational/emotional content boost
+// Bug: "priceless", "foundational", "proof of thesis" scored 0.30
+// Fix: Detect foundational + emotional + validation signals and boost
+// ─────────────────────────────────────────────────────────────────────────────
+
+const FOUNDATIONAL_PATTERNS: RegExp[] = [
+  /\b(foundational|architecture\s+decision|core\s+value|thesis|proof\s+of|paradigm|load[- ]bearing|sine\s+qua\s+non)\b/i,
+  /\b(first\s+time|never\s+before|breakthrough|eureka|priceless|milestone\s+cr[ií]tic)/i,
+  /\b(this\s+changes\s+everything|we\s+were\s+wrong|pivot|scrap\s+(the\s+)?previous|start\s+over|completely\s+different)\b/i,
+];
+
+const USER_VALIDATION_PATTERNS: RegExp[] = [
+  /\b(mario\s+(said|approved|confirmed|dijo|aprobó))\b/i,
+  /\b(user\s+(confirmed|approved|said|validated))\b/i,
+  /\b(holy\s+shit|esto\s+es\s+lo\s+que|hermoso|feliz|increíble|genio)\b/i,
+];
+
+/**
+ * Boost importance for foundational/emotional content.
+ * Called AFTER scoreImportance() — adds to the base score.
+ */
+export function analyzeContentBoost(text: string): number {
+  const lower = text.toLowerCase();
+  let boost = 0;
+
+  const countMatches = (patterns: RegExp[]): number =>
+    patterns.reduce((acc, p) => acc + (p.test(lower) ? 1 : 0), 0);
+
+  const emotionalHits = countMatches(EMOTION_PATTERNS);
+  const foundationalHits = countMatches(FOUNDATIONAL_PATTERNS);
+  const validationHits = countMatches(USER_VALIDATION_PATTERNS);
+
+  boost += Math.min(emotionalHits * 0.08, 0.20);
+  boost += Math.min(foundationalHits * 0.12, 0.30);
+  boost += Math.min(validationHits * 0.10, 0.20);
+
+  // Co-occurrence: foundational + validation = extra weight
+  if (foundationalHits > 0 && validationHits > 0) boost += 0.10;
+  // Emotional + foundational = high urgency
+  if (emotionalHits > 0 && foundationalHits > 0) boost += 0.08;
+
+  return Math.min(boost, 0.50);
 }

@@ -217,7 +217,7 @@ export class LimbicEngine {
    * @param mutex - Lock implementation. InMemoryLimbicMutex for dev,
    *                ValkeyLimbicMutex for production. Defaults to in-memory.
    */
-  constructor(config?: Partial<LimbicConfig>, mutex?: LimbicMutex) {
+  constructor(config?: Partial<LimbicConfig> & { userTimezoneOffset?: number }, mutex?: LimbicMutex) {
     this.config = { ...DEFAULT_LIMBIC_CONFIG, ...config };
     if (config?.homeostatic) {
       this.config.homeostatic = {
@@ -227,7 +227,14 @@ export class LimbicEngine {
     }
 
     // Initialize peripheral systems
-    this.circadian = new CircadianEngine();
+    // CELIUMS FIX 2026-04-19: Initialize with user timezone
+    // Default to America/Bogota (-5) for Mario. Multi-user: load from user_profiles.
+    const userTz = config?.userTimezoneOffset ?? -5;
+    this.circadian = new CircadianEngine({
+      timezoneOffset: userTz,
+      syncWithUser: true,
+      userTimezoneOffset: userTz,
+    });
     this.interoception = new InteroceptionEngine();
     this.reward = new RewardEngine();
     this.mutex = mutex ?? new InMemoryLimbicMutex();
