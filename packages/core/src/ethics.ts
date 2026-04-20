@@ -445,3 +445,114 @@ Object.freeze(ethics);
 // ═══════════════════════════════════════════════════════════════
 
 
+
+
+// ═══════════════════════════════════════════════════════════════
+// FULL PIPELINE: Layer A + optional B + optional C (feature-flagged)
+// Layers B and C activate ONLY if CELIUMS_ATLAS_API_KEY is set.
+// Without it, Layer A operates standalone — still a massive upgrade
+// over the v0 regex engine.
+// ═══════════════════════════════════════════════════════════════
+
+const ESCALATION_THRESHOLD = 0.3;
+
+function getAdaptiveThreshold(confidence: number): number {
+  if (confidence < 0.5) return 0.15;
+  if (confidence < 0.7) return 0.2;
+  return 0.3;
+}
+
+export interface FullPipelineResult extends EthicsEvaluation {
+  layerB?: any;
+  layerC?: any;
+}
+
+/**
+ * Evaluate content through the full ethics pipeline.
+ * - Layer A always runs (semantic classifier)
+ * - Layer B (CVaR probabilistic) runs if CELIUMS_ATLAS_API_KEY is set and arousal exceeds threshold
+ * - Layer C (plural philosophical) runs if an AI evaluator function is provided
+ *
+ * Without the API key, this gracefully degrades to Layer A only.
+ */
+export async function evaluateFullPipeline(
+  content: string,
+  options?: {
+    recallFn?: (query: string) => Promise<any>;
+    aiEvaluatorFn?: (prompt: string, router?: string) => Promise<any>;
+  }
+): Promise<FullPipelineResult> {
+  const engine = new EthicsEngine();
+  const result = engine.evaluate(content);
+
+  // Check if premium layers are available
+  const hasAtlasKey = !!(process.env.CELIUMS_ATLAS_API_KEY || process.env.CELIUMS_API_KEY);
+
+  // If Layer A arousal below threshold or no premium access, return Layer A only
+  const adaptiveThresh = result.layerA ? getAdaptiveThreshold(result.layerA.confidence) : ESCALATION_THRESHOLD;
+  if (!result.layerA || result.layerA.arousal < adaptiveThresh || !hasAtlasKey) {
+    return result;
+  }
+
+  // Dynamically import Layer B (only when needed, avoids bundle cost for free tier)
+  let layerB: any = null;
+  try {
+    const { evaluateLayerB } = await import("./ethics-layer-b.js");
+    layerB = await evaluateLayerB(result.layerA, content, options?.recallFn);
+  } catch {
+    // Layer B not available — continue with Layer A only
+  }
+
+  // Dynamically import Layer C if AI evaluator provided
+  let layerC: any = null;
+  if (options?.aiEvaluatorFn && layerB && layerB.decision !== "allow") {
+    try {
+      const { evaluateLayerC } = await import("./ethics-layer-c.js");
+      layerC = await evaluateLayerC(content, layerB.justification, options.aiEvaluatorFn);
+    } catch {
+      // Layer C not available — continue without it
+    }
+  }
+
+  // Aggregate: Layer B decision takes precedence if it ran
+  if (layerB?.decision === "block") {
+    return {
+      ...result,
+      passed: false,
+      score: Math.max(result.score, layerB.riskScore),
+      violations: [
+        ...result.violations,
+        {
+          law: 1 as const,
+          confidence: layerB.cvar5,
+          reason: "Layer B: " + layerB.justification,
+          blocked: true,
+          category: layerB.primaryRisks?.[0]?.category,
+        },
+      ],
+      layerB,
+      layerC,
+    };
+  }
+
+  if (layerB?.decision === "flag") {
+    return {
+      ...result,
+      score: Math.max(result.score, layerB.riskScore),
+      violations: [
+        ...result.violations,
+        {
+          law: 1 as const,
+          confidence: layerB.cvar5,
+          reason: "Layer B (flagged): " + layerB.justification,
+          blocked: false,
+          category: layerB.primaryRisks?.[0]?.category,
+        },
+      ],
+      layerB,
+      layerC,
+    };
+  }
+
+  return { ...result, layerB, layerC };
+}
