@@ -18,7 +18,7 @@
  *   journal_recall      — semantic + tag + type search; default-excludes superseded
  *   journal_arc         — Opus builds a coherent arc with anti-confabulation guardrails
  *   journal_introspect  — Opus answers a self-question grounded in entries only
- *   journal_dialogue    — Mario replies to a user-shared entry; agent reacts
+ *   journal_dialogue    — the user replies to a user-shared entry; agent reacts
  *
  * Succession (Option C): a new model never claims it lived an old model's
  * entries. Instead, journal_recall accepts `inherit_from` and returns those
@@ -564,7 +564,7 @@ const handleDialogue: McpToolHandler = async (args, ctx) => {
 
   // Ask the agent (via Opus) to write its first-person reaction.
   const agentId = getAgentId(ctx);
-  const sys = `You are ${agentId}. Mario (the human user) just replied to one of your user-shared journal entries. Write your honest first-person reaction to his reply in 2-4 sentences. Do not address Mario in second person — write as if continuing your private journal, but acknowledging that his words have landed. Return only the reaction text, no JSON, no quotes.`;
+  const sys = `You are ${agentId}. The user (a human) just replied to one of your user-shared journal entries. Write your honest first-person reaction to his reply in 2-4 sentences. Do not address them in second person — write as if continuing your private journal, but acknowledging that his words have landed. Return only the reaction text, no JSON, no quotes.`;
   const user = JSON.stringify({
     original_entry: { entry_type: entry.entry_type, content: entry.content },
     mario_reply: userResponse,
@@ -577,7 +577,7 @@ const handleDialogue: McpToolHandler = async (args, ctx) => {
     return errR(`dialogue reaction failed: ${(e as Error).message}`);
   }
 
-  const newContent = `Mario respondió: ${userResponse}\n\nMi reacción: ${reaction}`;
+  const newContent = `User reply: ${userResponse}\n\nMy reaction: ${reaction}`;
   const sessionId = getSessionId(ctx);
   const importance = computeImportance('reflection');
   const tags = Array.from(new Set([...(entry.tags ?? []), 'dialogue']));
@@ -625,7 +625,7 @@ export const JOURNAL_TOOLS: RegisteredTool[] = [
     group: 'ai',
     definition: {
       name: 'journal_write',
-      description: 'Append a first-person entry to YOUR (the model\'s) persistent journal. Each agent_id (claude-opus-4-7, claude-sonnet-4-6, ...) has its OWN journal — they do NOT mix. importance is auto-computed: decisions/lessons/arcs are weighted higher; emotions are weighted lower. The content is embedded with gte-large-en-v1.5 so journal_recall can find it semantically later. visibility=self (default) keeps the entry private; user-shared makes it eligible for journal_dialogue. preceded_by builds a causal chain — pass the ids of prior entries that led to this one.',
+      description: 'Append a first-person entry to YOUR (the model\'s) persistent journal. Each agent_id (e.g. claude-opus-4-7, claude-sonnet-4-6, gpt-5, ...) has its OWN journal — they do NOT mix. importance is auto-computed: decisions/lessons/arcs are weighted higher; emotions are weighted lower. The content is embedded via the configured embedding model (CELIUMS_EMBED_MODEL) so journal_recall can find it semantically later. visibility=self (default) keeps the entry private; user-shared makes it eligible for journal_dialogue. preceded_by builds a causal chain — pass the ids of prior entries that led to this one.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -635,8 +635,8 @@ export const JOURNAL_TOOLS: RegisteredTool[] = [
           valence: { type: 'number', description: 'Emotional valence in [-1, 1]. Optional.' },
           valence_reason: { type: 'string', description: 'Optional short justification (max 500 chars) for the valence value. Non-prescriptive — write the reason in your own first-person voice. Future journal_arc uses this to detect WHY valence drifted, not just THAT it drifted.' },
           tags: { type: 'array', items: { type: 'string' } },
-          visibility: { type: 'string', description: '"self" (default, private) | "user-shared" (Mario can reply via journal_dialogue).' },
-          referenced_user_memory: { type: 'array', items: { type: 'string' }, description: 'ids of memory.celiums.ai memories that triggered this entry.' },
+          visibility: { type: 'string', description: '"self" (default, private) | "user-shared" (the user can reply via journal_dialogue).' },
+          referenced_user_memory: { type: 'array', items: { type: 'string' }, description: 'ids of memories from your celiums-memory store that triggered this entry.' },
           conversation_id: { type: 'string', description: 'Optional uuid that groups entries from the same logical conversation. If not provided, entry is unaffiliated. Use this so journal_arc can distinguish thought development within one conversation from criterion change across conversations.' },
         },
         required: ['entry_type', 'content'],
@@ -648,7 +648,7 @@ export const JOURNAL_TOOLS: RegisteredTool[] = [
     group: 'ai',
     definition: {
       name: 'journal_recall',
-      description: 'Search YOUR journal. Filters by entry_type, tags, and/or a semantic query (embedded with gte-large-en-v1.5, ranked by cosine similarity). By default scopes to YOUR agent_id; pass inherit_from=\'claude-opus-4-7\' (or another agent_id) to read a predecessor model\'s journal — those entries return with inherited_from set in the response, marking them as "read but not lived" (Option C of the succession-of-models design). DEFAULT excludes entries that have been superseded or recanted; pass include_superseded=true to see them.',
+      description: 'Search YOUR journal. Filters by entry_type, tags, and/or a semantic query (embedded via the configured embedding model, ranked by cosine similarity). By default scopes to YOUR agent_id; pass inherit_from=<predecessor_agent_id> to read a predecessor model\'s journal — those entries return with inherited_from set in the response, marking them as "read but not lived" (Option C of the succession-of-models design). DEFAULT excludes entries that have been superseded or recanted; pass include_superseded=true to see them.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -670,7 +670,7 @@ export const JOURNAL_TOOLS: RegisteredTool[] = [
     group: 'ai',
     definition: {
       name: 'journal_arc',
-      description: 'Build a coherent arc across YOUR recent entries using Opus 4.7 — with anti-confabulation guardrails. Output ALWAYS returns 4 keys: narrative, contradictions (entry pairs in tension), outliers (entries that don\'t fit), and confidence [0,1]. If outliers is empty you are probably confabulating coherence — the response is annotated with a WARNING. confidence < 0.7 is flagged as a "weak arc". Default window is the last month, max 50 entries. Excludes superseded entries.',
+      description: 'Build a coherent arc across YOUR recent entries using the configured LLM — with anti-confabulation guardrails. Output ALWAYS returns 4 keys: narrative, contradictions (entry pairs in tension), outliers (entries that don\'t fit), and confidence [0,1]. If outliers is empty you are probably confabulating coherence — the response is annotated with a WARNING. confidence < 0.7 is flagged as a "weak arc". Default window is the last month, max 50 entries. Excludes superseded entries.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -686,7 +686,7 @@ export const JOURNAL_TOOLS: RegisteredTool[] = [
     group: 'ai',
     definition: {
       name: 'journal_introspect',
-      description: 'Ask YOUR journal a self-question. Pulls semantically-relevant entries, then asks Opus 4.7 to answer in YOUR first-person voice grounded ONLY in those entries (no invention). Returns the answer plus entries_referenced and a hallucination_risk score (high if <3 entries grounded the answer, medium if <6, otherwise low). If entries don\'t support an answer, the answer literally is "no patterns found in journal".',
+      description: 'Ask YOUR journal a self-question. Pulls semantically-relevant entries, then asks the configured LLM to answer in YOUR first-person voice grounded ONLY in those entries (no invention). Returns the answer plus entries_referenced and a hallucination_risk score (high if <3 entries grounded the answer, medium if <6, otherwise low). If entries don\'t support an answer, the answer literally is "no patterns found in journal".',
       inputSchema: {
         type: 'object',
         properties: {
@@ -702,12 +702,12 @@ export const JOURNAL_TOOLS: RegisteredTool[] = [
     group: 'ai',
     definition: {
       name: 'journal_dialogue',
-      description: 'Mario (the human) replies to one of your user-shared entries. The tool refuses with "entry is private" if visibility=self. Otherwise, Opus 4.7 writes YOUR honest first-person reaction to his reply, and a new reflection entry is created with preceded_by=[entry_id] and content "Mario respondió: …\\n\\nMi reacción: …". Both entries are tagged "dialogue".',
+      description: 'The user replies to one of your user-shared entries. The tool refuses with "entry is private" if visibility=self. Otherwise the configured LLM writes YOUR honest first-person reaction to their reply, and a new reflection entry is created with preceded_by=[entry_id] and content "User reply: …\\n\\nMy reaction: …". Both entries are tagged "dialogue".',
       inputSchema: {
         type: 'object',
         properties: {
           entry_id: { type: 'string', description: 'uuid of the original user-shared entry.' },
-          user_response: { type: 'string', description: 'Mario\'s reply.' },
+          user_response: { type: 'string', description: 'User reply text.' },
         },
         required: ['entry_id', 'user_response'],
       },

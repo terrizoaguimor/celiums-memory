@@ -292,7 +292,7 @@ export const RESEARCH_TOOLS: RegisteredTool[] = [
           projectId: { type: 'string' },
           query: { type: 'string', description: 'The research question for this synthesis pass.' },
           topK: { type: 'number', description: 'How many docs to feed to the LLM. Default 10, max 30.' },
-          model: { type: 'string', description: 'Override LLM model. Default anthropic-claude-opus-4.7.' },
+          model: { type: 'string', description: 'Override LLM model for this call. Defaults to CELIUMS_LLM_MODEL.' },
         },
         required: ['projectId', 'query'],
       },
