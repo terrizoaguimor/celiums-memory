@@ -68,10 +68,16 @@ export interface McpToolResult {
 export interface McpCapabilities {
   /** Always true — OpenCore tools (10) */
   opencore: true;
-  /** True if CELIUMS_FLEET_API_KEY is set */
+  /** True if CELIUMS_FLEET_API_KEY is set (legacy) */
   fleet: boolean;
-  /** True if CELIUMS_ATLAS_API_KEY is set */
+  /** True if CELIUMS_ATLAS_API_KEY is set (legacy) */
   atlas: boolean;
+  /**
+   * True if CELIUMS_LLM_API_KEY is set — enables tools that require an
+   * OpenAI-compatible model (journal, write/continuity, research, etc.).
+   * This is the BYOK gate for the OSS engine.
+   */
+  ai: boolean;
 }
 
 /**
@@ -83,6 +89,7 @@ export function detectCapabilities(env: NodeJS.ProcessEnv = process.env): McpCap
     opencore: true,
     fleet:    !!(env.CELIUMS_FLEET_API_KEY && env.CELIUMS_FLEET_API_KEY.length > 5),
     atlas:    !!(env.CELIUMS_ATLAS_API_KEY && env.CELIUMS_ATLAS_API_KEY.length > 5),
+    ai:       !!(env.CELIUMS_LLM_API_KEY && env.CELIUMS_LLM_API_KEY.length > 5),
   };
 }
 
@@ -100,6 +107,12 @@ export interface McpToolContext {
   memoryEngine?: unknown;
   /** PG pool for the celiums_memory DB (rarely needed since memoryEngine wraps it). */
   pool?: unknown;
+  /** Agent identifier — used by journal_* tools to scope per-model journals. */
+  agentId?: string;
+  /** Session identifier — used by journal_* tools to group entries. */
+  sessionId?: string;
+  /** Conversation identifier — finer-grained grouping than session. */
+  conversationId?: string;
 }
 
 /**
@@ -114,7 +127,7 @@ export type McpToolHandler = (
  * A registered tool: definition + handler + group label for capability gating.
  */
 export interface RegisteredTool {
-  group: 'opencore' | 'fleet' | 'atlas';
+  group: 'opencore' | 'fleet' | 'atlas' | 'ai';
   definition: McpToolDefinition;
   handler: McpToolHandler;
 }

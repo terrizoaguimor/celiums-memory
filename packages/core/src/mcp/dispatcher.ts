@@ -25,23 +25,27 @@ import {
   type RegisteredTool,
 } from './types.js';
 import { OPENCORE_TOOLS } from './opencore-tools.js';
+import { JOURNAL_TOOLS } from './journal-tools.js';
+import { WRITE_TOOLS } from './write-tools.js';
 
 /**
- * Build the full registry. Right now it's only OpenCore (Wave 1).
- * Wave 2 will append FLEET_TOOLS, Wave 3 will append ATLAS_TOOLS.
+ * Build the full registry. OpenCore (always on, no LLM required) +
+ * AI-backed tools (journal, write) that need an OpenAI-compatible LLM
+ * configured via CELIUMS_LLM_API_KEY.
  */
 export function buildRegistry(): RegisteredTool[] {
   return [
     ...OPENCORE_TOOLS,
-    // ...FLEET_TOOLS,   // added in Wave 2
-    // ...ATLAS_TOOLS,   // added in Wave 3
+    ...JOURNAL_TOOLS,
+    ...WRITE_TOOLS,
   ];
 }
 
 /**
  * Filter the registry by capabilities currently active in env.
- * OpenCore tools are always present. Fleet and Atlas tools only appear
- * if their respective API keys are configured.
+ * OpenCore tools are always present. AI-backed tools (`group: 'ai'`) only
+ * appear if `CELIUMS_LLM_API_KEY` is configured (any OpenAI-compatible
+ * endpoint).
  */
 export function listAvailableTools(env: NodeJS.ProcessEnv = process.env): RegisteredTool[] {
   const caps = detectCapabilities(env);
@@ -50,6 +54,7 @@ export function listAvailableTools(env: NodeJS.ProcessEnv = process.env): Regist
     if (t.group === 'opencore') return caps.opencore;
     if (t.group === 'fleet')    return caps.fleet;
     if (t.group === 'atlas')    return caps.atlas;
+    if (t.group === 'ai')       return caps.ai;
     return false;
   });
 }

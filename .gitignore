@@ -62,3 +62,8 @@ credentials.json
 
 # Local celiums data
 .celiums/
+
+# OSS exclusions — DO NOT COMMIT (proprietary or personal)
+packages/core/src/mcp/atlas-tools.ts
+LongMemEval/
+packages/celiums-langchain/
