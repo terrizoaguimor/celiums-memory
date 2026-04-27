@@ -27,17 +27,21 @@ import {
 import { OPENCORE_TOOLS } from './opencore-tools.js';
 import { JOURNAL_TOOLS } from './journal-tools.js';
 import { WRITE_TOOLS } from './write-tools.js';
+import { RESEARCH_TOOLS } from './research-tools.js';
 
 /**
  * Build the full registry. OpenCore (always on, no LLM required) +
- * AI-backed tools (journal, write) that need an OpenAI-compatible LLM
- * configured via CELIUMS_LLM_API_KEY.
+ * AI-backed tools (journal, write, research) that need an OpenAI-compatible
+ * LLM configured via CELIUMS_LLM_API_KEY. Research additionally needs
+ * a corpus-search backend (CELIUMS_SEARCH_URL) for the synthesize/search
+ * tools — project/findings/gaps tracking work without it.
  */
 export function buildRegistry(): RegisteredTool[] {
   return [
     ...OPENCORE_TOOLS,
     ...JOURNAL_TOOLS,
     ...WRITE_TOOLS,
+    ...RESEARCH_TOOLS,
   ];
 }
 
