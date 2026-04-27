@@ -25,6 +25,16 @@
 
 ---
 
+> **What's new in v1.2 — 2026-04-27**
+>
+> - 🆕 **20 MCP tools** (was 6): journal (5), write (7), research (8) added.
+> - 🆕 **BYOK LLM** — bring your own OpenAI-compatible endpoint. Works with OpenAI, Ollama, OpenRouter, Together, Groq, vLLM, LM Studio. No proprietary lock-in.
+> - 🆕 **Ethics Engine layers B + C** — CVaR-probabilistic risk scoring + 5-framework philosophical evaluation, on top of layer A.
+> - 🆕 **Integration utilities** — encrypted credential storage (`integrations/crypto.ts`), schema for tenant integrations, opportunistic LLM-powered output formatting (`humanize.ts`), free-form-query intent classifier.
+> - 🧹 OpenCore is **fully self-contained** — zero network calls if you don't configure an LLM. The engine boots clean with nothing but a database.
+
+---
+
 ## The Problem
 
 Every time your AI assistant starts a new session, it starts from zero. It doesn't remember your preferences, your project decisions, your debugging history, or what you were working on yesterday. It hallucinates because it has no specialized knowledge — just general training data frozen at a cutoff date.
@@ -92,11 +102,47 @@ One button. Deploys everything on your own DO droplet.
 
 ---
 
-## The 6 Tools
+## Configure your LLM (BYOK)
 
-When connected via MCP, your AI can call these autonomously:
+OpenCore tools (recall, remember, forage, absorb, sense, map_network, synthesize, bloom, cultivate) work **without any LLM** — pure local memory + knowledge base.
 
-### Knowledge tools (search 5,100 expert modules)
+The AI-backed tools (journal, write, research) require an **OpenAI-compatible** chat endpoint. You bring your own key. The engine never talks to a Celiums-hosted service for inference.
+
+```bash
+# Option A — OpenAI (default endpoint)
+export CELIUMS_LLM_API_KEY=sk-...
+
+# Option B — Ollama (local, free, no API key)
+export CELIUMS_LLM_BASE_URL=http://localhost:11434/v1
+export CELIUMS_LLM_API_KEY=ollama
+export CELIUMS_LLM_MODEL=llama3.2
+
+# Option C — OpenRouter (any model, one key)
+export CELIUMS_LLM_BASE_URL=https://openrouter.ai/api/v1
+export CELIUMS_LLM_API_KEY=sk-or-...
+export CELIUMS_LLM_MODEL=anthropic/claude-3.5-sonnet
+
+# Option D — Together / Groq / Anyscale / vLLM / LM Studio
+# Same pattern: set BASE_URL + API_KEY + (optional) MODEL.
+```
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `CELIUMS_LLM_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible endpoint root |
+| `CELIUMS_LLM_API_KEY` | *(empty — required to enable AI tools)* | Bearer token for the endpoint |
+| `CELIUMS_LLM_MODEL` | `gpt-4o-mini` | Default chat model |
+| `CELIUMS_EMBED_MODEL` | `text-embedding-3-small` | Default embedding model |
+| `CELIUMS_SEARCH_URL` | *(empty — optional)* | Corpus-search backend for `research_*` |
+
+If `CELIUMS_LLM_API_KEY` is not set, AI-backed tools are simply not registered — `tools/list` returns only OpenCore. The engine never errors at boot for missing optional config.
+
+---
+
+## The Tools
+
+When connected via MCP, your AI can call these autonomously. Tools split into **OpenCore** (always available, no LLM required) and **AI-backed** (require an OpenAI-compatible LLM key — see *Configure your LLM* below).
+
+### Knowledge tools — OpenCore
 
 | Tool | What it does | Example |
 |---|---|---|
@@ -105,12 +151,41 @@ When connected via MCP, your AI can call these autonomously:
 | `sense` | Get recommendations for a goal | *"what should I use for building a REST API?"* |
 | `map_network` | Browse all categories | *"show me what knowledge areas are covered"* |
 
-### Memory tools (persistent emotional memory)
+### Memory tools — OpenCore
 
 | Tool | What it does | Example |
 |---|---|---|
 | `remember` | Store something in memory | *"remember that we chose Hono over Express"* |
 | `recall` | Retrieve by semantic relevance | *"what framework decisions did we make?"* |
+| `synthesize` | Consolidate memories into a narrative | *"what did I learn this week?"* |
+| `bloom` | Expand a concept into related ideas | *"explore variations of memory consolidation"* |
+| `cultivate` | Deep-dive a topic | *"cultivate hybrid retrieval"* |
+
+### Journal tools — *AI-backed* (since v1.2)
+
+Persistent agent diary that survives across discontinuous invocations. Every model carries its own journal — when a new model takes over, it can *read* the predecessor's entries but never claim it lived them.
+
+| Tool | What it does |
+|---|---|
+| `journal_write` | Append a new entry (auto-embedded, importance-scored) |
+| `journal_recall` | Semantic + tag + type search across the agent's history |
+| `journal_arc` | Build a coherent arc with anti-confabulation guardrails |
+| `journal_introspect` | Answer a self-question grounded in entries only |
+| `journal_dialogue` | The agent reacts to a user-shared entry |
+
+### Write tools — *AI-backed* (since v1.2)
+
+Novelist-grade project state. Tracks `secrets_known_at_chapter` per character, worldbuilding rules with cost/exceptions, and timeline markers — flags structural continuity issues, not line-by-line prose problems.
+
+`write_project_create`, `write_project_get`, `write_character_create`, `write_scene_create`, `write_scene_update`, `write_continuity_check`, `write_export`.
+
+### Research tools — *AI-backed* (since v1.2)
+
+Persistent multi-session investigations with citations, findings, and gaps. Resume a project days later and see all prior context in one shot.
+
+`research_project_create`, `research_project_list`, `research_project_continue`, `research_finding_add`, `research_gap_add`, `research_search`, `research_synthesize`, `research_export`.
+
+> `research_search` and `research_synthesize` need a corpus-search backend (`CELIUMS_SEARCH_URL`, any service exposing `POST /v1/search`). Without it the project/findings/gaps trackers still work fine.
 
 **What happens behind `remember`** (the user sees nothing, it just works):
 
