@@ -11,5 +11,5 @@
     "@celiums/memory-types": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.12.0"
   },
-  "devDependencies": { "typescript": "^5.7.0", "vitest": "^3.0.0" }
+  "devDependencies": { "typescript": "^5.7.0", "vitest": "^4.1.5" }
 }
