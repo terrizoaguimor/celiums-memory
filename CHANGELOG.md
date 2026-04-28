@@ -5,6 +5,25 @@ All notable changes to celiums-memory will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.5] - 2026-04-28
+
+### Fixed (build)
+
+- TypeScript declarations build (`pnpm run build`) now passes cleanly.
+  Previously the `tsup --dts` pass failed with TS2339 + TS2345 errors:
+  - `opencore-tools.ts` referenced `createPgStore` from `'../store.js'`,
+    but that export never existed (the function was internal). Replaced
+    the dynamic import with a duck-typed access on `ctx.store` /
+    `engine.store` — same best-effort circadian touch, no missing import.
+  - `journal-tools.ts` and `write-tools.ts` typed the `messages` parameter
+    as `Array<{role: string; content: string}>` while the underlying
+    `llmChat` expected the narrower `ChatMessage` (`role: 'system' |
+    'user' | 'assistant'`). Tightened the literal union.
+
+This unblocks tool catalogs (Glama, Smithery, mcpo) that compile from
+source during ingestion. The prior versions ran fine at runtime — only
+the dts build failed.
+
 ## [1.2.4] - 2026-04-28
 
 ### Changed

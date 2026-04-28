@@ -120,7 +120,7 @@ function ok(text: string): McpToolResult { return { content: [{ type: 'text', te
 function errR(text: string): McpToolResult { return { content: [{ type: 'text', text }], isError: true }; }
 function asText(p: unknown): string { return typeof p === 'string' ? p : JSON.stringify(p, null, 2); }
 
-async function llm(messages: Array<{ role: string; content: string }>, model?: string, maxTokens = 4000): Promise<string> {
+async function llm(messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>, model?: string, maxTokens = 4000): Promise<string> {
   return llmChat(messages, { model, maxTokens });
 }
 

@@ -205,12 +205,11 @@ const handleRemember: McpToolHandler = async (args, ctx) => {
     return ok('Memory not stored (empty content).');
   }
   const m = result[0] as any;
-  // Track interaction for circadian rhythm + PAD
+  // Track interaction for circadian rhythm + PAD (best-effort)
   try {
-    if (ctx.pool) {
-      const { createPgStore } = await import('../store.js');
-      const store = createPgStore(ctx.pool as any);
-      await store.touchUserInteraction(ctx.userId);
+    const _store: any = (ctx as any).store ?? (engine as any)?.store;
+    if (_store && typeof _store.touchUserInteraction === 'function') {
+      await _store.touchUserInteraction(ctx.userId);
     }
   } catch { /* best-effort */ }
   // Pull post-store limbic state for transparency
@@ -247,12 +246,11 @@ const handleRecall: McpToolHandler = async (args, ctx) => {
     projectId,
     limit,
   });
-  // Track interaction for circadian rhythm + PAD
+  // Track interaction for circadian rhythm + PAD (best-effort)
   try {
-    if (ctx.pool) {
-      const { createPgStore } = await import('../store.js');
-      const store = createPgStore(ctx.pool as any);
-      await store.touchUserInteraction(ctx.userId);
+    const _store: any = (ctx as any).store ?? (engine as any)?.store;
+    if (_store && typeof _store.touchUserInteraction === 'function') {
+      await _store.touchUserInteraction(ctx.userId);
     }
   } catch { /* best-effort */ }
   if (result.memories.length === 0) {

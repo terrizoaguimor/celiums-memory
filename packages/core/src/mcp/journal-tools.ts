@@ -148,7 +148,7 @@ async function embedText(text: string, timeoutMs = 30_000): Promise<number[] | n
   }
 }
 
-async function llm(messages: Array<{ role: string; content: string }>, model: string | undefined = ARC_MODEL, maxTokens = 3000): Promise<string> {
+async function llm(messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>, model: string | undefined = ARC_MODEL, maxTokens = 3000): Promise<string> {
   return llmChat(messages, { model, maxTokens });
 }
 
