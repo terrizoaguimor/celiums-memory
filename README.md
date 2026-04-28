@@ -2,6 +2,17 @@
 
 <br />
 
+[![Featured at DigitalOcean Deploy Conference](https://img.shields.io/badge/⭐%20Featured%20at-DigitalOcean%20Deploy%20Conference-0080FF?style=for-the-badge&logo=digitalocean&logoColor=white)](https://www.youtube.com/watch?v=NwnW1zZZz7o)
+
+<a href="https://www.youtube.com/watch?v=NwnW1zZZz7o">
+  <img src="https://img.youtube.com/vi/NwnW1zZZz7o/maxresdefault.jpg" alt="Featured at the DigitalOcean Deploy Conference — Keynote: The Conference for the Inference Era" width="720" />
+</a>
+
+<sub><i>Celiums featured at the DigitalOcean Deploy Conference — “The Conference for the Inference Era” keynote.</i></sub>
+
+<br />
+<br />
+
 [![celiums-memory MCP server](https://glama.ai/mcp/servers/terrizoaguimor/celiums-memory/badges/card.svg)](https://glama.ai/mcp/servers/terrizoaguimor/celiums-memory)
 
 # Celiums
