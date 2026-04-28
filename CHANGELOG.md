@@ -5,6 +5,29 @@ All notable changes to celiums-memory will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2026-04-28
+
+### Added
+
+- **MCP dispatcher + registries are now exported from the package entrypoint.**
+  Previously they lived in `src/mcp/` but weren't reachable via
+  `import { ... } from '@celiums/memory'`, so external consumers had to
+  fork or vendor the dispatcher to stand up an MCP server. Now:
+  ```js
+  import { dispatchMcp, buildRegistry, detectCapabilities,
+           OPENCORE_TOOLS, JOURNAL_TOOLS, RESEARCH_TOOLS, WRITE_TOOLS
+  } from '@celiums/memory';
+  ```
+
+### Verified
+
+End-to-end test on a fresh DigitalOcean Ubuntu 24 droplet:
+- `npm i @celiums/memory@1.2.3` — clean install, 0 vulnerabilities
+- `dispatchMcp({method:'tools/list'})` returns 6 OpenCore tools out-of-the-box
+- With `CELIUMS_LLM_API_KEY` set, returns 26 tools total
+- v1.2.1 security gates trigger correctly (credentials classifier +
+  projectId='all' guard verified live)
+
 ## [1.2.2] - 2026-04-28
 
 ### Fixed (CRITICAL)
