@@ -28,6 +28,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import * as nodeCrypto from 'node:crypto';
 import type { RegisteredTool, McpToolHandler, McpToolResult, McpToolContext } from './types.js';
 import { llmChat, llmEmbed, llmConfigured } from '../llm-client.js';
 
@@ -84,6 +85,14 @@ CREATE INDEX IF NOT EXISTS idx_journal_conversation
 -- journal_arc detect WHY valence drifted, not just THAT it drifted. NULL = not
 -- provided; never enforced.
 ALTER TABLE agent_journal ADD COLUMN IF NOT EXISTS valence_reason text;
+
+-- v1.2.6: chain SHA. Each entry hashes (id, agent_id, content, written_at, prev_hash)
+-- and links to the previous entry of the same agent. Tampering with the DB
+-- (post-hoc INSERT/UPDATE/DELETE bypassing the handler) breaks the chain and is
+-- detected by journal_verify_chain. Genesis entry per agent_id has prev_hash NULL.
+ALTER TABLE agent_journal ADD COLUMN IF NOT EXISTS prev_hash text;
+ALTER TABLE agent_journal ADD COLUMN IF NOT EXISTS hash text;
+CREATE INDEX IF NOT EXISTS agent_journal_chain_idx ON agent_journal (agent_id, written_at, id);
 `;
 
 let schemaReady = false;
@@ -212,18 +221,39 @@ const handleWrite: McpToolHandler = async (args, ctx) => {
   const vec = await embedText(content);
   const vecLit = vec ? toPgVector(vec) : null;
 
-  // pgvector accepts NULL natively when cast through ::vector — we always
-  // bind $8 and let it be NULL if embedding failed. Keeps the SQL stable.
+  // CHAIN SHA (v1.2.6): each entry is hashed and links to the previous entry of
+  // the same agent_id, forming an append-only chain. Tampering with the DB
+  // (insertions / modifications / deletions) breaks the chain and is detectable
+  // by journal_verify_chain. Genesis entry has prev_hash = NULL.
+  const prevR = await pool.query(
+    `SELECT hash FROM agent_journal WHERE agent_id = $1 ORDER BY written_at DESC, id DESC LIMIT 1`,
+    [agentId],
+  );
+  const prevHash: string | null = prevR.rows[0]?.hash ?? null;
+
+  // INSERT first (without hash) to get the server-assigned id and written_at,
+  // then UPDATE with the computed hash. This avoids client-controlled timestamps
+  // entering the digest.
   const r = await pool.query(
     `INSERT INTO agent_journal
        (agent_id, session_id, entry_type, content, preceded_by, valence, importance,
-        embedding, tags, visibility, referenced_user_memory, conversation_id, valence_reason)
-     VALUES ($1, $2::uuid, $3, $4, $5::uuid[], $6, $7, $8::vector, $9::text[], $10, $11::text[], $12::uuid, $13)
+        embedding, tags, visibility, referenced_user_memory, conversation_id, valence_reason,
+        prev_hash, hash)
+     VALUES ($1, $2::uuid, $3, $4, $5::uuid[], $6, $7, $8::vector, $9::text[], $10, $11::text[], $12::uuid, $13,
+             $14, '_pending_')
      RETURNING id, agent_id, session_id, written_at, importance, conversation_id, valence_reason,
                embedding IS NOT NULL AS embedded`,
-    [agentId, sessionId, entryType, content, precededBy, valence, importance, vecLit, tags, visibility, refUserMem, conversationId, valenceReason],
+    [agentId, sessionId, entryType, content, precededBy, valence, importance, vecLit, tags, visibility, refUserMem, conversationId, valenceReason, prevHash],
   );
   const row = r.rows[0];
+
+  // Compute SHA256(id || agent_id || content || written_at || prev_hash) and update.
+  const writtenAtIso = (row.written_at instanceof Date ? row.written_at : new Date(row.written_at)).toISOString();
+  const digest = nodeCrypto.createHash('sha256')
+    .update(`${row.id}|${row.agent_id}|${content}|${writtenAtIso}|${prevHash ?? ''}`)
+    .digest('hex');
+  await pool.query(`UPDATE agent_journal SET hash = $2 WHERE id = $1`, [row.id, digest]);
+
   return ok(asText({
     id: row.id,
     agent_id: row.agent_id,
@@ -233,6 +263,49 @@ const handleWrite: McpToolHandler = async (args, ctx) => {
     importance: row.importance,
     valence_reason: row.valence_reason ?? null,
     embedded: row.embedded,
+    prev_hash: prevHash,
+    hash: digest,
+  }));
+};
+
+// ─── journal_verify_chain ─────────────────────────────────────────────
+// Walk the journal chain for a given agent_id (defaults to caller's agent),
+// recompute hashes from scratch, and report any mismatches. Detects
+// tampering at the DB level (post-hoc INSERT/UPDATE/DELETE).
+const handleVerifyChain: McpToolHandler = async (args, ctx) => {
+  const pool = (await ensureSchema(ctx)) as any;
+  const targetAgent = args.agent_id ? String(args.agent_id) : getAgentId(ctx);
+  const rows = (await pool.query(
+    `SELECT id, agent_id, content, written_at, prev_hash, hash
+       FROM agent_journal WHERE agent_id = $1
+       ORDER BY written_at, id`,
+    [targetAgent],
+  )).rows;
+
+  if (rows.length === 0) {
+    return ok(asText({ agent_id: targetAgent, total: 0, valid: true, broken: [] }));
+  }
+
+  let expectedPrev: string | null = null;
+  const broken: Array<{ id: string; reason: string; expected_hash?: string; got_hash?: string; expected_prev?: string | null; got_prev?: string | null }> = [];
+  for (const r of rows) {
+    const writtenAtIso = (r.written_at instanceof Date ? r.written_at : new Date(r.written_at)).toISOString();
+    const computed = nodeCrypto.createHash('sha256')
+      .update(`${r.id}|${r.agent_id}|${r.content}|${writtenAtIso}|${expectedPrev ?? ''}`)
+      .digest('hex');
+    if ((r.prev_hash ?? null) !== expectedPrev) {
+      broken.push({ id: r.id, reason: 'prev_hash mismatch (insertion or deletion before)', expected_prev: expectedPrev, got_prev: r.prev_hash ?? null });
+    } else if (r.hash !== computed) {
+      broken.push({ id: r.id, reason: 'content/timestamp tampered', expected_hash: computed, got_hash: r.hash });
+    }
+    expectedPrev = r.hash; // continue chain using the stored hash so we can detect cascades from here on
+  }
+
+  return ok(asText({
+    agent_id: targetAgent,
+    total: rows.length,
+    valid: broken.length === 0,
+    broken,
   }));
 };
 
@@ -729,7 +802,31 @@ export const JOURNAL_TOOLS: RegisteredTool[] = [
     },
     handler: handleDialogue,
   },
+  {
+    group: 'opencore',
+    definition: {
+      name: 'journal_verify_chain',
+      description: 'Walk the journal chain for an agent, recompute SHA-256 hashes, and report broken links. Detects tampering at the DB level (post-hoc INSERT/UPDATE/DELETE bypassing the handler). Returns { agent_id, total, valid, broken: [] }. No LLM key required.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          agent_id: {
+            type: 'string',
+            description: 'Optional. Defaults to the caller\'s own agent_id.',
+          },
+        },
+      },
+    },
+    handler: handleVerifyChain,
+  },
 ];
 
 // Exported for tests / migrations / external supersession writers.
 export { VALID_RELATION as JOURNAL_RELATIONS };
+
+// Exported for backfill scripts / external verifiers.
+export const JOURNAL_CHAIN_SCHEMA_SQL = `
+ALTER TABLE agent_journal ADD COLUMN IF NOT EXISTS prev_hash text;
+ALTER TABLE agent_journal ADD COLUMN IF NOT EXISTS hash text;
+CREATE INDEX IF NOT EXISTS agent_journal_chain_idx ON agent_journal (agent_id, written_at, id);
+`;

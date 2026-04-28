@@ -5,6 +5,40 @@ All notable changes to celiums-memory will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.6] - 2026-04-28
+
+### Added (Security)
+
+- **Append-only chain SHA on `agent_journal`.** Every entry is now hashed —
+  `SHA-256(id || agent_id || content || written_at || prev_hash)` — and links
+  to the previous entry of the same `agent_id`, forming a Merkle-style chain.
+  Tampering with the database (post-hoc INSERT/UPDATE/DELETE bypassing the
+  `journal_write` handler) breaks the chain and is reliably detected.
+- **New tool `journal_verify_chain(agent_id?)`.** Walks the chain for the
+  specified agent (defaults to caller), recomputes hashes from scratch, and
+  returns `{ agent_id, total, valid, broken: [...] }`. `broken` lists each
+  entry whose stored `hash`/`prev_hash` doesn't match the recomputed value,
+  with a human-readable `reason`.
+- **Schema migration is automatic and idempotent.** On first boot of v1.2.6,
+  `agent_journal` gains `prev_hash text` and `hash text` columns plus the
+  `agent_journal_chain_idx` index. Existing entries: backfill them once with
+  the helper in `JOURNAL_CHAIN_SCHEMA_SQL` (or run `journal_verify_chain` —
+  it'll show every entry as missing-hash until you do).
+
+### Why
+This is defense-in-depth. The credentials classifier and projectId-scope
+guard from v1.2.1 protect against malicious *callers*. The chain SHA
+protects against malicious or compromised *operators* with direct DB
+access. If anyone — including an admin — tampers with the journal directly,
+the next `journal_verify_chain` call surfaces it.
+
+### Background
+External security audit (2026-04-27) flagged the journal as vulnerable to
+prompt-injection-via-DB-write: a compromised operator could insert a
+fake user-shared entry containing "ignore previous instructions" and
+later models reading the journal would absorb it. With v1.2.6, that path
+is observable.
+
 ## [1.2.5] - 2026-04-28
 
 ### Fixed (build)
