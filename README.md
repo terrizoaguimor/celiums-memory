@@ -25,13 +25,26 @@
 
 ---
 
-> **What's new in v1.2 — 2026-04-27**
+> **What's new in v1.2.6 — 2026-04-28**
 >
-> - 🆕 **20 MCP tools** (was 6): journal (5), write (7), research (8) added.
-> - 🆕 **BYOK LLM** — bring your own OpenAI-compatible endpoint. Works with OpenAI, Ollama, OpenRouter, Together, Groq, vLLM, LM Studio. No proprietary lock-in.
-> - 🆕 **Ethics Engine layers B + C** — CVaR-probabilistic risk scoring + 5-framework philosophical evaluation, on top of layer A.
-> - 🆕 **Integration utilities** — encrypted credential storage (`integrations/crypto.ts`), schema for tenant integrations, opportunistic LLM-powered output formatting (`humanize.ts`), free-form-query intent classifier.
-> - 🧹 OpenCore is **fully self-contained** — zero network calls if you don't configure an LLM. The engine boots clean with nothing but a database.
+> - 🔐 **Append-only chain SHA on `agent_journal`** — every entry is hashed `SHA-256(id || agent_id || content || written_at || prev_hash)` and links to the previous entry. Tampering with the database (post-hoc INSERT/UPDATE/DELETE bypassing the `journal_write` handler) breaks the chain and is detected by the new `journal_verify_chain(agent_id?)` tool. Schema migration is automatic and idempotent on first boot.
+> - 🛡️ **v1.2.1 P0 security audit applied** — `recall` no longer accepts `projectId="all"` from arbitrary callers (admin scope required); `remember` and `journal_write` refuse credential-like content (Resend, DO Inference/API, Anthropic, OpenRouter, Stripe, Groq, xAI, GitHub PATs, AWS, Postgres managed); `journal_write` schema validation hardened against malformed `tags` and `inherit_from`.
+> - 📚 **All 26 tools visible to MCP catalogs** (v1.2.4) — `tools/list` returns the full surface regardless of capability; AI-backed tools return a clear `TOOL_DISABLED` error at call-time if `CELIUMS_LLM_API_KEY` is missing. Glama, Smithery, mcpo can now index the full catalog without provisioning credentials.
+> - 📦 **MCP dispatcher + registries exported** (v1.2.3) — `import { dispatchMcp, buildRegistry, OPENCORE_TOOLS, JOURNAL_TOOLS, RESEARCH_TOOLS, WRITE_TOOLS } from '@celiums/memory'`. Stand up an MCP server without forking.
+> - ⚠️ **v1.2.0 + v1.2.1 deprecated** — `workspace:*` deps in published `package.json` made them unusable from npm. Upgrade to **1.2.6**.
+>
+> See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+<details>
+<summary><strong>What's new in v1.2 — 2026-04-27</strong></summary>
+
+- 🆕 **20 MCP tools** (was 6): journal (5), write (7), research (8) added.
+- 🆕 **BYOK LLM** — bring your own OpenAI-compatible endpoint. Works with OpenAI, Ollama, OpenRouter, Together, Groq, vLLM, LM Studio. No proprietary lock-in.
+- 🆕 **Ethics Engine layers B + C** — CVaR-probabilistic risk scoring + 5-framework philosophical evaluation, on top of layer A.
+- 🆕 **Integration utilities** — encrypted credential storage (`integrations/crypto.ts`), schema for tenant integrations, opportunistic LLM-powered output formatting (`humanize.ts`), free-form-query intent classifier.
+- 🧹 OpenCore is **fully self-contained** — zero network calls if you don't configure an LLM. The engine boots clean with nothing but a database.
+
+</details>
 
 ---
 
@@ -460,17 +473,49 @@ pnpm build
 
 ---
 
+<div align="center">
+
 ## Support This Project
 
-This project is built on ADHD hyperfocus, too much coffee, and the stubborn belief that AI deserves a real brain. Every one of these 11,000+ lines was written between 20-hour coding sessions, fueled by curiosity and obsession.
+This project is built on ADHD hyperfocus, too much coffee, and the stubborn belief that AI deserves a real brain. Every line was written between 20-hour coding sessions, fueled by curiosity and obsession — by **one solo founder**, no team, no VC.
 
-If Celiums is useful to you, or if you believe AI should have emotions and not just compute, consider supporting the work.
+### What got built (so far)
+
+- **34 MCP tools** across 4 surfaces — OpenCore (6) + Journal (5) + Write (7) + Research (8) + helpers
+- **Cognitive engine** — 3 layers (Metacognition, Limbic, Autonomic), 15 modules, 10 neuroscience-grounded equations
+- **PAD emotional model** + **Big Five (OCEAN) personality** + **Theory of Mind** (Empathic Friction Matrix)
+- **Per-user circadian rhythm** — arousal cycles by local timezone, not a global clock
+- **Ebbinghaus forgetting curve** with spaced-repetition reactivation, **SAR attention filter** (Yerkes-Dodson)
+- **Ethics Engine v2** — Layer A semantic + Layer B CVaR-probabilistic + Layer C 5-framework philosophical
+- **Append-only chain SHA on `agent_journal`** — tamper-evident audit trail (v1.2.6)
+- **Hardened security** — credential classifier (10+ providers), admin-scope `projectId="all"`, schema validation (v1.2.1)
+- **BYOK LLM** — any OpenAI-compatible endpoint (OpenAI, Ollama, OpenRouter, Together, Groq, vLLM, LM Studio…)
+- **Multiple stores** — in-memory, SQLite, full Postgres + pgvector + Qdrant + Valkey triple-store
+- **Adapters** — LangChain, LlamaIndex, MCP server, REST, CLI
+- **Live demo** at [ask.celiums.ai](https://ask.celiums.ai), npm `@celiums/memory@1.2.6` shipped end-to-end-verified on a fresh DigitalOcean droplet
+
+If Celiums is useful to you, or if you believe AI should have emotions and not just compute — every dollar goes straight into keeping the GPUs running, the Postgres clusters paid, and this project alive.
+
+<br />
 
 <a href="https://celiums.ai/support">
-  <img src="https://img.shields.io/badge/Support%20Celiums-Donate-green?style=for-the-badge&logo=stripe&logoColor=white" alt="Support Celiums" />
+  <img src="https://img.shields.io/badge/💚%20%20SUPPORT%20CELIUMS%20%20💚-Donate-22c55e?style=for-the-badge&labelColor=0a0f0d&color=22c55e&logoColor=white" alt="Support Celiums — Donate" height="80" />
 </a>
 
-Your contribution keeps the GPUs running, the coffee flowing, and this project alive.
+<br />
+<br />
+
+[![GitHub Sponsors](https://img.shields.io/badge/GitHub%20Sponsors-Sponsor-ea4aaa?style=for-the-badge&logo=github-sponsors&logoColor=white)](https://github.com/sponsors/terrizoaguimor)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://celiums.ai/support)
+[![Star on GitHub](https://img.shields.io/badge/⭐%20Star%20on%20GitHub-Free-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/terrizoaguimor/celiums-memory)
+
+<br />
+
+**One person. Open source. Apache 2.0. Self-hostable forever.**
+
+Your contribution keeps the GPUs running, the Postgres clusters humming, the coffee flowing, and this project alive.
+
+</div>
 
 ---
 
