@@ -596,3 +596,28 @@ export async function createMemoryEngine(config: CeliumsMemoryConfig): Promise<M
     },
   };
 }
+
+// ─── MCP — Model Context Protocol surface ──────────────────────────────
+// Re-export the MCP dispatcher + registries so consumers can stand up an
+// MCP server out-of-the-box without wiring the registries themselves.
+export {
+  dispatchMcp,
+  buildRegistry,
+  listAvailableTools,
+} from './mcp/dispatcher.js';
+export {
+  detectCapabilities,
+  McpErrorCode,
+  type McpJsonRpcRequest,
+  type McpJsonRpcResponse,
+  type McpToolDefinition,
+  type McpToolResult,
+  type McpToolHandler,
+  type McpToolContext,
+  type McpCapabilities,
+  type RegisteredTool,
+} from './mcp/types.js';
+export { OPENCORE_TOOLS } from './mcp/opencore-tools.js';
+export { JOURNAL_TOOLS } from './mcp/journal-tools.js';
+export { RESEARCH_TOOLS } from './mcp/research-tools.js';
+export { WRITE_TOOLS } from './mcp/write-tools.js';
