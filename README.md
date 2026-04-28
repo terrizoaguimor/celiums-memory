@@ -498,8 +498,8 @@ If Celiums is useful to you, or if you believe AI should have emotions and not j
 
 <br />
 
-<a href="https://github.com/sponsors/terrizoaguimor">
-  <img src="https://img.shields.io/badge/💚%20%20SUPPORT%20CELIUMS%20%20💚-Sponsor-ea4aaa?style=for-the-badge&labelColor=0a0f0d&color=ea4aaa&logoColor=white" alt="Support Celiums — GitHub Sponsors" height="80" />
+<a href="https://buy.stripe.com/14A6oG9bs7Ewel7awj8bS09">
+  <img src="https://img.shields.io/badge/💚%20%20SUPPORT%20CELIUMS%20%20💚-Donate-22c55e?style=for-the-badge&labelColor=0a0f0d&color=22c55e&logo=stripe&logoColor=white" alt="Support Celiums — Donate" height="80" />
 </a>
 
 <br />
