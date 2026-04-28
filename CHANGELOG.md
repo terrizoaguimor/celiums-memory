@@ -5,6 +5,27 @@ All notable changes to celiums-memory will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.4] - 2026-04-28
+
+### Changed
+
+- **`tools/list` now returns ALL registered tools regardless of capability.**
+  Previously, AI-backed tools (`journal_*`, `write_*`, `research_*`, content
+  ops) were *hidden* from `tools/list` when `CELIUMS_LLM_API_KEY` wasn't set.
+  This made tool catalogs like [Glama](https://glama.ai),
+  [Smithery](https://smithery.ai), and [mcpo](https://github.com/open-webui/mcpo)
+  see only the 6 OpenCore tools — vastly under-representing the package.
+- **Capability gating moved from list-time to call-time.** Calling an
+  AI-backed tool without an LLM key returns a clear `TOOL_DISABLED` error
+  pointing to the BYOK setup. Catalogs can now index the full surface area
+  of @celiums/memory (26 tools) without provisioning credentials.
+
+### Why
+Tool catalogs and MCP discovery services run a stateless `tools/list` to
+build their index. When the server hides tools based on local config, the
+catalog under-counts. The fix is conceptually simpler: *advertise the
+contract, gate the call*.
+
 ## [1.2.3] - 2026-04-28
 
 ### Added

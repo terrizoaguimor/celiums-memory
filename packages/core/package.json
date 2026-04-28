@@ -1,6 +1,6 @@
 {
   "name": "@celiums/memory",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "description": "Neuroscience-grounded persistent memory for AI agents — with real emotions, personality, and a simulated brain. 3 layers, 15 modules, 10 equations. SQLite, in-memory, or full triple-store.",
   "keywords": [
     "ai",

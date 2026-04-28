@@ -134,8 +134,13 @@ export async function dispatchMcp(
   }
 
   // ─── tools/list ───────────────────────────────────────────
+  // CHANGED v1.2.4: list ALL tools regardless of capability. Capabilities are
+  // gated at *call* time, not at list time. This way tool catalogs (Glama,
+  // Smithery, mcpo, etc.) can index the full surface area of @celiums/memory
+  // without needing to provision an LLM key first. Calling an AI-backed tool
+  // without `CELIUMS_LLM_API_KEY` set returns a clear TOOL_DISABLED error.
   if (rpc.method === 'tools/list') {
-    const tools = listAvailableTools(env).map((t) => t.definition);
+    const tools = buildRegistry().map((t) => t.definition);
     return rpcOk(rpc.id, { tools });
   }
 
@@ -151,7 +156,7 @@ export async function dispatchMcp(
     if (!tool) {
       return rpcError(rpc.id, McpErrorCode.TOOL_NOT_FOUND, `Unknown tool: ${name}`);
     }
-    // Capability gate
+    // Capability gate (call-time)
     const caps = detectCapabilities(env);
     if (tool.group === 'fleet' && !caps.fleet) {
       return rpcError(
@@ -165,6 +170,13 @@ export async function dispatchMcp(
         rpc.id,
         McpErrorCode.TOOL_DISABLED,
         `Tool "${name}" requires CELIUMS_ATLAS_API_KEY to be set`,
+      );
+    }
+    if (tool.group === 'ai' && !caps.ai) {
+      return rpcError(
+        rpc.id,
+        McpErrorCode.TOOL_DISABLED,
+        `Tool "${name}" requires CELIUMS_LLM_API_KEY (any OpenAI-compatible endpoint). See https://github.com/terrizoaguimor/celiums-memory#configure-your-llm-byok`,
       );
     }
     // Inject capabilities into context
