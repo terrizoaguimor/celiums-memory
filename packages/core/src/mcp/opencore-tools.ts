@@ -25,6 +25,41 @@ import type { ModuleStore } from '@celiums/core';
 import type { MemoryEngine } from '@celiums/memory-types';
 import type { RegisteredTool, McpToolHandler, McpToolResult } from './types.js';
 
+// ─── SECURITY HELPERS (added 2026-04-28 — v1.2.1 patch) ─────────────────
+// Detect common credential patterns. Refuse persistence of secrets in
+// memory/journal content, preventing future leaks via recall (P0).
+const SECRET_PATTERNS: Array<{name: string; re: RegExp}> = [
+  { name: "Resend",        re: /\bre_[A-Za-z0-9_]{20,}\b/ },
+  { name: "DO Inference",  re: /\bsk-do-[A-Za-z0-9_-]{20,}\b/ },
+  { name: "DO API token",  re: /\bdop_v1_[a-f0-9]{40,}\b/ },
+  { name: "Celiums MCP",   re: /\bcmk_[A-Za-z0-9]{20,}\b/ },
+  { name: "Postgres",      re: /\bAVNS_[A-Za-z0-9_]{15,}\b/ },
+  { name: "Anthropic",     re: /\bsk-ant-[A-Za-z0-9_-]{30,}\b/ },
+  { name: "Stripe",        re: /\bsk_(?:live|test)_[A-Za-z0-9]{20,}\b/ },
+  { name: "OpenRouter",    re: /\bsk-or-[A-Za-z0-9_-]{20,}\b/ },
+  { name: "Groq",          re: /\bgsk_[A-Za-z0-9]{30,}\b/ },
+  { name: "xAI",           re: /\bxai-[A-Za-z0-9_-]{30,}\b/ },
+  { name: "GitHub",        re: /\bghp_[A-Za-z0-9]{30,}\b/ },
+  { name: "AWS Access",    re: /\bAKIA[0-9A-Z]{16}\b/ },
+];
+function detectSecret(text: string): string | null {
+  for (const p of SECRET_PATTERNS) if (p.re.test(text)) return p.name;
+  return null;
+}
+
+// projectId="all" is open recon if not gated. Allow only when caller has admin scope
+// (set CELIUMS_CROSS_PROJECT_ADMINS env to a comma list of allowed userIds).
+const CROSS_PROJECT_ADMINS = new Set(
+  (process.env["CELIUMS_CROSS_PROJECT_ADMINS"] ?? "").split(",").map(s => s.trim()).filter(Boolean)
+);
+function canUseAllScope(ctx: any): boolean {
+  const u = String(ctx?.userId || "");
+  if (CROSS_PROJECT_ADMINS.has(u)) return true;
+  const scopes = (ctx as any)?.scopes;
+  return Array.isArray(scopes) && scopes.includes("admin:cross_project");
+}
+
+
 // ────────────────────────────────────────────────────────────
 // Helpers
 // ────────────────────────────────────────────────────────────
@@ -152,6 +187,11 @@ const handleMapNetwork: McpToolHandler = async (_args, ctx) => {
 
 const handleRemember: McpToolHandler = async (args, ctx) => {
   const content = requireString(args, 'content');
+  // SECURITY (v1.2.1): refuse to persist credential-like content.
+  const secretType = detectSecret(content);
+  if (secretType) {
+    return { content: [{ type: 'text', text: `Refused: content appears to contain a ${secretType} credential. Strip the secret and try again.` }], isError: true } as any;
+  }
   const tags = Array.isArray(args.tags) ? args.tags.map(String) : undefined;
   const projectId = (args.projectId as string) || ctx.projectId || null;
   const engine = getMemoryEngine(ctx);
@@ -195,7 +235,11 @@ const handleRemember: McpToolHandler = async (args, ctx) => {
 const handleRecall: McpToolHandler = async (args, ctx) => {
   const query = requireString(args, 'query');
   const limit = safeLimit(args.limit, 10, 50);
-  const projectId = (args.projectId as string) || ctx.projectId || null;
+  let projectId = (args.projectId as string) || ctx.projectId || null;
+  // SECURITY (v1.2.1): projectId="all" was an open recon hole. Requires admin scope.
+  if (projectId === 'all' && !canUseAllScope(ctx)) {
+    return { content: [{ type: 'text', text: 'Refused: projectId="all" requires admin:cross_project scope. Use a specific projectId or omit (defaults to current project + global).' }], isError: true } as any;
+  }
   const engine = getMemoryEngine(ctx);
   const result = await engine.recall({
     query,
@@ -319,7 +363,7 @@ export const OPENCORE_TOOLS: RegisteredTool[] = [
         properties: {
           query:     { type: 'string', description: 'What you want to recall, in natural language. Example: "what database did we choose for the auth service", "user preferences for code style", "last architecture decision"' },
           limit:     { type: 'number', description: 'Maximum number of memories to return. Default: 10, max: 50. Use lower values (3-5) for focused recall, higher for comprehensive search.' },
-          projectId: { type: 'string', description: 'Search specific project scope. Default: current project + global. Use "all" to search across every project. Use a specific project ID to search only that project.' },
+          projectId: { type: 'string', description: 'Search specific project scope. Default: current project + global. projectId="all" requires admin:cross_project scope. Use a specific project ID to search only that project.' },
         },
         required: ['query'],
       },

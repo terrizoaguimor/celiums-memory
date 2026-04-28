@@ -5,6 +5,42 @@ All notable changes to celiums-memory will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-04-28
+
+### Security (P0)
+
+External security audit on the hosted deployment surfaced four findings in the
+MCP tool layer. Fixes are ported here so any self-hosted deployment using
+`@celiums/memory` benefits immediately. Recommended upgrade: **all users**.
+
+- **`recall` no longer accepts `projectId="all"` from arbitrary callers.** The
+  parameter previously enabled cross-project reconnaissance from any token —
+  someone could enumerate every project's memories with a single call. Now
+  gated behind an admin scope: caller's `userId` must be in the
+  `CELIUMS_CROSS_PROJECT_ADMINS` env list (comma-separated) or carry a
+  `scopes: ["admin:cross_project"]` claim. The tool description has been
+  updated to document the gate.
+- **`remember` and `journal_write` now refuse credential-like content.** A
+  shared `SECRET_PATTERNS` detector covers Resend (`re_…`), DigitalOcean
+  Inference (`sk-do-…`), DO API tokens (`dop_v1_…`), Anthropic, OpenRouter,
+  Stripe (`sk_live_…` / `sk_test_…`), Groq, xAI, GitHub PATs, AWS Access Keys,
+  Postgres managed (`AVNS_…`), and `cmk_…` keys. Matches return a 422-style
+  refusal instead of persisting; this prevents long-lived leaks via later
+  `recall` calls. Self-hosters who ingest customer support transcripts or
+  chat logs should especially pick this up.
+- **`journal_write` schema validation hardened.** `tags` must be `string[]`
+  (previously a malformed XML payload would persist as `tags: []` and the
+  garbage would land in `valence_reason`). `inherit_from` must be a
+  UUIDv4-shaped string (previously `../../etc/passwd` was accepted as a
+  no-op, which leaked the absence-of-access-control as design.)
+
+### Notes
+
+- No data migration required. Existing memories and journal entries are
+  unaffected. If your deployment had credentials in plaintext memories,
+  audit them after upgrade — the new detector won't redact existing rows,
+  only block new ones.
+
 ## [1.0.0] - 2026-04-08
 
 ### Added

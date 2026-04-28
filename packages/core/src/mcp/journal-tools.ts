@@ -169,6 +169,21 @@ const handleWrite: McpToolHandler = async (args, ctx) => {
   }
   const content = String(args.content ?? '').trim();
   if (!content) return errR('content required');
+  // SECURITY (v1.2.1): refuse credential-like content (mirrors opencore handleRemember).
+  const _SECRET_PATS = [/\bre_[A-Za-z0-9_]{20,}\b/, /\bsk-do-[A-Za-z0-9_-]{20,}\b/, /\bdop_v1_[a-f0-9]{40,}\b/, /\bcmk_[A-Za-z0-9]{20,}\b/, /\bAVNS_[A-Za-z0-9_]{15,}\b/, /\bsk-ant-[A-Za-z0-9_-]{30,}\b/, /\bsk_(?:live|test)_[A-Za-z0-9]{20,}\b/, /\bgsk_[A-Za-z0-9]{30,}\b/, /\bxai-[A-Za-z0-9_-]{30,}\b/, /\bghp_[A-Za-z0-9]{30,}\b/, /\bAKIA[0-9A-Z]{16}\b/];
+  for (const _r of _SECRET_PATS) if (_r.test(content)) return errR('Refused: journal entry contains a credential pattern. Strip the secret and retry.');
+  // Schema validation: tags MUST be string[] if provided. Reject malformed (e.g., XML).
+  if (args.tags !== undefined && args.tags !== null && !(Array.isArray(args.tags) && (args.tags as any[]).every((t: any) => typeof t === 'string'))) {
+    return errR('Refused: tags must be an array of strings.');
+  }
+  // inherit_from validation: must be UUID-shaped if provided.
+  const _inh = args.inherit_from ?? (args as any).inheritFrom;
+  if (_inh !== undefined && _inh !== null) {
+    const _s = String(_inh);
+    if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(_s)) {
+      return errR('Refused: inherit_from must be the UUID of an existing entry.');
+    }
+  }
 
   const visibility = String(args.visibility ?? 'self');
   if (!VALID_VISIBILITY.has(visibility)) {
