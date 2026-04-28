@@ -1,6 +1,100 @@
 {
   "$schema": "https://glama.ai/mcp/schemas/server.json",
-  "maintainers": [
-    "terrizoaguimor"
+  "maintainers": ["terrizoaguimor"],
+  "description": "Neuroscience-grounded persistent memory engine for AI agents — emotional state (PAD model), per-user circadian rhythm, 5,100+ expert knowledge modules, hybrid semantic search, and a first-person journal that survives across sessions.",
+  "attributes": [
+    "category:memory",
+    "category:knowledge",
+    "category:agents",
+    "hosting:self-hosted",
+    "license:apache-2.0"
+  ],
+  "license": "Apache-2.0",
+  "homepage": "https://celiums.ai",
+  "documentation": "https://github.com/terrizoaguimor/celiums-memory#readme",
+  "runtime": "node",
+  "install": {
+    "command": "npm",
+    "args": ["install", "@celiums/memory"]
+  },
+  "start": {
+    "command": "celiums-memory",
+    "args": ["start"]
+  },
+  "transport": ["stdio", "http"],
+  "environmentVariablesJsonSchema": {
+    "type": "object",
+    "properties": {
+      "CELIUMS_DB_URL": {
+        "type": "string",
+        "description": "PostgreSQL connection string. Optional — defaults to in-memory store for local dev. Required for production."
+      },
+      "CELIUMS_QDRANT_URL": {
+        "type": "string",
+        "description": "Qdrant vector DB URL for semantic search. Optional but strongly recommended for recall quality."
+      },
+      "CELIUMS_VALKEY_URL": {
+        "type": "string",
+        "description": "Valkey (or Redis) URL for distributed mutex + circadian state. Optional for single-instance deployments."
+      },
+      "CELIUMS_LLM_API_KEY": {
+        "type": "string",
+        "description": "OpenAI-compatible API key (BYOK). Enables AI-backed tools: journal_*, write_*, research_synthesize, ethics_trace. Works with OpenAI, Anthropic, OpenRouter, DeepInfra, Groq, local Ollama, etc."
+      },
+      "CELIUMS_LLM_BASE_URL": {
+        "type": "string",
+        "description": "Override the default OpenAI base URL when using BYOK with a non-OpenAI provider.",
+        "default": "https://api.openai.com/v1"
+      },
+      "CELIUMS_LLM_MODEL": {
+        "type": "string",
+        "description": "Model name for AI-backed tools. Whatever your CELIUMS_LLM_BASE_URL exposes.",
+        "default": "gpt-4o-mini"
+      },
+      "CELIUMS_SEARCH_URL": {
+        "type": "string",
+        "description": "External corpus-search backend (any service exposing POST /v1/search). Required only for research_search and research_synthesize."
+      },
+      "CELIUMS_CROSS_PROJECT_ADMINS": {
+        "type": "string",
+        "description": "Comma-separated userIds allowed to call recall with projectId='all' (cross-project recon). Empty by default; only set for admin/operator userIds."
+      }
+    }
+  },
+  "tools": [
+    { "name": "forage", "description": "Search 5,100+ expert knowledge modules by natural language query. Hybrid full-text + semantic ranking. No LLM key required." },
+    { "name": "absorb", "description": "Load the full content of a knowledge module by exact name. Returns the module body for reasoning." },
+    { "name": "sense", "description": "Get personalized module recommendations based on a goal or task description." },
+    { "name": "map_network", "description": "Browse the entire knowledge network organized by category and module count." },
+    { "name": "remember", "description": "Store information in persistent memory with PAD emotional analysis, importance scoring, and circadian-adjusted arousal. Refuses credential-like content since v1.2.1." },
+    { "name": "recall", "description": "Search persistent memory using semantic + emotional relevance ranking with SAR filtering. projectId='all' requires admin:cross_project scope since v1.2.1." },
+    { "name": "ethics_trace", "description": "Run the full ethics engine v2 pipeline (Layers A+B+C) on content and return the trace + final decision. AI-backed." },
+    { "name": "celiums_ai", "description": "Send a prompt to a router that picks the right model for the task. AI-backed." },
+    { "name": "bloom", "description": "Generate polished content (blog posts, SOPs, reports) anchored to your knowledge modules. AI-backed." },
+    { "name": "cultivate", "description": "Adapt and reformat content for specific platforms or audiences. AI-backed." },
+    { "name": "synthesize", "description": "Apply a knowledge module to solve a specific task. Loads module, reasons over it, returns answer. AI-backed." },
+    { "name": "decompose", "description": "Break down complex content into structured, reusable knowledge fragments. AI-backed." },
+    { "name": "construct", "description": "Build a knowledge artifact by combining multiple modules and constraints. AI-backed." },
+    { "name": "pollinate", "description": "Enrich data with AI analysis (deep analysis, executive summary, comparative review, etc.). AI-backed." },
+    { "name": "journal_write", "description": "Append a first-person entry to the agent's persistent diary (auto-embedded, importance-scored). Refuses credential-like content since v1.2.1. AI-backed." },
+    { "name": "journal_recall", "description": "Search the agent's journal semantically + by tag + by entry type. AI-backed." },
+    { "name": "journal_arc", "description": "Build a coherent narrative arc across the agent's recent journal entries with anti-confabulation guardrails. AI-backed." },
+    { "name": "journal_introspect", "description": "Ask the agent's journal a self-question; answers grounded only in real entries. AI-backed." },
+    { "name": "journal_dialogue", "description": "The user replies to one of the agent's user-shared journal entries; the agent reacts and updates its self-model. AI-backed." },
+    { "name": "write_project_create", "description": "Create a writing project (novel, screenplay, long-form). Returns project_id used by the rest of the write_* family." },
+    { "name": "write_project_get", "description": "Get full project state: metadata, characters, scene count, last continuity check." },
+    { "name": "write_character_create", "description": "Create or upsert a character. Voice sample is critical for cross-scene consistency." },
+    { "name": "write_scene_create", "description": "Insert a scene at a specific position. POV character + location + timeline marker tracked." },
+    { "name": "write_scene_update", "description": "Replace a scene's content. Automatic snapshot of the previous version into the revision log." },
+    { "name": "write_continuity_check", "description": "Structural continuity check across the manuscript: secrets-known-at-chapter, worldbuilding rules, timeline order. AI-backed." },
+    { "name": "write_export", "description": "Export the writing project as a markdown manuscript." },
+    { "name": "research_project_create", "description": "Create a persistent research project. Returns project_id used by the rest of the research_* family." },
+    { "name": "research_project_list", "description": "List all research projects for a user, with finding/gap counts." },
+    { "name": "research_project_continue", "description": "Resume context from a paused research project. Returns the current state, findings, and open gaps." },
+    { "name": "research_search", "description": "Hybrid search across the configured corpus (BM25 + semantic). Requires CELIUMS_SEARCH_URL." },
+    { "name": "research_synthesize", "description": "Run a hybrid search and synthesize the top-K results into a structured answer with citations. AI-backed + requires CELIUMS_SEARCH_URL." },
+    { "name": "research_finding_add", "description": "Record an atomic claim with its evidence into the project." },
+    { "name": "research_gap_add", "description": "Flag an unresolved question — something searched for but not adequately answered." },
+    { "name": "research_export", "description": "Export the project as a markdown memo (question, findings with citations, gaps, recommendations)." }
   ]
 }
