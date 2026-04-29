@@ -254,6 +254,8 @@ green "✓ celiums_memory + celiums_knowledge ready"
 phase "[10/12] Hydrate starter modules"
 KNOWLEDGE_URL="postgres://celiums:${PG_PASS}@127.0.0.1:5432/celiums_knowledge"
 HYDRATE_SCRIPT=$(mktemp -t celiums-hydrate.XXXX.mjs)
+# mktemp creates 0600 owned by root; the celiums user can't read it.
+chmod 0644 "$HYDRATE_SCRIPT"
 cat > "$HYDRATE_SCRIPT" <<'NODE'
 import { createReadStream } from 'node:fs';
 import { createGunzip } from 'node:zlib';
