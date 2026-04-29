@@ -97,8 +97,15 @@ install -o celiums -g celiums -m 0644 \
 #    which is the expected case for a clean snapshot.
 # ---------------------------------------------------------------------------
 if [ ! -f "$CELIUMS_HOME/packages/dashboard/build/index.js" ]; then
+  echo "==> Installing workspace dependencies"
+  sudo -u celiums bash -c "cd $CELIUMS_HOME && pnpm install --frozen-lockfile"
+  # @celiums/memory (packages/core) has to be built first because the
+  # dashboard imports from its compiled dist/. Without this, vite build
+  # fails with ERR_MODULE_NOT_FOUND on @celiums/memory/dist/index.js.
+  echo "==> Building @celiums/memory (engine SDK)"
+  sudo -u celiums bash -c "cd $CELIUMS_HOME && pnpm --filter @celiums/memory build"
   echo "==> Building dashboard (adapter-node)"
-  sudo -u celiums bash -c "cd $CELIUMS_HOME && pnpm install --frozen-lockfile && pnpm --filter @celiums/dashboard build"
+  sudo -u celiums bash -c "cd $CELIUMS_HOME && pnpm --filter @celiums/dashboard build"
 else
   echo "==> Dashboard build already present"
 fi
