@@ -21,8 +21,9 @@ TimeoutStopSec=10s
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
-ReadOnlyPaths=/root/.celiums
+# read-only access to /root so the script can read /root/.celiums/dashboard_url
+# (the URL file is only ever READ here, never written).
+ProtectHome=read-only
 
 StandardOutput=journal
 StandardError=journal
