@@ -9,7 +9,14 @@
  *   CELIUMS_LLM_MODEL      default 'gpt-4o-mini'
  *   CELIUMS_EMBED_MODEL    default 'text-embedding-3-small'
  *
- * Works with any OpenAI-compatible service:
+ * Works with any OpenAI-compatible service. See `llm-providers.ts` for the
+ * curated list (DigitalOcean Inference, OpenAI, Anthropic, OpenRouter, Groq,
+ * Together, Ollama, LM Studio, vLLM). Examples:
+ *
+ *   # DigitalOcean Inference (Anthropic + OpenAI + Llama + DeepSeek + more, one key)
+ *   export CELIUMS_LLM_BASE_URL=https://inference.do-ai.run/v1
+ *   export CELIUMS_LLM_API_KEY=sk-do-...
+ *   export CELIUMS_LLM_MODEL=anthropic-claude-haiku-4.5
  *
  *   # OpenAI (default)
  *   export CELIUMS_LLM_API_KEY=sk-...

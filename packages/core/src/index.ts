@@ -621,3 +621,17 @@ export { OPENCORE_TOOLS } from './mcp/opencore-tools.js';
 export { JOURNAL_TOOLS } from './mcp/journal-tools.js';
 export { RESEARCH_TOOLS } from './mcp/research-tools.js';
 export { WRITE_TOOLS } from './mcp/write-tools.js';
+
+// LLM client + provider catalog (BYOK)
+export { llmChat, llmEmbed, llmConfigured } from './llm-client.js';
+export type { ChatMessage, ChatOptions, EmbedOptions } from './llm-client.js';
+export {
+  PROVIDERS,
+  getProvider,
+  detectProvider,
+} from './llm-providers.js';
+export type {
+  LlmProvider,
+  LlmProviderId,
+  LlmProviderModel,
+} from './llm-providers.js';
