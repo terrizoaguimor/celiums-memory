@@ -60,8 +60,6 @@ NODE_ENV=production
 # Engine
 CELIUMS_PORT=3210
 CELIUMS_HOST=127.0.0.1
-DATABASE_URL=postgres://celiums:${PG_PASSWORD}@127.0.0.1:5432/celiums
-REDIS_URL=redis://:${VALKEY_PASSWORD}@127.0.0.1:6379
 
 # Dashboard
 PORT=5173
@@ -74,6 +72,22 @@ ENGINE_KEY=${ENGINE_KEY}
 CELIUMS_MASTER_KEY_PATH=${ETC_DIR}/master.key
 CELIUMS_VAULT_PATH=${ETC_DIR}/keyvault.enc
 CELIUMS_AUTH_FILE=${DATA_DIR}/auth.json
+
+# ─────────────────────────────────────────────────────────────────────
+# Optional persistence layer.
+#
+# By default the engine runs in **in-memory mode** — perfect for
+# evaluating the product, no extra services to install. Memories
+# are wiped on engine restart.
+#
+# For persistent storage, install Postgres 17 + pgvector and Valkey,
+# then uncomment the two URLs below. The credentials were generated
+# fresh for this droplet:
+#   PG_PASSWORD=${PG_PASSWORD}
+#   VALKEY_PASSWORD=${VALKEY_PASSWORD}
+# ─────────────────────────────────────────────────────────────────────
+# DATABASE_URL=postgres://celiums:${PG_PASSWORD}@127.0.0.1:5432/celiums
+# REDIS_URL=redis://:${VALKEY_PASSWORD}@127.0.0.1:6379
 ENV
 
   chown celiums:celiums "$ETC_DIR/env"
