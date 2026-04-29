@@ -1,4 +1,4 @@
-# Droplet packaging — Celiums Memory v1.2.5
+# Droplet packaging — Celiums Memory v1.2.6
 
 Files used to build the DigitalOcean 1-Click Marketplace snapshot. Everything
 in this directory is what *ships inside* the snapshot; nothing here is fetched
@@ -118,7 +118,7 @@ curl http://127.0.0.1:8080/                 # → dashboard
 7. `systemctl daemon-reload` (do **not** enable any unit yet)
 8. Snapshot the droplet via `doctl compute droplet-action snapshot ...`.
 
-The resulting snapshot is published to the DO Marketplace as v1.2.5. On
+The resulting snapshot is published to the DO Marketplace as v1.2.6. On
 deploy, `cloud-init/user-data.yaml` enables `celiums-firstboot.service`
 which runs `firstboot.sh` to provision the per-droplet secrets and start
 the runtime services.

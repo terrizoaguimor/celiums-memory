@@ -1,7 +1,7 @@
 #cloud-config
 # Celiums Memory — DigitalOcean 1-Click cloud-config.
 #
-# This file is the user-data baked into the v1.2.5 snapshot. It runs on
+# This file is the user-data baked into the v1.2.6 snapshot. It runs on
 # first boot of every droplet created from the listing. Most of the
 # heavy lifting is delegated to /opt/celiums-memory/packaging/droplet/
 # cloud-init/firstboot.sh — this file just wires the systemd unit and

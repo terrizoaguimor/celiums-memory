@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Celiums Memory — first-boot provisioning script.
 #
-# Runs ONCE on first boot of a 1-Click droplet built from the v1.2.5
+# Runs ONCE on first boot of a 1-Click droplet built from the v1.2.6
 # snapshot. The snapshot ships with code at /opt/celiums-memory and
 # all systemd units installed but disabled. This script:
 #
