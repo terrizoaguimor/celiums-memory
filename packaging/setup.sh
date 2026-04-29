@@ -256,10 +256,11 @@ green "✓ celiums_memory + celiums_knowledge ready"
 # ── Phase 10: hydrate 5,100 starter modules ──────────────────────────
 phase "[10/12] Hydrate starter modules"
 KNOWLEDGE_URL="postgres://celiums:${PG_PASS}@127.0.0.1:5432/celiums_knowledge"
-# Write the hydrate script INSIDE the repo so Node's ESM resolver
-# walks up to /opt/celiums-memory/node_modules and finds pg there.
-# /tmp scripts can't see the workspace's node_modules.
-HYDRATE_SCRIPT=$CELIUMS_HOME/.celiums-hydrate.mjs
+# Write the hydrate script inside packages/knowledge — that's the
+# workspace that lists `pg` as a direct dependency, so its
+# node_modules has the symlink. The repo root's node_modules has
+# only top-level deps, not workspace transitive ones.
+HYDRATE_SCRIPT=$CELIUMS_HOME/packages/knowledge/.celiums-hydrate.mjs
 cat > "$HYDRATE_SCRIPT" <<'NODE'
 import { createReadStream } from 'node:fs';
 import { createGunzip } from 'node:zlib';
