@@ -253,9 +253,10 @@ green "✓ celiums_memory + celiums_knowledge ready"
 # ── Phase 10: hydrate 5,100 starter modules ──────────────────────────
 phase "[10/12] Hydrate starter modules"
 KNOWLEDGE_URL="postgres://celiums:${PG_PASS}@127.0.0.1:5432/celiums_knowledge"
-HYDRATE_SCRIPT=$(mktemp -t celiums-hydrate.XXXX.mjs)
-# mktemp creates 0600 owned by root; the celiums user can't read it.
-chmod 0644 "$HYDRATE_SCRIPT"
+# Write the hydrate script INSIDE the repo so Node's ESM resolver
+# walks up to /opt/celiums-memory/node_modules and finds pg there.
+# /tmp scripts can't see the workspace's node_modules.
+HYDRATE_SCRIPT=$CELIUMS_HOME/.celiums-hydrate.mjs
 cat > "$HYDRATE_SCRIPT" <<'NODE'
 import { createReadStream } from 'node:fs';
 import { createGunzip } from 'node:zlib';
@@ -337,10 +338,11 @@ console.log('  total in DB: ' + rows[0].n);
 await pool.end();
 NODE
 
+chown celiums:celiums "$HYDRATE_SCRIPT"
+chmod 0644 "$HYDRATE_SCRIPT"
 sudo -u celiums env \
   "DATABASE_URL=$KNOWLEDGE_URL" \
   "SEED_PATH=$CELIUMS_HOME/packages/modules-starter/data/seed.jsonl.gz" \
-  "NODE_PATH=$CELIUMS_HOME/node_modules" \
   node "$HYDRATE_SCRIPT" 2>&1 | sed 's/^/  /'
 rm -f "$HYDRATE_SCRIPT"
 green "✓ modules hydrated"
