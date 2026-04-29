@@ -135,41 +135,26 @@ fi
 # ---------------------------------------------------------------------------
 # 4. Enable + start services in dependency order.
 # ---------------------------------------------------------------------------
-echo "==> Enabling services"
+echo "==> Enabling internal services"
 systemctl daemon-reload
 systemctl enable --now celiums-engine.service
 systemctl enable --now celiums-dashboard.service
-systemctl enable --now celiums-proxy.service
-systemctl enable --now celiums-tunnel.service
-# port 80 → 302 redirect to the trycloudflare URL, so users who only
-# have the droplet's IP from the DO control panel land on the right
-# dashboard without SSHing.
-systemctl enable --now celiums-redirect.service
+# celiums-proxy intentionally NOT started here — it has no Caddyfile yet.
+# The user runs `sudo celiums-setup` over SSH to choose FQDN vs IP mode,
+# which writes /etc/celiums/Caddyfile and starts the proxy.
+
+# Legacy: install but do NOT enable celiums-tunnel / celiums-redirect.
+# They remain available for users who explicitly want quick-tunnel mode
+# (`systemctl enable --now celiums-tunnel celiums-redirect`).
 
 # ---------------------------------------------------------------------------
-# 5. Wait for cloudflared to mint a public URL (up to 90s) and persist it.
+# 5. Stage the celiums-setup binary on PATH so first SSH login can run it.
 # ---------------------------------------------------------------------------
-echo "==> Waiting for tunnel URL"
-TUNNEL_URL=""
-for i in $(seq 1 45); do
-  TUNNEL_URL=$(journalctl -u celiums-tunnel.service --since "5 minutes ago" --no-pager -o cat 2>/dev/null \
-    | grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' \
-    | tail -1)
-  if [ -n "$TUNNEL_URL" ]; then
-    break
-  fi
-  sleep 2
-done
+install -m 0755 \
+  "$CELIUMS_HOME/packaging/droplet/scripts/celiums-setup.mjs" \
+  /usr/local/bin/celiums-setup
 
-if [ -n "$TUNNEL_URL" ]; then
-  echo "$TUNNEL_URL" > "$ROOT_OUT/dashboard_url"
-  chmod 0600 "$ROOT_OUT/dashboard_url"
-  echo "==> Public URL: $TUNNEL_URL"
-else
-  echo "!!! Tunnel URL not detected after 90s. Check: journalctl -u celiums-tunnel.service"
-fi
-
-# Also surface the engine API key so MCP clients can be configured.
+# Capture the engine API key so MCP clients can be configured later.
 ENGINE_KEY_VAL=$(grep '^ENGINE_KEY=' "$ETC_DIR/env" | cut -d= -f2-)
 echo "$ENGINE_KEY_VAL" > "$ROOT_OUT/api-key"
 chmod 0600 "$ROOT_OUT/api-key"
@@ -183,14 +168,26 @@ echo ""
 echo "  ╭─────────────────────────────────────────────────────────────╮"
 echo "  │  Celiums Memory — your AI's persistent brain                │"
 echo "  ╰─────────────────────────────────────────────────────────────╯"
-if [ -f /root/.celiums/dashboard_url ]; then
-  echo "  Dashboard : $(cat /root/.celiums/dashboard_url)"
-fi
-if [ -f /root/.celiums/api-key ]; then
-  echo "  API key   : $(cat /root/.celiums/api-key)"
+if [ -f /etc/celiums/setup.json ] && grep -q '"completed": true' /etc/celiums/setup.json 2>/dev/null; then
+  if [ -f /root/.celiums/dashboard_url ]; then
+    echo "  Dashboard : $(cat /root/.celiums/dashboard_url)"
+  fi
+  if [ -f /root/.celiums/api-key ]; then
+    echo "  API key   : $(cat /root/.celiums/api-key)"
+  fi
+  echo ""
+  echo "  Reconfigure : sudo celiums-setup"
+else
+  echo ""
+  echo "  Setup is not complete yet. Run:"
+  echo ""
+  echo "      sudo celiums-setup"
+  echo ""
+  echo "  to choose how the dashboard is exposed (FQDN with Let's"
+  echo "  Encrypt, or HTTPS-by-IP with a self-signed cert)."
 fi
 echo ""
-echo "  Logs   : journalctl -u celiums-engine -u celiums-dashboard -u celiums-tunnel"
+echo "  Logs   : journalctl -u celiums-engine -u celiums-dashboard -u celiums-proxy"
 echo "  Config : /etc/celiums/env  (mode 0600, owner celiums)"
 echo "  Docs   : https://github.com/terrizoaguimor/celiums-memory"
 echo ""

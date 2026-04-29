@@ -1,5 +1,5 @@
 [Unit]
-Description=Celiums internal reverse proxy (Caddy: dashboard + engine on one URL)
+Description=Celiums reverse proxy (Caddy: TLS + path routing → engine + dashboard)
 Documentation=https://github.com/terrizoaguimor/celiums-memory
 After=network-online.target celiums-dashboard.service celiums-engine.service
 Wants=network-online.target
@@ -15,20 +15,23 @@ Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=20s
 
-# Caddy listens on 127.0.0.1:8080 only — public traffic enters via cloudflared.
-# No TLS termination here (cloudflared handles it at the Cloudflare edge).
+# Caddy now terminates TLS for the public listeners (80 + 443). Both ports
+# are privileged, so we grant the binary the bind-service capability — no
+# need to run the whole process as root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/celiums
+# Caddy needs a working dir for its certificate cache (Let's Encrypt mode).
+ReadWritePaths=/var/lib/celiums /var/lib/caddy
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictNamespaces=true
 LockPersonality=true
-AmbientCapabilities=
-CapabilityBoundingSet=
 
 StandardOutput=journal
 StandardError=journal
