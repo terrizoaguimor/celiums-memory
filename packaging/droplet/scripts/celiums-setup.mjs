@@ -109,23 +109,25 @@ async function writeState(s) {
 // on the SAME line but the body MUST be on subsequent lines — single-line
 // `handle /x { reverse_proxy y }` does not parse.
 function routesBlock() {
+  // Each block is single-line tab-indented; consumers concatenate this
+  // straight inside a parent site block (one extra tab from there).
   return [
     'handle /v1/* {',
     '\t\treverse_proxy 127.0.0.1:3210',
     '\t}',
-    '\thandle /mcp* {',
+    'handle /mcp* {',
     '\t\treverse_proxy 127.0.0.1:3210',
     '\t}',
-    '\thandle /oauth/* {',
+    'handle /oauth/* {',
     '\t\treverse_proxy 127.0.0.1:3210',
     '\t}',
-    '\thandle /.well-known/* {',
+    'handle /.well-known/* {',
     '\t\treverse_proxy 127.0.0.1:3210',
     '\t}',
-    '\thandle /health {',
+    'handle /health {',
     '\t\treverse_proxy 127.0.0.1:3210',
     '\t}',
-    '\thandle {',
+    'handle {',
     '\t\treverse_proxy 127.0.0.1:5173',
     '\t}',
   ].join('\n\t');
@@ -177,7 +179,10 @@ function caddyfileForIp(ip) {
 // ─── Self-signed cert generation ────────────────────────────────────
 async function generateSelfSigned(ip) {
   await fs.mkdir(TLS_DIR, { recursive: true });
-  await fs.chmod(TLS_DIR, 0o700);
+  // Caddy runs as the celiums user — both the directory AND the files
+  // need to be readable by it. 0o750 lets the celiums group traverse.
+  spawnSync('chown', ['celiums:celiums', TLS_DIR]);
+  await fs.chmod(TLS_DIR, 0o750);
 
   // OpenSSL config with IP as SAN. CN must be the IP for older clients.
   const cnf = `${TLS_DIR}/openssl.cnf`;
