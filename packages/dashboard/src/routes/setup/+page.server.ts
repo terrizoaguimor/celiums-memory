@@ -42,7 +42,7 @@ export const actions: Actions = {
         });
       }
 
-      redirect(302, '/dashboard');
+      redirect(302, '/setup/llm');
     } catch (err: any) {
       return fail(500, { error: 'Setup failed. Please try again.' });
     }

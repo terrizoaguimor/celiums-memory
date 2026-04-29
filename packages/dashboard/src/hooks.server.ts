@@ -26,6 +26,15 @@ export const handle: Handle = async ({ event, resolve }) => {
         return new Response('Too many login attempts. Try again later.', { status: 429 });
       }
     }
+    // Wizard step routes (/setup/llm, /setup/welcome) need locals.user set
+    // for the freshly-created admin to access their apiKey + scoped data.
+    if (path.startsWith('/setup/')) {
+      const token = event.cookies.get('celiums_session');
+      if (token) {
+        const session = validateSession(token);
+        if (session) event.locals.user = session;
+      }
+    }
     return resolve(event);
   }
 
