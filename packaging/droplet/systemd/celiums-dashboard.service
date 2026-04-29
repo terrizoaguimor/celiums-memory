@@ -1,0 +1,39 @@
+[Unit]
+Description=Celiums Memory dashboard (SvelteKit, adapter-node)
+Documentation=https://github.com/terrizoaguimor/celiums-memory
+After=network-online.target celiums-engine.service
+Wants=network-online.target
+Requires=celiums-engine.service
+
+[Service]
+Type=simple
+User=celiums
+Group=celiums
+WorkingDirectory=/opt/celiums-memory/packages/dashboard
+EnvironmentFile=/etc/celiums/env
+# adapter-node entrypoint produced by `pnpm --filter @celiums/dashboard build`.
+# PORT, ORIGIN, ENGINE_URL, ENGINE_KEY, CELIUMS_VAULT_PATH, CELIUMS_MASTER_KEY_PATH
+# all come from /etc/celiums/env.
+ExecStart=/usr/bin/env node build/index.js
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/celiums /etc/celiums
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictRealtime=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=celiums-dashboard
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,60 @@
+# Celiums internal reverse proxy.
+#
+# Listens on 127.0.0.1:8080 only — no public binding, no TLS termination.
+# Public ingress is handled upstream by cloudflared (quick-tunnel mode by
+# default; user-supplied named tunnel for production), which terminates
+# TLS at the Cloudflare edge and forwards plain HTTP to this proxy.
+#
+# Path layout:
+#   /v1/*           → engine REST API
+#   /mcp*           → engine MCP (JSON-RPC)
+#   /oauth/*        → engine OAuth (Claude.ai connector flow)
+#   /.well-known/*  → engine MCP discovery
+#   /health         → engine health
+#   everything else → dashboard (SvelteKit adapter-node)
+
+{
+	# Disable admin API entirely — this proxy is internal-only and we
+	# don't want a localhost socket that exposes config reload.
+	admin off
+
+	# Auto HTTPS off because cloudflared handles TLS upstream and we
+	# bind only to 127.0.0.1.
+	auto_https off
+
+	# Logging goes to stdout → systemd journal.
+	log {
+		output stdout
+		format console
+		level INFO
+	}
+}
+
+127.0.0.1:8080 {
+	# Engine endpoints. Order matters in Caddy v2: the first matching
+	# `handle` block wins.
+	handle /v1/* {
+		reverse_proxy 127.0.0.1:3210
+	}
+
+	handle /mcp* {
+		reverse_proxy 127.0.0.1:3210
+	}
+
+	handle /oauth/* {
+		reverse_proxy 127.0.0.1:3210
+	}
+
+	handle /.well-known/* {
+		reverse_proxy 127.0.0.1:3210
+	}
+
+	handle /health {
+		reverse_proxy 127.0.0.1:3210
+	}
+
+	# Everything else goes to the dashboard.
+	handle {
+		reverse_proxy 127.0.0.1:5173
+	}
+}

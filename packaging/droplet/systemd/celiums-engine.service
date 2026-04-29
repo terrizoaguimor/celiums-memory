@@ -1,0 +1,40 @@
+[Unit]
+Description=Celiums Memory engine (cognitive memory + MCP server)
+Documentation=https://github.com/terrizoaguimor/celiums-memory
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=celiums
+Group=celiums
+WorkingDirectory=/opt/celiums-memory
+EnvironmentFile=/etc/celiums/env
+# `pnpm start` resolves to `tsx packages/core/src/quickstart.ts`.
+# Using the repo's own pnpm via corepack keeps the systemd unit independent
+# of whatever node/pnpm the operator has on PATH.
+ExecStart=/usr/bin/env pnpm start
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+
+# Hardening — engine writes only to its data dir + master key dir.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/celiums /etc/celiums
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictRealtime=true
+
+# Logs → journalctl -u celiums-engine
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=celiums-engine
+
+[Install]
+WantedBy=multi-user.target

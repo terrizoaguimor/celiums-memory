@@ -1,0 +1,38 @@
+[Unit]
+Description=Celiums internal reverse proxy (Caddy: dashboard + engine on one URL)
+Documentation=https://github.com/terrizoaguimor/celiums-memory
+After=network-online.target celiums-dashboard.service celiums-engine.service
+Wants=network-online.target
+Requires=celiums-dashboard.service celiums-engine.service
+
+[Service]
+Type=notify
+User=celiums
+Group=celiums
+ExecStart=/usr/bin/caddy run --config /etc/celiums/Caddyfile --adapter caddyfile
+ExecReload=/usr/bin/caddy reload --config /etc/celiums/Caddyfile --adapter caddyfile --force
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+
+# Caddy listens on 127.0.0.1:8080 only — public traffic enters via cloudflared.
+# No TLS termination here (cloudflared handles it at the Cloudflare edge).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/celiums
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+AmbientCapabilities=
+CapabilityBoundingSet=
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=celiums-proxy
+
+[Install]
+WantedBy=multi-user.target

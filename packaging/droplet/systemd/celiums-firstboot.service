@@ -1,0 +1,20 @@
+[Unit]
+Description=Celiums Memory first-boot provisioning (one-shot)
+Documentation=https://github.com/terrizoaguimor/celiums-memory
+ConditionPathExists=/opt/celiums-memory/packaging/droplet/cloud-init/firstboot.sh
+After=network-online.target
+Wants=network-online.target
+Before=celiums-engine.service celiums-dashboard.service celiums-proxy.service celiums-tunnel.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Runs as root so it can chown, write /etc/celiums, install Caddyfile,
+# and call systemctl enable/start. The script disarms itself on success.
+ExecStart=/usr/bin/env bash /opt/celiums-memory/packaging/droplet/cloud-init/firstboot.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=celiums-firstboot
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,48 @@
+#cloud-config
+# Celiums Memory — DigitalOcean 1-Click cloud-config.
+#
+# This file is the user-data baked into the v1.2.5 snapshot. It runs on
+# first boot of every droplet created from the listing. Most of the
+# heavy lifting is delegated to /opt/celiums-memory/packaging/droplet/
+# cloud-init/firstboot.sh — this file just wires the systemd unit and
+# tightens SSH defaults.
+
+package_update: true
+package_upgrade: false
+
+users:
+  - name: celiums
+    system: true
+    shell: /usr/sbin/nologin
+    home: /opt/celiums-memory
+    create_home: false
+
+write_files:
+  - path: /etc/sysctl.d/60-celiums.conf
+    permissions: '0644'
+    content: |
+      # Celiums tuning — modest, single-droplet defaults.
+      net.core.somaxconn = 4096
+      net.ipv4.tcp_fin_timeout = 15
+      vm.swappiness = 10
+
+runcmd:
+  # SSH hardening — keep password auth off, root login key-only.
+  - sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+  - sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+  - systemctl reload ssh || systemctl reload sshd || true
+
+  # Apply sysctl tuning.
+  - sysctl --system
+
+  # Activate the one-shot firstboot unit. firstboot.sh enables and starts
+  # the four runtime services (engine, dashboard, proxy, tunnel) and then
+  # removes itself.
+  - systemctl daemon-reload
+  - systemctl enable --now celiums-firstboot.service
+
+final_message: |
+  Celiums Memory provisioning kicked off. Run:
+    journalctl -u celiums-firstboot.service -f
+  to follow progress, then `cat /root/.celiums/dashboard_url` once it
+  finishes.

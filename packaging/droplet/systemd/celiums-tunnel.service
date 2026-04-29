@@ -1,0 +1,37 @@
+[Unit]
+Description=Celiums Cloudflare quick-tunnel (public URL for the proxy)
+Documentation=https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/
+After=network-online.target celiums-proxy.service
+Wants=network-online.target
+Requires=celiums-proxy.service
+
+[Service]
+Type=simple
+User=celiums
+Group=celiums
+# Quick-tunnel — no Cloudflare account required. Stdout streams the
+# *.trycloudflare.com URL on first connection; the firstboot script
+# tails the journal and writes that URL to /root/.celiums/dashboard_url
+# for the operator to copy. Restarting the daemon mints a new URL.
+ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8080
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=20s
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/celiums
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=celiums-tunnel
+
+[Install]
+WantedBy=multi-user.target
