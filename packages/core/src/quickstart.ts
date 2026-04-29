@@ -1122,7 +1122,11 @@ async function main() {
   // ── Stdio transport for mcp-proxy ────────────────────────
   // When launched by mcp-proxy, stdin is piped (not a TTY).
   // Read JSON-RPC from stdin, dispatch to MCP handler, write response to stdout.
-  if (!process.stdin.isTTY) {
+  //
+  // CELIUMS_DISABLE_STDIO=1 opts out — needed when running under systemd
+  // or any supervisor that hands the process /dev/null as stdin, which
+  // EOFs immediately and would call process.exit(0) below.
+  if (!process.stdin.isTTY && !process.env.CELIUMS_DISABLE_STDIO) {
     process.stderr.write('[celiums-memory] stdio transport enabled\n');
     const rl = createInterface({ input: process.stdin, terminal: false });
     rl.on('line', async (line: string) => {

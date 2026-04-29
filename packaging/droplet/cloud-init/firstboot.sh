@@ -57,12 +57,8 @@ if [ ! -f "$ETC_DIR/env" ]; then
 # Celiums Memory runtime environment — generated $(date -u +'%Y-%m-%dT%H:%M:%SZ')
 NODE_ENV=production
 
-# Engine
-CELIUMS_PORT=3210
-CELIUMS_HOST=127.0.0.1
-
-# Dashboard
-PORT=5173
+# Engine + dashboard share the same env file; the per-service systemd
+# units override PORT so the two listeners don't collide on 3210/5173.
 HOST=127.0.0.1
 ORIGIN=http://127.0.0.1:5173
 ENGINE_URL=http://127.0.0.1:3210

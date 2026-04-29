@@ -11,6 +11,8 @@ User=celiums
 Group=celiums
 WorkingDirectory=/opt/celiums-memory/packages/dashboard
 EnvironmentFile=/etc/celiums/env
+# Pin the dashboard listener; engine pins its own to 3210.
+Environment=PORT=5173
 # adapter-node entrypoint produced by `pnpm --filter @celiums/dashboard build`.
 # PORT, ORIGIN, ENGINE_URL, ENGINE_KEY, CELIUMS_VAULT_PATH, CELIUMS_MASTER_KEY_PATH
 # all come from /etc/celiums/env.

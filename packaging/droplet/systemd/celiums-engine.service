@@ -10,6 +10,13 @@ User=celiums
 Group=celiums
 WorkingDirectory=/opt/celiums-memory
 EnvironmentFile=/etc/celiums/env
+# Override PORT — the shared env file does not set it, but the dashboard's
+# adapter-node also reads PORT, so each unit pins its own listener.
+Environment=PORT=3210
+# Skip the stdio MCP transport when running as a daemon — see quickstart.ts.
+# Without this, systemd's default stdin=/dev/null EOFs immediately and the
+# stdio readline closes, calling process.exit(0).
+Environment=CELIUMS_DISABLE_STDIO=1
 # `pnpm start` resolves to `tsx packages/core/src/quickstart.ts`.
 # Using the repo's own pnpm via corepack keeps the systemd unit independent
 # of whatever node/pnpm the operator has on PATH.
