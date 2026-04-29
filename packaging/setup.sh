@@ -189,6 +189,10 @@ green "✓ caddy $(caddy version | head -1)"
 # ── Phase 7: celiums system user + repo ──────────────────────────────
 phase "[7/12] celiums user + clone"
 id -u celiums >/dev/null 2>&1 || useradd -r -s /usr/sbin/nologin -d "$CELIUMS_HOME" celiums
+# After the first run /opt/celiums-memory is owned by celiums; root running
+# git in there trips git's "dubious ownership" safety check. Whitelist it
+# globally so re-runs succeed.
+git config --system --add safe.directory "$CELIUMS_HOME" 2>/dev/null || true
 if [[ ! -d $CELIUMS_HOME/.git ]]; then
   rm -rf "$CELIUMS_HOME"
   git clone --depth 1 --branch "$REPO_REF" "$REPO_URL" "$CELIUMS_HOME"
