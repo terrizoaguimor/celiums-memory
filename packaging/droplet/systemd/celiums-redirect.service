@@ -1,0 +1,32 @@
+[Unit]
+Description=Celiums port-80 redirect to the public dashboard URL
+Documentation=https://github.com/terrizoaguimor/celiums-memory
+After=network-online.target celiums-tunnel.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runs as root because port 80 is privileged. The script itself is
+# ~80 lines, zero deps, only reads /root/.celiums/dashboard_url and
+# 302-redirects — minimal blast radius.
+User=root
+Group=root
+ExecStart=/usr/bin/env node /opt/celiums-memory/packaging/droplet/scripts/celiums-redirect.mjs
+Environment=PORT=80
+Environment=HOST=0.0.0.0
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=10s
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/root/.celiums
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=celiums-redirect
+
+[Install]
+WantedBy=multi-user.target

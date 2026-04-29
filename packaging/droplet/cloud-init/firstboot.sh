@@ -72,6 +72,11 @@ CELIUMS_MASTER_KEY_PATH=${ETC_DIR}/master.key
 CELIUMS_VAULT_PATH=${ETC_DIR}/keyvault.enc
 CELIUMS_AUTH_FILE=${DATA_DIR}/auth.json
 
+# SQLite knowledge store — gives the engine the 5,100 starter modules
+# from @celiums/modules-starter on first launch. Without this the
+# engine runs in pure in-memory mode and /modules is empty.
+SQLITE_PATH=${DATA_DIR}/celiums.db
+
 # ─────────────────────────────────────────────────────────────────────
 # Optional persistence layer.
 #
@@ -117,6 +122,10 @@ if [ ! -f "$CELIUMS_HOME/packages/dashboard/build/index.js" ]; then
   # fails with ERR_MODULE_NOT_FOUND on @celiums/memory/dist/index.js.
   echo "==> Building @celiums/memory (engine SDK)"
   sudo -u celiums bash -c "cd $CELIUMS_HOME && pnpm --filter @celiums/memory build"
+  # Building modules-starter is best-effort — the engine's dynamic
+  # import falls back gracefully if it's missing.
+  echo "==> Building @celiums/modules-starter (5,100 seed modules)"
+  sudo -u celiums bash -c "cd $CELIUMS_HOME && pnpm --filter @celiums/modules-starter build" || true
   echo "==> Building dashboard (adapter-node)"
   sudo -u celiums bash -c "cd $CELIUMS_HOME && pnpm --filter @celiums/dashboard build"
 else
@@ -132,6 +141,10 @@ systemctl enable --now celiums-engine.service
 systemctl enable --now celiums-dashboard.service
 systemctl enable --now celiums-proxy.service
 systemctl enable --now celiums-tunnel.service
+# port 80 → 302 redirect to the trycloudflare URL, so users who only
+# have the droplet's IP from the DO control panel land on the right
+# dashboard without SSHing.
+systemctl enable --now celiums-redirect.service
 
 # ---------------------------------------------------------------------------
 # 5. Wait for cloudflared to mint a public URL (up to 90s) and persist it.
