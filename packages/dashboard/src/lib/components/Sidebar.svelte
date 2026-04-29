@@ -4,7 +4,7 @@
 
   const nav = [
     { href: '/dashboard', label: 'Dashboard', icon: '◉', desc: 'Overview' },
-    { href: '/modules', label: 'Modules', icon: '◈', desc: '5,100 included' },
+    { href: '/modules', label: 'Modules', icon: '◈', desc: 'Knowledge store' },
     { href: '/settings/keys', label: 'AI Provider Keys', icon: '⚿', desc: 'BYOK · encrypted vault' },
     { href: '/memory', label: 'Backups', icon: '◎', desc: 'Export & restore' },
     { href: '/settings', label: 'Settings', icon: '◆', desc: 'Engine config' },
@@ -55,6 +55,6 @@
       </div>
       <ThemeToggle />
     </div>
-    <p class="text-[10px] font-mono" style="color: var(--c-text-muted);">in-memory · v1.2.6</p>
+    <p class="text-[10px] font-mono" style="color: var(--c-text-muted);">@celiums/memory · v1.3.0</p>
   </div>
 </aside>
