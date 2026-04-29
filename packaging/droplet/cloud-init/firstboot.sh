@@ -29,7 +29,10 @@ DATA_DIR=/var/lib/celiums
 ROOT_OUT=/root/.celiums
 
 mkdir -p "$ETC_DIR" "$DATA_DIR" "$ROOT_OUT"
-chown celiums:celiums "$DATA_DIR"
+# All three runtime services run as the celiums user, so the config
+# directory must be owned by celiums (mode 0700 keeps it private to
+# that user). /var/lib/celiums holds auth.json, same story.
+chown celiums:celiums "$ETC_DIR" "$DATA_DIR"
 chmod 0700 "$ETC_DIR" "$DATA_DIR"
 chmod 0700 "$ROOT_OUT"
 

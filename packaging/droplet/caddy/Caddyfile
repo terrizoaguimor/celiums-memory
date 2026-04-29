@@ -30,7 +30,7 @@
 	}
 }
 
-127.0.0.1:8080 {
+http://127.0.0.1:8080 {
 	# Engine endpoints. Order matters in Caddy v2: the first matching
 	# `handle` block wins.
 	handle /v1/* {
