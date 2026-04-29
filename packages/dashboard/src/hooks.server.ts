@@ -41,12 +41,16 @@ export const handle: Handle = async ({ event, resolve }) => {
   // API routes — require session cookie (CRITICAL FIX: was previously open)
   if (path.startsWith('/api/')) {
     const token = event.cookies.get('celiums_session');
-    if (!token || !validateSession(token)) {
+    const session = token ? validateSession(token) : null;
+    if (!session) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
         status: 401,
         headers: { 'Content-Type': 'application/json' },
       });
     }
+    // Hand the session to the route handler so endpoints can run their own
+    // `if (!locals.user)` guards without a second cookie roundtrip.
+    event.locals.user = session;
     return resolve(event);
   }
 

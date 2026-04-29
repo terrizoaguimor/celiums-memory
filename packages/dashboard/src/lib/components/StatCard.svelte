@@ -13,21 +13,29 @@
 
   let displayed = $state(0);
 
-  // Sparkline SVG points
+  // Sparkline SVG points. Guards: sparkData.length must be ≥ 2 (avoid x
+  // division by zero) and max-min must be > 0 (avoid y NaN when every
+  // sample is identical, e.g. a flat 100% recall sparkline).
+  function normY(v: number, min: number, max: number) {
+    if (max === min) return 16; // mid-band
+    return 28 - ((v - min) / (max - min)) * 24;
+  }
+
   let points = $derived(() => {
+    if (!sparkData || sparkData.length < 2) return '0,16 100,16';
     const min = Math.min(...sparkData);
-    const max = Math.max(...sparkData) || 1;
-    return sparkData.map((v, i) => {
-      const x = (i / (sparkData.length - 1)) * 100;
-      const y = 28 - ((v - min) / (max - min)) * 24;
-      return `${x},${y}`;
-    }).join(' ');
+    const max = Math.max(...sparkData);
+    const denom = sparkData.length - 1;
+    return sparkData
+      .map((v, i) => `${(i / denom) * 100},${normY(v, min, max)}`)
+      .join(' ');
   });
 
   let lastDotY = $derived(() => {
+    if (!sparkData || sparkData.length === 0) return 16;
     const min = Math.min(...sparkData);
-    const max = Math.max(...sparkData) || 1;
-    return 28 - ((sparkData[sparkData.length - 1] - min) / (max - min)) * 24;
+    const max = Math.max(...sparkData);
+    return normY(sparkData[sparkData.length - 1], min, max);
   });
 
   onMount(() => {
