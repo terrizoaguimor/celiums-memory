@@ -54,27 +54,40 @@ export interface LlmProvider {
 export const PROVIDERS: LlmProvider[] = [
   {
     id: 'do-inference',
-    name: 'DigitalOcean Inference',
+    name: 'DigitalOcean Gradient (Inference)',
     description:
-      'Frontier and open-weight models behind one DO key. Same key works across Anthropic, OpenAI, Llama, DeepSeek, Qwen, Gemma, and more — no per-vendor signup.',
+      'Frontier and open-weight models on DigitalOcean Gradient AI Platform. One Model Access Key (the new "doo_v1_..." format, or legacy "sk-do-...") works across Anthropic, OpenAI, Llama, DeepSeek, Qwen, Kimi, Nemotron, MiniMax, Gemma, and more — no per-vendor signup.',
+    // OpenAI-compatible base. Auth: `Authorization: Bearer <DO model access key>`.
+    // Verified live 2026-04-29 via GET /v1/models (returned 55 models).
     baseUrl: 'https://inference.do-ai.run/v1',
-    signupUrl: 'https://cloud.digitalocean.com/account/api/inference',
+    signupUrl: 'https://cloud.digitalocean.com/gradient/inference/access-keys',
     defaultModel: 'anthropic-claude-haiku-4.5',
     defaultEmbedModel: 'gte-large-en-v1.5',
     supportsEmbeddings: true,
     local: false,
+    // Curated highlights only — the dashboard's auto-probe pulls the full
+    // live list (55+ models as of 2026-04-29) directly from /v1/models
+    // when the user pastes their key.
     models: [
-      { id: 'anthropic-claude-opus-4.7', label: 'Claude Opus 4.7', hint: 'Highest quality reasoning' },
-      { id: 'anthropic-claude-4.6-sonnet', label: 'Claude Sonnet 4.6', hint: 'Daily premium workhorse' },
+      { id: 'anthropic-claude-opus-4.7', label: 'Claude Opus 4.7', hint: 'Highest quality, 1M context' },
+      { id: 'anthropic-claude-4.6-sonnet', label: 'Claude Sonnet 4.6', hint: 'Daily premium workhorse, 1M context' },
       { id: 'anthropic-claude-haiku-4.5', label: 'Claude Haiku 4.5', hint: 'Fast, cheap, capable' },
       { id: 'openai-gpt-5.5', label: 'GPT 5.5', hint: 'OpenAI flagship' },
+      { id: 'openai-gpt-5.4', label: 'GPT 5.4', hint: 'OpenAI tier-2, 1M context' },
       { id: 'openai-gpt-5.4-mini', label: 'GPT 5.4-mini', hint: 'Fast OpenAI tier' },
+      { id: 'openai-gpt-5.3-codex', label: 'GPT 5.3 codex', hint: 'Code-tuned, 400k context' },
+      { id: 'kimi-k2.5', label: 'Kimi K2.5', hint: 'Long-context flagship' },
+      { id: 'glm-5', label: 'GLM 5', hint: 'Creative / multimodal' },
+      { id: 'minimax-m2.5', label: 'MiniMax M2.5', hint: 'Strong reasoning' },
       { id: 'deepseek-3.2', label: 'DeepSeek 3.2', hint: 'Strong reasoning at low cost' },
+      { id: 'deepseek-r1-distill-llama-70b', label: 'DeepSeek-R1 distill 70B', hint: 'Cheap reasoning chains' },
       { id: 'llama-4-maverick', label: 'Llama 4 Maverick', hint: 'Open-weight workhorse' },
-      { id: 'llama3.3-70b-instruct', label: 'Llama 3.3 70B Instruct', hint: 'Production classifier / agent' },
+      { id: 'llama3.3-70b-instruct', label: 'Llama 3.3 70B', hint: 'Agents / classification' },
+      { id: 'qwen3.5-397b-a17b', label: 'Qwen 3.5 397B', hint: 'Open-weight large MoE' },
+      { id: 'qwen3-coder-flash', label: 'Qwen 3 Coder Flash', hint: 'Fast code generation' },
+      { id: 'nvidia-nemotron-3-super-120b', label: 'Nemotron 3 Super 120B', hint: 'Bulk generation alt' },
+      { id: 'arcee-trinity-large-thinking', label: 'Arcee Trinity (thinking)', hint: 'Reasoning-tuned' },
       { id: 'gemma-4-31B-it', label: 'Gemma 4 31B', hint: 'Open-weight, light' },
-      { id: 'glm-5', label: 'GLM 5', hint: 'Multimodal' },
-      { id: 'qwen3.5-397b-a17b', label: 'Qwen 3.5 397B', hint: 'Open-weight large' },
       { id: 'mistral-3-14B', label: 'Mistral 3 14B', hint: 'Open-weight efficient' },
     ],
   },
