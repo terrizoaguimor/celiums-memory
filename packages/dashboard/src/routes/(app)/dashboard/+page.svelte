@@ -82,12 +82,12 @@
       </div>
       <div class="space-y-2.5 text-xs">
         {#each [
-          { k: 'Mode', v: data.mode ?? 'triple-store', c: '#22c55e' },
-          { k: 'Store', v: 'PG + Qdrant + Valkey', c: '' },
+          { k: 'Mode', v: data.mode ?? 'unknown', c: '#22c55e' },
+          { k: 'Tools', v: '39 (MCP + REST)', c: '' },
           { k: 'Recall', v: '6 signals (hybrid)', c: '' },
           { k: 'Personality', v: 'celiums (OCEAN)', c: '' },
           { k: 'Ethics', v: 'Three Laws ✓', c: '#22c55e' },
-          { k: 'Version', v: '0.7.0', c: '' },
+          { k: 'Version', v: data.version ?? '0.0.0', c: '' },
         ] as row}
           <div class="flex justify-between items-center py-0.5">
             <span style="color: var(--c-text-muted);">{row.k}</span>

@@ -97,10 +97,23 @@
         </button>
       </div>
       <p class="text-[10px] mt-1.5" style="color: var(--c-text-muted);">
-        Check your tunnel logs: <code style="color: var(--c-text-secondary);">docker logs celiums-tunnel</code>
+        Check your tunnel logs: <code style="color: var(--c-text-secondary);">journalctl -u celiums-tunnel -f</code>
       </p>
     </div>
   </div>
+
+  <!-- BYOK shortcut -->
+  <a href="/settings/keys" class="glass-card p-5 mb-4 flex items-center gap-4 hover:border-[#22c55e] transition-colors group" style="text-decoration: none;">
+    <div class="w-10 h-10 rounded-lg flex items-center justify-center text-lg"
+      style="background: rgba(34,197,94,0.08); color: #22c55e;">⚿</div>
+    <div class="flex-1">
+      <p class="text-sm font-semibold" style="color: var(--c-text);">AI Provider Keys (BYOK)</p>
+      <p class="text-[11px]" style="color: var(--c-text-muted);">
+        Add a DigitalOcean Inference, OpenAI, Anthropic or any OpenAI-compatible key. Stored encrypted at rest with AES-256-GCM, plaintext is never returned.
+      </p>
+    </div>
+    <span class="text-sm" style="color: var(--c-text-muted);">→</span>
+  </a>
 
   <!-- Connect LLMs -->
   <div class="glass-card p-6 mb-4">
@@ -224,11 +237,11 @@
     </div>
     <div class="space-y-3 text-sm">
       {#each [
-        { k: 'Mode', v: 'triple-store' },
+        { k: 'Mode', v: data.mode ?? 'unknown' },
         { k: 'Modules', v: '5,100 (OpenCore)' },
         { k: 'Personality', v: 'celiums (OCEAN)' },
         { k: 'Ethics', v: 'Three Laws ✓', c: '#22c55e' },
-        { k: 'Version', v: '0.7.0' },
+        { k: 'Version', v: data.version ?? '0.0.0' },
       ] as row}
         <div class="flex justify-between">
           <span style="color: var(--c-text-muted);">{row.k}</span>

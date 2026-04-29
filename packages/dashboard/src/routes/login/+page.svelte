@@ -54,7 +54,7 @@
       <div class="grid grid-cols-4 gap-3">
         {#each [
           { value: '5.1K', label: 'Modules', color: '#22c55e' },
-          { value: '6', label: 'Signals', color: '#3b82f6' },
+          { value: '39', label: 'Tools', color: '#3b82f6' },
           { value: '10', label: 'Equations', color: '#8b5cf6' },
           { value: '100%', label: 'Recall', color: '#22c55e' },
         ] as stat}
