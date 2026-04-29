@@ -41,7 +41,10 @@ ROOT_OUT=/root/.celiums
 REPO_URL=${CELIUMS_REPO_URL:-https://github.com/terrizoaguimor/celiums-memory.git}
 REPO_REF=${CELIUMS_REPO_REF:-main}
 PG_VERSION=17
-QDRANT_VERSION=1.14.1
+# Pin Qdrant to a release whose binary is compatible with the GLIBC
+# shipped on Ubuntu 22.04 (2.35). 1.13+ require GLIBC 2.38 and crash
+# at start with `libc.so.6: version 'GLIBC_2.38' not found`.
+QDRANT_VERSION=1.12.6
 QDRANT_USER=qdrant
 QDRANT_HOME=/var/lib/qdrant
 
