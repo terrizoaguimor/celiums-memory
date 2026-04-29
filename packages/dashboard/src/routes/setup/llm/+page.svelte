@@ -115,23 +115,19 @@
 
         <details class="text-xs" style="color: var(--c-text-secondary);">
           <summary class="cursor-pointer select-none">Advanced (optional)</summary>
-          <div class="mt-3 space-y-3">
-            <div>
-              <label for="model" class="block text-[11px] mb-1" style="color: var(--c-text-muted);">Default model</label>
-              <input id="model" name="model" type="text"
-                class="input" placeholder={activeProvider?.defaultModel ?? ''} />
-              {#if activeProvider && activeProvider.models.length}
-                <p class="text-[11px] mt-1.5" style="color: var(--c-text-muted);">
-                  Recommended:
-                  {#each activeProvider.models.slice(0, 3) as m, i}<code class="px-1">{m.id}</code>{i < 2 ? ' · ' : ''}{/each}
-                </p>
-              {/if}
-            </div>
-            <div>
-              <label for="baseUrl" class="block text-[11px] mb-1" style="color: var(--c-text-muted);">Base URL override</label>
-              <input id="baseUrl" name="baseUrl" type="url"
-                class="input" placeholder={activeProvider?.baseUrl ?? ''} />
-            </div>
+          <div class="mt-3">
+            <label for="model" class="block text-[11px] mb-1" style="color: var(--c-text-muted);">Default model</label>
+            <input id="model" name="model" type="text"
+              class="input" placeholder={activeProvider?.defaultModel ?? ''} />
+            {#if activeProvider && activeProvider.models.length}
+              <p class="text-[11px] mt-1.5" style="color: var(--c-text-muted);">
+                Recommended:
+                {#each activeProvider.models.slice(0, 3) as m, i}<code class="px-1">{m.id}</code>{i < 2 ? ' · ' : ''}{/each}
+              </p>
+            {/if}
+            <p class="text-[11px] mt-2" style="color: var(--c-text-muted);">
+              Base URL is hardcoded per provider — <code>{activeProvider?.baseUrl ?? ''}</code>. Edit the catalog in source if you self-host the provider.
+            </p>
           </div>
         </details>
 

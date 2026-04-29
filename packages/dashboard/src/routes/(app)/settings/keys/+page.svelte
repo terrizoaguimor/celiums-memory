@@ -6,20 +6,70 @@
   let keys = $state(data.keys);
   let providers = data.providers;
 
-  // Form state
   let selectedProviderId = $state(providers[0]?.id ?? 'do-inference');
   let label = $state('');
   let value = $state('');
-  let baseUrl = $state('');
   let model = $state('');
   let saving = $state(false);
-  let error = $state('');
-  let success = $state('');
+  let probing = $state(false);
+  let probeError = $state('');
+  let probeOk = $state(false);
+  let probedModels = $state<{ id: string; context?: number }[]>([]);
+  let saveError = $state('');
+  let saveSuccess = $state('');
+  let probeAbort: AbortController | null = null;
+  let probeTimer: ReturnType<typeof setTimeout> | null = null;
 
-  // Derived helpers
   let activeProvider = $derived(providers.find((p: typeof providers[number]) => p.id === selectedProviderId));
-  let baseUrlPlaceholder = $derived(activeProvider?.baseUrl ?? '');
-  let modelPlaceholder = $derived(activeProvider?.defaultModel ?? '');
+
+  // Reset probe state when provider or value changes; debounce to avoid hammering.
+  $effect(() => {
+    // depend on these:
+    selectedProviderId;
+    value;
+    probeOk = false;
+    probedModels = [];
+    probeError = '';
+    if (probeTimer) clearTimeout(probeTimer);
+    if (probeAbort) probeAbort.abort();
+    if (!value || value.trim().length < 8) return;
+    probeTimer = setTimeout(probe, 600);
+  });
+
+  async function probe() {
+    if (!value.trim()) return;
+    probing = true;
+    probeError = '';
+    probeOk = false;
+    probedModels = [];
+    probeAbort = new AbortController();
+    try {
+      const r = await fetch('/api/keys/probe', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ provider: selectedProviderId, value: value.trim() }),
+        signal: probeAbort.signal,
+      });
+      const d = await r.json();
+      if (!r.ok) {
+        probeError = d.message || `error ${r.status}`;
+        return;
+      }
+      if (!d.ok) {
+        probeError = d.error || 'Could not validate the key.';
+        return;
+      }
+      probeOk = true;
+      probedModels = d.models ?? [];
+      if (!model && d.defaultModel) model = d.defaultModel;
+    } catch (err) {
+      if ((err as Error).name !== 'AbortError') {
+        probeError = (err as Error).message;
+      }
+    } finally {
+      probing = false;
+    }
+  }
 
   async function refresh() {
     const r = await fetch('/api/keys');
@@ -31,10 +81,10 @@
 
   async function save(e: Event) {
     e.preventDefault();
-    error = '';
-    success = '';
+    saveError = '';
+    saveSuccess = '';
     if (!value.trim()) {
-      error = 'Paste your API key.';
+      saveError = 'Paste your API key.';
       return;
     }
     saving = true;
@@ -43,7 +93,6 @@
         provider: selectedProviderId,
         label: label.trim() || undefined,
         value: value.trim(),
-        baseUrl: baseUrl.trim() || undefined,
         model: model.trim() || undefined,
       };
       const r = await fetch('/api/keys', {
@@ -53,14 +102,15 @@
       });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
-        error = d.message || `error ${r.status}`;
+        saveError = d.message || `error ${r.status}`;
         return;
       }
-      success = 'Saved. The plaintext value will never be shown again.';
+      saveSuccess = 'Saved. The plaintext value will never be shown again.';
       value = '';
       label = '';
-      baseUrl = '';
       model = '';
+      probeOk = false;
+      probedModels = [];
       await refresh();
     } finally {
       saving = false;
@@ -80,321 +130,139 @@
   <title>AI Provider Keys — Celiums Memory</title>
 </svelte:head>
 
-<section class="kv">
-  <header class="kv-head">
-    <p class="kv-eyebrow">Settings → AI Provider Keys</p>
-    <h1>Bring your own keys.</h1>
-    <p class="kv-sub">
-      Stored encrypted at rest with AES-256-GCM. The plaintext value is shown only at
-      paste time and never again. Last 4 characters preview is the only thing this
-      page can ever read back.
+<section class="max-w-3xl">
+  <header class="mb-8">
+    <p class="text-[11px] tracking-[0.22em] uppercase mb-3" style="color: var(--c-celiums);">
+      Settings → AI Provider Keys
+    </p>
+    <h1 class="text-3xl font-black mb-3 leading-tight" style="color: var(--c-text);">Bring your own keys.</h1>
+    <p class="text-sm leading-relaxed max-w-xl" style="color: var(--c-text-secondary);">
+      Stored encrypted at rest with AES-256-GCM. The plaintext value is shown only at paste
+      time and never again — last 4 characters are the only thing this page can ever read back.
     </p>
   </header>
 
   <!-- Add form -->
-  <form class="kv-form" onsubmit={save}>
-    <h2>Add a key</h2>
+  <form class="glass-card p-6 mb-4" onsubmit={save}>
+    <h2 class="text-base font-semibold mb-5" style="color: var(--c-text);">Add a key</h2>
 
-    <label class="kv-field">
-      <span>Provider</span>
-      <select bind:value={selectedProviderId}>
+    <div class="mb-5">
+      <label for="provider" class="block text-[11px] uppercase tracking-[0.18em] mb-1.5" style="color: var(--c-text-muted);">
+        Provider
+      </label>
+      <select id="provider" class="input" bind:value={selectedProviderId}>
         {#each providers as p (p.id)}
           <option value={p.id}>{p.name}</option>
         {/each}
       </select>
       {#if activeProvider}
-        <p class="kv-help">{activeProvider.description}</p>
+        <p class="text-[11px] mt-2" style="color: var(--c-text-muted);">{activeProvider.description}</p>
         {#if activeProvider.signupUrl}
-          <a class="kv-link" href={activeProvider.signupUrl} target="_blank" rel="noopener">
+          <a class="inline-block text-[11px] mt-1.5 underline decoration-dashed"
+            style="color: var(--c-celiums);"
+            href={activeProvider.signupUrl} target="_blank" rel="noopener">
             Get a key →
           </a>
         {/if}
       {/if}
-    </label>
+    </div>
 
-    <label class="kv-field">
-      <span>Label <em>(optional)</em></span>
-      <input
-        type="text"
-        bind:value={label}
-        placeholder="e.g. work, personal, prod"
-        maxlength="40"
-      />
-    </label>
+    <div class="mb-5">
+      <label for="label" class="block text-[11px] uppercase tracking-[0.18em] mb-1.5" style="color: var(--c-text-muted);">
+        Label <span style="color: var(--c-text-faint); text-transform: none; letter-spacing: normal;">(optional)</span>
+      </label>
+      <input id="label" type="text" class="input" bind:value={label} placeholder="e.g. work, personal, prod" maxlength="40" />
+    </div>
 
-    <label class="kv-field">
-      <span>API key</span>
-      <input
-        type="password"
-        bind:value
-        placeholder="paste your key here"
-        autocomplete="new-password"
-        required
-      />
-    </label>
+    <div class="mb-5">
+      <label for="value" class="block text-[11px] uppercase tracking-[0.18em] mb-1.5" style="color: var(--c-text-muted);">
+        API key
+      </label>
+      <input id="value" type="password" class="input" bind:value placeholder="paste your key here" autocomplete="new-password" required />
+      <div class="text-[11px] mt-2 min-h-[16px]" style="color: var(--c-text-muted);">
+        {#if probing}
+          Validating with <code style="color: var(--c-text-secondary);">{activeProvider?.baseUrl}/models</code>…
+        {:else if probeOk}
+          <span style="color: var(--c-celiums);">✓ Validated.</span>
+          {probedModels.length} model{probedModels.length === 1 ? '' : 's'} available.
+        {:else if probeError}
+          <span style="color: #ef4444;">{probeError}</span>
+        {:else if value.length >= 8}
+          Will validate on blur…
+        {/if}
+      </div>
+    </div>
 
-    <label class="kv-field">
-      <span>Base URL <em>(optional override)</em></span>
-      <input type="url" bind:value={baseUrl} placeholder={baseUrlPlaceholder} />
-    </label>
-
-    <label class="kv-field">
-      <span>Default model <em>(optional)</em></span>
-      <input type="text" bind:value={model} placeholder={modelPlaceholder} />
-      {#if activeProvider && activeProvider.models.length}
-        <p class="kv-help">
-          Recommended:
-          {#each activeProvider.models.slice(0, 4) as m, i}<code>{m.id}</code>{i < 3 ? ' · ' : ''}{/each}
+    <div class="mb-5">
+      <label for="model" class="block text-[11px] uppercase tracking-[0.18em] mb-1.5" style="color: var(--c-text-muted);">
+        Default model <span style="color: var(--c-text-faint); text-transform: none; letter-spacing: normal;">(optional)</span>
+      </label>
+      {#if probedModels.length}
+        <select id="model" class="input" bind:value={model}>
+          <option value="">— use provider default ({activeProvider?.defaultModel ?? '—'}) —</option>
+          {#each probedModels as m (m.id)}
+            <option value={m.id}>{m.id}</option>
+          {/each}
+        </select>
+        <p class="text-[11px] mt-2" style="color: var(--c-text-muted);">
+          Picked live from your account. Leave blank to fall back to <code style="color: var(--c-text-secondary);">{activeProvider?.defaultModel}</code>.
+        </p>
+      {:else}
+        <input id="model" type="text" class="input" bind:value={model} placeholder={activeProvider?.defaultModel ?? ''} />
+        <p class="text-[11px] mt-2" style="color: var(--c-text-muted);">
+          Paste a key above to auto-load the model list, or type a model id manually.
         </p>
       {/if}
-    </label>
+    </div>
 
-    {#if error}<p class="kv-error">{error}</p>{/if}
-    {#if success}<p class="kv-success">{success}</p>{/if}
+    {#if saveError}
+      <p class="text-sm p-3 rounded-lg mb-4" style="color: #ef4444; background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.2);">
+        {saveError}
+      </p>
+    {/if}
+    {#if saveSuccess}
+      <p class="text-sm p-3 rounded-lg mb-4" style="color: var(--c-celiums); background: rgba(34,197,94,0.08); border: 1px solid rgba(34,197,94,0.2);">
+        {saveSuccess}
+      </p>
+    {/if}
 
-    <button class="kv-btn" type="submit" disabled={saving}>
+    <button type="submit" class="btn-primary px-6 py-2.5 text-sm" disabled={saving}>
       {saving ? 'Saving…' : 'Save key'}
     </button>
   </form>
 
   <!-- Existing keys -->
-  <section class="kv-list">
-    <h2>Your keys</h2>
+  <section class="glass-card p-6">
+    <h2 class="text-base font-semibold mb-4" style="color: var(--c-text);">Your keys</h2>
     {#if keys.length === 0}
-      <p class="kv-empty">No keys yet. Add one above to enable LLM-backed tools.</p>
+      <p class="text-sm" style="color: var(--c-text-muted);">No keys yet. Add one above to enable LLM-backed tools.</p>
     {:else}
-      <ul>
+      <ul class="divide-y" style="border-color: var(--c-border);">
         {#each keys as k (k.provider + (k.label ?? ''))}
-          <li class="kv-item">
-            <div class="kv-item-head">
-              <span class="kv-provider">{k.provider}</span>
-              {#if k.label}<span class="kv-label">/ {k.label}</span>{/if}
+          <li class="py-3 first:pt-0 last:pb-0 flex items-center justify-between gap-4">
+            <div class="min-w-0 flex-1">
+              <div class="flex items-baseline gap-2 mb-1">
+                <span class="text-sm font-semibold" style="color: var(--c-text);">{k.provider}</span>
+                {#if k.label}
+                  <span class="text-[11px]" style="color: var(--c-text-muted);">/ {k.label}</span>
+                {/if}
+              </div>
+              <div class="flex flex-wrap gap-3 text-[11px]" style="color: var(--c-text-muted);">
+                <code style="color: var(--c-text-secondary); background: var(--c-bg-subtle); padding: 1px 6px; border-radius: 3px;">{k.preview}</code>
+                {#if k.model}<span>model: <code style="color: var(--c-text-secondary);">{k.model}</code></span>{/if}
+                <span>updated {new Date(k.updatedAt).toLocaleDateString()}</span>
+              </div>
             </div>
-            <div class="kv-item-body">
-              <code>{k.preview}</code>
-              {#if k.model}<span class="kv-meta">model: <code>{k.model}</code></span>{/if}
-              {#if k.baseUrl}<span class="kv-meta">base: <code>{k.baseUrl}</code></span>{/if}
-              <span class="kv-meta">updated {new Date(k.updatedAt).toLocaleDateString()}</span>
-            </div>
-            <button class="kv-del" onclick={() => remove(k.provider, k.label)}>Delete</button>
+            <button
+              onclick={() => remove(k.provider, k.label)}
+              class="text-[11px] px-3 py-1.5 rounded-full transition-colors hover:!border-[#ef4444] hover:!text-[#ef4444]"
+              style="border: 1px solid var(--c-border); color: var(--c-text-muted);"
+            >
+              Delete
+            </button>
           </li>
         {/each}
       </ul>
     {/if}
   </section>
 </section>
-
-<style>
-  .kv {
-    max-width: 760px;
-    margin: 0 auto;
-    padding: 32px 24px 80px;
-    color: #fdf6e3;
-    font-family: 'Inter', sans-serif;
-  }
-  .kv-eyebrow {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
-    letter-spacing: 0.22em;
-    text-transform: uppercase;
-    color: #10c860;
-    margin: 0 0 12px;
-  }
-  .kv-head h1 {
-    font-family: 'Montserrat', sans-serif;
-    font-weight: 700;
-    font-size: 36px;
-    line-height: 1.05;
-    letter-spacing: -0.02em;
-    margin: 0 0 14px;
-  }
-  .kv-sub {
-    color: rgba(253, 246, 227, 0.62);
-    font-size: 15px;
-    line-height: 1.6;
-    margin: 0 0 36px;
-    max-width: 600px;
-  }
-  .kv-form,
-  .kv-list {
-    border: 1px solid rgba(253, 246, 227, 0.08);
-    background: rgba(253, 246, 227, 0.015);
-    border-radius: 12px;
-    padding: 28px;
-    margin-bottom: 24px;
-  }
-  .kv-form h2,
-  .kv-list h2 {
-    font-family: 'Montserrat', sans-serif;
-    font-weight: 600;
-    font-size: 18px;
-    margin: 0 0 20px;
-  }
-  .kv-field {
-    display: block;
-    margin-bottom: 18px;
-  }
-  .kv-field > span {
-    display: block;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: rgba(253, 246, 227, 0.62);
-    margin-bottom: 8px;
-  }
-  .kv-field em {
-    color: rgba(253, 246, 227, 0.32);
-    font-style: normal;
-    text-transform: none;
-    letter-spacing: 0.02em;
-  }
-  .kv-field input,
-  .kv-field select {
-    width: 100%;
-    padding: 12px 14px;
-    background: rgba(5, 6, 10, 0.6);
-    border: 1px solid rgba(253, 246, 227, 0.12);
-    border-radius: 8px;
-    color: #fdf6e3;
-    font-family: 'Inter', sans-serif;
-    font-size: 14px;
-  }
-  .kv-field input:focus,
-  .kv-field select:focus {
-    outline: none;
-    border-color: rgba(16, 200, 96, 0.5);
-  }
-  .kv-help {
-    font-size: 12px;
-    line-height: 1.5;
-    color: rgba(253, 246, 227, 0.5);
-    margin: 8px 0 0;
-  }
-  .kv-help code {
-    font-family: 'JetBrains Mono', monospace;
-    background: rgba(253, 246, 227, 0.04);
-    padding: 1px 5px;
-    border-radius: 3px;
-    font-size: 11px;
-  }
-  .kv-link {
-    display: inline-block;
-    margin-top: 8px;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
-    color: #10c860;
-    text-decoration: none;
-    border-bottom: 1px dashed rgba(16, 200, 96, 0.4);
-  }
-  .kv-link:hover {
-    color: #2ade7a;
-  }
-  .kv-error {
-    color: #ff6b6b;
-    font-size: 13px;
-    margin: 12px 0 0;
-  }
-  .kv-success {
-    color: #10c860;
-    font-size: 13px;
-    margin: 12px 0 0;
-  }
-  .kv-btn {
-    margin-top: 12px;
-    padding: 12px 24px;
-    background: rgba(16, 200, 96, 0.1);
-    border: 1px solid #10c860;
-    border-radius: 999px;
-    color: #fdf6e3;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 13px;
-    letter-spacing: 0.04em;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-  .kv-btn:hover:not(:disabled) {
-    background: rgba(16, 200, 96, 0.18);
-    transform: translateY(-1px);
-  }
-  .kv-btn:disabled {
-    opacity: 0.6;
-    cursor: wait;
-  }
-  .kv-empty {
-    color: rgba(253, 246, 227, 0.5);
-    font-size: 14px;
-    margin: 0;
-  }
-  .kv-list ul {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-  }
-  .kv-item {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 16px;
-    padding: 16px 0;
-    border-top: 1px solid rgba(253, 246, 227, 0.06);
-    align-items: center;
-  }
-  .kv-item:first-child {
-    border-top: none;
-  }
-  .kv-item-head {
-    grid-column: 1 / -1;
-    margin-bottom: 4px;
-  }
-  .kv-provider {
-    font-family: 'Montserrat', sans-serif;
-    font-weight: 600;
-    font-size: 14px;
-    color: #fdf6e3;
-  }
-  .kv-label {
-    margin-left: 6px;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 12px;
-    color: rgba(253, 246, 227, 0.5);
-  }
-  .kv-item-body {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 14px;
-    align-items: center;
-    font-size: 12px;
-    color: rgba(253, 246, 227, 0.62);
-    grid-column: 1;
-  }
-  .kv-item-body code {
-    font-family: 'JetBrains Mono', monospace;
-    background: rgba(253, 246, 227, 0.04);
-    padding: 2px 6px;
-    border-radius: 3px;
-    color: #fdf6e3;
-  }
-  .kv-meta {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
-    letter-spacing: 0.04em;
-  }
-  .kv-del {
-    grid-column: 2;
-    grid-row: 2;
-    background: transparent;
-    border: 1px solid rgba(253, 246, 227, 0.12);
-    color: rgba(253, 246, 227, 0.62);
-    padding: 6px 14px;
-    border-radius: 999px;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
-    letter-spacing: 0.04em;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-  .kv-del:hover {
-    border-color: #ff6b6b;
-    color: #ff6b6b;
-  }
-</style>

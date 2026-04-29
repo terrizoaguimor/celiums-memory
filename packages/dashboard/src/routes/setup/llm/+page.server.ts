@@ -20,8 +20,10 @@ export const actions: Actions = {
     const provider = data.get('provider')?.toString().trim() || 'do-inference';
     const value = data.get('value')?.toString().trim() ?? '';
     const model = data.get('model')?.toString().trim() || undefined;
-    const baseUrl = data.get('baseUrl')?.toString().trim() || undefined;
 
+    // Base URL is hardcoded from the provider catalog — not user-overridable
+    // from the wizard. Operators who self-host can edit packages/core/src/
+    // llm-providers.ts and rebuild.
     if (!PROVIDERS.some((p) => p.id === provider)) {
       return fail(400, { error: 'Unknown provider.' });
     }
@@ -30,7 +32,7 @@ export const actions: Actions = {
     }
 
     try {
-      await setKey({ provider, value, model, baseUrl });
+      await setKey({ provider, value, model });
     } catch (err) {
       return fail(500, { error: 'Could not store the key. Try again.' });
     }

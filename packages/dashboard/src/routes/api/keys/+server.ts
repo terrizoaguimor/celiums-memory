@@ -25,10 +25,12 @@ export const GET: RequestHandler = async ({ locals }) => {
 export const POST: RequestHandler = async ({ locals, request }) => {
   requireAuth(locals);
   const body = await request.json().catch(() => ({}));
-  const { provider, label, value, baseUrl, model } = body as Record<string, string | undefined>;
+  const { provider, label, value, model } = body as Record<string, string | undefined>;
   if (!provider || !value) throw error(400, 'provider and value are required');
   if (value.length < 4) throw error(400, 'value too short to be a valid key');
-  const entry = await setKey({ provider, label, value, baseUrl, model });
+  // baseUrl is intentionally NOT accepted from the client — it's pinned per
+  // provider in the @celiums/memory catalog.
+  const entry = await setKey({ provider, label, value, model });
   return json({ key: entry });
 };
 
