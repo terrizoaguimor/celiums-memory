@@ -91,13 +91,16 @@
     <div class="mb-4">
       <label class="block text-xs font-medium mb-1.5" style="color: var(--c-text-secondary);">Public URL</label>
       <div class="flex gap-2">
-        <input type="text" class="input flex-1 font-mono text-sm" placeholder="https://xxx.trycloudflare.com" bind:value={publicUrl} />
-        <button class="btn-ghost text-xs" onclick={() => copy(publicUrl, 'url')}>
+        <input type="text" readonly class="input flex-1 font-mono text-sm"
+          placeholder="Run: sudo celiums-setup"
+          bind:value={publicUrl} />
+        <button class="btn-ghost text-xs" onclick={() => copy(publicUrl, 'url')} disabled={!publicUrl}>
           {copied === 'url' ? 'Copied!' : 'Copy'}
         </button>
       </div>
       <p class="text-[10px] mt-1.5" style="color: var(--c-text-muted);">
-        Check your tunnel logs: <code style="color: var(--c-text-secondary);">journalctl -u celiums-tunnel -f</code>
+        Set by <code style="color: var(--c-text-secondary);">sudo celiums-setup</code> over SSH (FQDN with Let's Encrypt or HTTPS-by-IP).
+        Logs: <code style="color: var(--c-text-secondary);">journalctl -u celiums-proxy -f</code>
       </p>
     </div>
   </div>
