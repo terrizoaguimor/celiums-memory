@@ -30,7 +30,12 @@
 	}
 }
 
-http://127.0.0.1:8080 {
+# `:8080` matches any Host header — required because cloudflared
+# forwards the public *.trycloudflare.com hostname, not 127.0.0.1.
+# The `bind` directive keeps the listener loopback-only so this proxy
+# is never reachable from the public network.
+:8080 {
+	bind 127.0.0.1
 	# Engine endpoints. Order matters in Caddy v2: the first matching
 	# `handle` block wins.
 	handle /v1/* {
