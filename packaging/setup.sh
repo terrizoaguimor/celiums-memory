@@ -230,30 +230,113 @@ done
 sudo -u postgres psql -d celiums_memory   -c "CREATE EXTENSION IF NOT EXISTS pgcrypto" >/dev/null
 sudo -u postgres psql -d celiums_knowledge -c "CREATE EXTENSION IF NOT EXISTS vector"   >/dev/null
 
-# Apply the memory schema (best-effort — script is idempotent).
+# Apply the memory schema as the celiums role so the resulting tables
+# are owned by it. Otherwise the engine fails at boot with "must be
+# owner of table user_profiles".
+PGURL_MEM="postgresql://celiums:${PG_PASS}@127.0.0.1:5432/celiums_memory"
 if [[ -f $CELIUMS_HOME/scripts/schema.sql ]]; then
-  sudo -u postgres psql -d celiums_memory -f "$CELIUMS_HOME/scripts/schema.sql" >/dev/null 2>&1 || true
+  PGPASSWORD="$PG_PASS" psql -X "$PGURL_MEM" -f "$CELIUMS_HOME/scripts/schema.sql" >/dev/null 2>&1 || true
 fi
 for m in $CELIUMS_HOME/scripts/migrations/*.sql; do
   [[ -f $m ]] || continue
-  sudo -u postgres psql -d celiums_memory -f "$m" >/dev/null 2>&1 || true
+  PGPASSWORD="$PG_PASS" psql -X "$PGURL_MEM" -f "$m" >/dev/null 2>&1 || true
 done
+# Belt-and-suspenders: re-assign anything left under the postgres role.
+sudo -u postgres psql -d celiums_memory   -c "REASSIGN OWNED BY postgres TO celiums" >/dev/null 2>&1 || true
+sudo -u postgres psql -d celiums_knowledge -c "REASSIGN OWNED BY postgres TO celiums" >/dev/null 2>&1 || true
 green "✓ celiums_memory + celiums_knowledge ready"
 
 # ── Phase 10: hydrate 5,100 starter modules ──────────────────────────
 phase "[10/12] Hydrate starter modules"
 KNOWLEDGE_URL="postgres://celiums:${PG_PASS}@127.0.0.1:5432/celiums_knowledge"
-sudo -u celiums env "DATABASE_URL=$KNOWLEDGE_URL" node --input-type=module -e "
+HYDRATE_SCRIPT=$(mktemp -t celiums-hydrate.XXXX.mjs)
+cat > "$HYDRATE_SCRIPT" <<'NODE'
+import { createReadStream } from 'node:fs';
+import { createGunzip } from 'node:zlib';
+import { createInterface } from 'node:readline';
 import pg from 'pg';
-import { hydrate, count } from '$CELIUMS_HOME/packages/modules-starter/src/index.ts';
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
-const total = await count();
-console.log('  source rows:', total);
-await hydrate({ pg: pool });
+
+const SEED = process.env.SEED_PATH;
+const url  = process.env.DATABASE_URL;
+const pool = new pg.Pool({ connectionString: url });
+
+await pool.query(`CREATE TABLE IF NOT EXISTS modules (
+  name         TEXT PRIMARY KEY,
+  display_name TEXT,
+  description  TEXT,
+  category     TEXT,
+  keywords     TEXT[],
+  line_count   INT,
+  eval_score   DOUBLE PRECISION,
+  version      TEXT,
+  content      TEXT,
+  embedding    vector(384),
+  fts          tsvector GENERATED ALWAYS AS (
+    setweight(to_tsvector('english', coalesce(name,'')),         'A') ||
+    setweight(to_tsvector('english', coalesce(display_name,'')), 'A') ||
+    setweight(to_tsvector('english', coalesce(description,'')),  'B') ||
+    setweight(to_tsvector('english', coalesce(content,'')),      'C')
+  ) STORED
+)`);
+await pool.query(`CREATE INDEX IF NOT EXISTS modules_fts_gin ON modules USING gin(fts)`);
+await pool.query(`CREATE INDEX IF NOT EXISTS modules_category_idx ON modules(category)`);
+
+const rl = createInterface({
+  input: createReadStream(SEED).pipe(createGunzip()),
+  crlfDelay: Infinity,
+});
+
+let inserted = 0, batch = [];
+const FLUSH_AT = 100;
+
+async function flush() {
+  if (batch.length === 0) return;
+  const cols = ['name','display_name','description','category','keywords','line_count','eval_score','version','content'];
+  const placeholders = batch.map((_, i) => {
+    const o = i * cols.length;
+    return `($${o+1},$${o+2},$${o+3},$${o+4},$${o+5},$${o+6},$${o+7},$${o+8},$${o+9})`;
+  }).join(',');
+  const values = batch.flatMap((m) => [
+    m.name, m.displayName ?? null, m.description ?? null, m.category ?? null,
+    m.keywords ?? [], m.lineCount ?? 0, m.evalScore ?? null,
+    m.version ?? '1.0', m.content ?? '',
+  ]);
+  await pool.query(
+    `INSERT INTO modules (${cols.join(',')}) VALUES ${placeholders}
+       ON CONFLICT (name) DO UPDATE SET
+         display_name = EXCLUDED.display_name,
+         description  = EXCLUDED.description,
+         category     = EXCLUDED.category,
+         keywords     = EXCLUDED.keywords,
+         line_count   = EXCLUDED.line_count,
+         eval_score   = EXCLUDED.eval_score,
+         version      = EXCLUDED.version,
+         content      = EXCLUDED.content`,
+    values
+  );
+  inserted += batch.length;
+  batch = [];
+  if (inserted % 500 === 0) console.log('  ' + inserted + ' rows…');
+}
+
+for await (const line of rl) {
+  if (!line.trim()) continue;
+  batch.push(JSON.parse(line));
+  if (batch.length >= FLUSH_AT) await flush();
+}
+await flush();
+
 const { rows } = await pool.query('SELECT COUNT(*)::int AS n FROM modules');
-console.log('  loaded     :', rows[0].n);
+console.log('  total in DB: ' + rows[0].n);
 await pool.end();
-" 2>&1 | sed 's/^/  /' || true
+NODE
+
+sudo -u celiums env \
+  "DATABASE_URL=$KNOWLEDGE_URL" \
+  "SEED_PATH=$CELIUMS_HOME/packages/modules-starter/data/seed.jsonl.gz" \
+  "NODE_PATH=$CELIUMS_HOME/node_modules" \
+  node "$HYDRATE_SCRIPT" 2>&1 | sed 's/^/  /'
+rm -f "$HYDRATE_SCRIPT"
 green "✓ modules hydrated"
 
 # ── Phase 11: secrets + /etc/celiums/env ─────────────────────────────
