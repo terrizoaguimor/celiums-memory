@@ -1,12 +1,16 @@
 // MCP server registration.
 //
-// Two backends:
-//   - Native: vscode.lm.registerMcpServerDefinitionProvider (VSCode
-//     1.97+, Antigravity, future Cursor). The host editor handles
-//     lifecycle, transport, auth headers, and tool surfacing.
-//   - File-based: write ~/.cursor/mcp.json. Cursor watches this file
-//     and (re)connects on change. We merge into existing entries to
-//     avoid clobbering other servers.
+// We always register a stdio server that spawns `@celiums/mcp` with the
+// user-supplied URL and API key. This is the universal path: VSCode,
+// Antigravity, Cursor, Claude Desktop and every other MCP host
+// understands stdio definitions, and `@celiums/mcp` (npm) is the
+// reference shim that translates stdio MCP into the engine's
+// JSON-RPC over /mcp.
+//
+// Why not HTTP MCP? It works in some hosts (Cursor's `url` field,
+// VSCode's McpHttpServerDefinition since 1.97) but not all, and the
+// shim's --url/CELIUMS_API_KEY contract guarantees the user URL is
+// honored — no hardcoded api.celiums.io fallback to bite us.
 
 import * as vscode from 'vscode';
 import { promises as fs } from 'node:fs';
@@ -20,6 +24,7 @@ export interface McpRegistration {
 }
 
 const SERVER_NAME = 'celiums-memory';
+const SHIM_PACKAGE = '@celiums/mcp@latest';
 
 export async function registerMcp(host: Host, reg: McpRegistration): Promise<{
   method: 'native' | 'file' | 'manual';
@@ -31,9 +36,8 @@ export async function registerMcp(host: Host, reg: McpRegistration): Promise<{
   }
 
   // VSCode/Antigravity/unknown: try the native API. If unavailable
-  // we fall back to writing the user-level VSCode settings.json key
-  // chat.mcp.servers (which works for VSCode 1.96 with the MCP
-  // preview enabled).
+  // we fall back to a notification so the user can paste the same
+  // stdio config into the host's settings UI.
   const lm = (vscode as unknown as {
     lm?: {
       registerMcpServerDefinitionProvider?: (id: string, provider: unknown) => vscode.Disposable;
@@ -41,22 +45,28 @@ export async function registerMcp(host: Host, reg: McpRegistration): Promise<{
   }).lm;
 
   if (lm?.registerMcpServerDefinitionProvider) {
+    const stdioDef = makeStdioDef(reg);
     const provider = {
       onDidChangeMcpServerDefinitions: new vscode.EventEmitter<void>().event,
-      provideMcpServerDefinitions: async () => [{
-        label: 'Celiums Memory',
-        // The shape mirrors VSCode's McpHttpServerDefinition. Older
-        // hosts ignore unknown fields, newer ones honour them.
-        uri: vscode.Uri.parse(`${stripSlash(reg.url)}/mcp`),
-        headers: { Authorization: `Bearer ${reg.apiKey}` },
-      }],
+      provideMcpServerDefinitions: async () => [stdioDef],
       resolveMcpServerDefinition: async (def: unknown) => def,
     };
     lm.registerMcpServerDefinitionProvider(SERVER_NAME, provider);
-    return { method: 'native', detail: 'registered with editor MCP runtime' };
+    return { method: 'native', detail: 'stdio (npx @celiums/mcp) registered with editor MCP runtime' };
   }
 
-  return { method: 'manual', detail: 'host has no MCP API; copy config from settings' };
+  return { method: 'manual', detail: 'host has no MCP API; paste the stdio config into your settings' };
+}
+
+// vscode.lm's McpStdioServerDefinition shape (1.97+). Older hosts
+// silently drop unknown fields, so this stays forward-compatible.
+function makeStdioDef(reg: McpRegistration) {
+  return {
+    label: 'Celiums Memory',
+    command: 'npx',
+    args: ['-y', SHIM_PACKAGE, '--url', stripSlash(reg.url)],
+    env: { CELIUMS_API_KEY: reg.apiKey },
+  };
 }
 
 async function writeCursorMcpJson(reg: McpRegistration): Promise<string> {
@@ -74,8 +84,9 @@ async function writeCursorMcpJson(reg: McpRegistration): Promise<string> {
 
   existing.mcpServers ??= {};
   existing.mcpServers[SERVER_NAME] = {
-    url: `${stripSlash(reg.url)}/mcp`,
-    headers: { Authorization: `Bearer ${reg.apiKey}` },
+    command: 'npx',
+    args: ['-y', SHIM_PACKAGE, '--url', stripSlash(reg.url)],
+    env: { CELIUMS_API_KEY: reg.apiKey },
   };
 
   await fs.writeFile(file, JSON.stringify(existing, null, 2) + '\n', 'utf8');

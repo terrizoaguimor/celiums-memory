@@ -41,11 +41,21 @@ the host editor automatically.
 
 ## How registration works
 
+The extension registers a stdio MCP server in every host. The server
+runs `npx -y @celiums/mcp@latest --url <YOUR-URL>` with
+`CELIUMS_API_KEY` injected via env. The shim translates stdio MCP
+into the engine's JSON-RPC at `<YOUR-URL>/mcp`. This is universal —
+works in VSCode, Antigravity, Cursor, Claude Desktop, Cline, Continue,
+and anything else that follows the MCP stdio convention.
+
 | Host | Backend |
 | ---- | ------- |
-| **VSCode 1.97+, Antigravity** | `vscode.lm.registerMcpServerDefinitionProvider` API. The editor owns transport + auth headers. |
-| **Cursor** | Writes/merges `~/.cursor/mcp.json` (`mcpServers.celiums-memory`). Cursor watches this file and reconnects on change. |
-| **Older / unknown** | Falls back to a one-off notification with the URL + headers; you paste them into the host's MCP settings UI. |
+| **VSCode 1.97+, Antigravity** | `vscode.lm.registerMcpServerDefinitionProvider` returning an `McpStdioServerDefinition`. |
+| **Cursor** | Writes/merges `~/.cursor/mcp.json` (`mcpServers.celiums-memory`) with `command`, `args`, `env`. |
+| **Older / unknown** | Notification with the stdio config to paste into the host's MCP settings UI. |
+
+Requires `node` + `npx` in `PATH`. The shim is fetched on first launch
+and cached.
 
 ## Privacy
 
