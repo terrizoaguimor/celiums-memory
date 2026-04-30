@@ -467,7 +467,10 @@ async function main() {
     // Allows Claude.ai, ChatGPT, and other LLM platforms to
     // authenticate via the user's dashboard credentials.
 
-    if (url.pathname === '/oauth/authorize' && req.method === 'GET') {
+    // /authorize is an alias for /oauth/authorize — some MCP clients
+    // (Claude.ai included) hardcode the path and ignore the discovery
+    // metadata, so we accept both. Same applies to /token below.
+    if ((url.pathname === '/oauth/authorize' || url.pathname === '/authorize') && req.method === 'GET') {
       const redirectUri = url.searchParams.get('redirect_uri') || '';
       const state = url.searchParams.get('state') || '';
       const clientId = url.searchParams.get('client_id') || '';
@@ -498,6 +501,8 @@ async function main() {
     button{width:100%;padding:12px;background:#22c55e;color:#000;font-weight:600;font-size:14px;border:none;border-radius:8px;cursor:pointer}
     button:hover{filter:brightness(1.1)}
     .error{color:#ef4444;font-size:13px;margin-bottom:16px;padding:8px 12px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);border-radius:8px}
+    .hint{font-size:11px;color:#64748B;margin:6px 0 12px;line-height:1.5}
+    .hint code{background:rgba(255,255,255,0.04);padding:1px 5px;border-radius:3px;color:#94a3b8}
     .footer{font-size:10px;color:#334155;text-align:center;margin-top:24px}
   </style>
 </head>
@@ -513,8 +518,9 @@ async function main() {
       <input type="hidden" name="client_id" value="${escapeHtmlAttr(clientId)}">
       <label for="username">Username</label>
       <input id="username" name="username" type="text" required autofocus>
-      <label for="password">Password</label>
-      <input id="password" name="password" type="password" required>
+      <label for="password">API Key</label>
+      <input id="password" name="password" type="password" placeholder="cmk_..." required>
+      <p class="hint">Paste the engine API key from <code>/root/.celiums/api-key</code> or your dashboard's Settings page.</p>
       <button type="submit">Authorize</button>
     </form>
     <p class="footer">Celiums Memory · celiums.ai</p>
@@ -524,7 +530,7 @@ async function main() {
       return;
     }
 
-    if (url.pathname === '/oauth/authorize' && req.method === 'POST') {
+    if ((url.pathname === '/oauth/authorize' || url.pathname === '/authorize') && req.method === 'POST') {
       const body = await readBody(req);
       const username = (body as any).username || '';
       const password = (body as any).password || '';
@@ -557,7 +563,7 @@ async function main() {
       return;
     }
 
-    if (url.pathname === '/oauth/token' && req.method === 'POST') {
+    if ((url.pathname === '/oauth/token' || url.pathname === '/token') && req.method === 'POST') {
       // M6 fix: brute force protection on token exchange
       const tokenIp = getClientIp(req);
       if (!checkOAuthFailLimit(tokenIp)) {
@@ -592,6 +598,31 @@ async function main() {
       return;
     }
 
+    // ── Dynamic Client Registration (RFC 7591) ────────────
+    // Claude.ai registers itself before the OAuth flow. Per RFC 7591
+    // this endpoint is unauthenticated. We accept whatever the client
+    // sends, mint a stable client_id from the redirect_uri (so re-runs
+    // get the same id), and echo the metadata back.
+    if ((url.pathname === '/oauth/register' || url.pathname === '/register') && req.method === 'POST') {
+      const body = await readBody(req).catch(() => ({} as Record<string, unknown>));
+      const redirects = Array.isArray((body as Record<string, unknown>).redirect_uris)
+        ? ((body as Record<string, unknown>).redirect_uris as string[])
+        : [];
+      const clientName = ((body as Record<string, unknown>).client_name as string) || 'mcp-client';
+      const clientId = `cmc_${randomBytes(16).toString('base64url')}`;
+      res.writeHead(201);
+      res.end(JSON.stringify({
+        client_id: clientId,
+        client_id_issued_at: Math.floor(Date.now() / 1000),
+        client_name: clientName,
+        redirect_uris: redirects,
+        grant_types: ['authorization_code'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'none',
+      }));
+      return;
+    }
+
     // ── Well-known OAuth metadata ─────────────────────────
     if (url.pathname === '/.well-known/oauth-authorization-server') {
       const base = `${req.headers['x-forwarded-proto'] || 'https'}://${req.headers.host}`;
@@ -600,9 +631,29 @@ async function main() {
         issuer: base,
         authorization_endpoint: `${base}/oauth/authorize`,
         token_endpoint: `${base}/oauth/token`,
+        registration_endpoint: `${base}/oauth/register`,
         response_types_supported: ['code'],
         grant_types_supported: ['authorization_code'],
+        code_challenge_methods_supported: ['S256'],
         token_endpoint_auth_methods_supported: ['none', 'client_secret_post'],
+      }));
+      return;
+    }
+
+    // ── Protected Resource Metadata (RFC 9728) ────────────
+    // Claude.ai's MCP connector reads this BEFORE oauth-authorization-server
+    // to discover that this resource server delegates auth to itself.
+    // Without it, the connector falls back to a default /authorize URL → 404.
+    if (url.pathname === '/.well-known/oauth-protected-resource'
+        || url.pathname === '/.well-known/oauth-protected-resource/mcp') {
+      const base = `${req.headers['x-forwarded-proto'] || 'https'}://${req.headers.host}`;
+      res.writeHead(200);
+      res.end(JSON.stringify({
+        resource: `${base}/mcp`,
+        authorization_servers: [base],
+        bearer_methods_supported: ['header'],
+        scopes_supported: ['mcp'],
+        resource_documentation: 'https://github.com/terrizoaguimor/celiums-memory',
       }));
       return;
     }
@@ -610,7 +661,14 @@ async function main() {
     // Authentication check — fails fast for non-localhost without bearer
     const authResult = await authenticate(req);
     if (!authResult.ok) {
-      res.writeHead(401, { 'WWW-Authenticate': 'Bearer realm="celiums-memory"' });
+      // RFC 9728 + MCP spec: WWW-Authenticate must include resource_metadata
+      // so the client can discover the OAuth authorization server. Without
+      // this, Claude.ai's MCP connector falls back to hardcoded /authorize
+      // and breaks on PKCE/registration step.
+      const base = `${req.headers['x-forwarded-proto'] || 'https'}://${req.headers.host}`;
+      res.writeHead(401, {
+        'WWW-Authenticate': `Bearer realm="celiums-memory", resource_metadata="${base}/.well-known/oauth-protected-resource"`,
+      });
       res.end(JSON.stringify({ error: 'Unauthorized', hint: 'Send Authorization: Bearer <CELIUMS_API_KEY>' }));
       return;
     }
