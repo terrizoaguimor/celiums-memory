@@ -39,6 +39,13 @@ The extension probes `/health` then `/v1/memories/recall` to confirm the
 key is valid before saving anything. It registers the MCP server with
 the host editor automatically.
 
+## Connecting other clients
+
+Claude Desktop, Cursor, Windsurf, Cline and other MCP-aware hosts can
+connect to the same Celiums Memory server without this extension —
+they read a JSON config file. Path table and ready-to-paste snippets
+live in [docs/integrations/mcp-clients.md](../../docs/integrations/mcp-clients.md).
+
 ## How registration works
 
 The extension registers a stdio MCP server in every host. The server
