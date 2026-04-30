@@ -271,26 +271,34 @@ const SEED = process.env.SEED_PATH;
 const url  = process.env.DATABASE_URL;
 const pool = new pg.Pool({ connectionString: url });
 
+// Engine's @celiums/knowledge searchFullText queries the column
+// `search_tsv` and projects `has_references` + `reference_count`.
+// Naming the column `fts` here would build a working FTS index that
+// the engine never reads. Match the engine's expectations exactly.
+await pool.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm`);
 await pool.query(`CREATE TABLE IF NOT EXISTS modules (
-  name         TEXT PRIMARY KEY,
-  display_name TEXT,
-  description  TEXT,
-  category     TEXT,
-  keywords     TEXT[],
-  line_count   INT,
-  eval_score   DOUBLE PRECISION,
-  version      TEXT,
-  content      TEXT,
-  embedding    vector(384),
-  fts          tsvector GENERATED ALWAYS AS (
+  name             TEXT PRIMARY KEY,
+  display_name     TEXT,
+  description      TEXT,
+  category         TEXT,
+  keywords         TEXT[],
+  line_count       INT,
+  has_references   BOOLEAN DEFAULT false,
+  reference_count  INT DEFAULT 0,
+  eval_score       DOUBLE PRECISION,
+  version          TEXT,
+  content          TEXT,
+  embedding        vector(384),
+  search_tsv       tsvector GENERATED ALWAYS AS (
     setweight(to_tsvector('english', coalesce(name,'')),         'A') ||
     setweight(to_tsvector('english', coalesce(display_name,'')), 'A') ||
     setweight(to_tsvector('english', coalesce(description,'')),  'B') ||
     setweight(to_tsvector('english', coalesce(content,'')),      'C')
   ) STORED
 )`);
-await pool.query(`CREATE INDEX IF NOT EXISTS modules_fts_gin ON modules USING gin(fts)`);
+await pool.query(`CREATE INDEX IF NOT EXISTS modules_search_tsv_gin ON modules USING gin(search_tsv)`);
 await pool.query(`CREATE INDEX IF NOT EXISTS modules_category_idx ON modules(category)`);
+await pool.query(`CREATE INDEX IF NOT EXISTS modules_name_trgm ON modules USING gin (name gin_trgm_ops)`);
 
 const rl = createInterface({
   input: createReadStream(SEED).pipe(createGunzip()),
@@ -378,6 +386,13 @@ HOST=127.0.0.1
 ORIGIN=http://127.0.0.1:5173
 ENGINE_URL=http://127.0.0.1:3210
 ENGINE_KEY=${ENGINE_KEY}
+
+# Engine's loadOrCreateApiKey() reads CELIUMS_API_KEY (not ENGINE_KEY)
+# and falls back to generating a new random key if unset. Without this
+# alias the engine would mint its own key on first boot, decoupled from
+# the one the dashboard advertises in /settings, and Bearer-auth on
+# /mcp requests would fail with a 401 every time.
+CELIUMS_API_KEY=${ENGINE_KEY}
 
 # ── BYOK keyvault (AES-256-GCM) ──
 CELIUMS_MASTER_KEY_PATH=${ETC_DIR}/master.key
