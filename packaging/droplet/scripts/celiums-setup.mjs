@@ -111,6 +111,11 @@ async function writeState(s) {
 function routesBlock() {
   // Each block is single-line tab-indented; consumers concatenate this
   // straight inside a parent site block (one extra tab from there).
+  //
+  // /authorize, /token, /register are RFC-compliant aliases of the
+  // /oauth/* paths. Claude.ai's MCP connector hardcodes the un-prefixed
+  // form despite our discovery metadata advertising /oauth/*, so we
+  // route both shapes to the engine.
   return [
     'handle /v1/* {',
     '\t\treverse_proxy 127.0.0.1:3210',
@@ -121,7 +126,19 @@ function routesBlock() {
     'handle /oauth/* {',
     '\t\treverse_proxy 127.0.0.1:3210',
     '\t}',
-    'handle /.well-known/* {',
+    'handle /authorize* {',
+    '\t\treverse_proxy 127.0.0.1:3210',
+    '\t}',
+    'handle /token {',
+    '\t\treverse_proxy 127.0.0.1:3210',
+    '\t}',
+    'handle /register {',
+    '\t\treverse_proxy 127.0.0.1:3210',
+    '\t}',
+    'handle /.well-known/oauth-* {',
+    '\t\treverse_proxy 127.0.0.1:3210',
+    '\t}',
+    'handle /.well-known/openid-* {',
     '\t\treverse_proxy 127.0.0.1:3210',
     '\t}',
     'handle /health {',
@@ -145,6 +162,10 @@ function caddyfileForFqdn(fqdn, email) {
 }
 
 ${fqdn} {
+\tlog {
+\t\toutput file /var/lib/caddy/access.log
+\t\tformat json
+\t}
 \t${routesBlock()}
 }
 `;
@@ -171,6 +192,10 @@ function caddyfileForIp(ip) {
 # HTTPS with the self-signed cert at /etc/celiums/tls/.
 :443 {
 \ttls ${CERT_FILE} ${KEY_FILE}
+\tlog {
+\t\toutput file /var/lib/caddy/access.log
+\t\tformat json
+\t}
 \t${routesBlock()}
 }
 `;
