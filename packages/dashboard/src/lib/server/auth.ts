@@ -64,7 +64,16 @@ function verifyPassword(password: string, stored: string): boolean {
 
 // ── API key generation ──────────────────────────────────────────
 
+// Honor the engine-provided key when one is present in the environment.
+// On the 1-Click droplet, /etc/celiums/env declares CELIUMS_API_KEY (the
+// SAME value the engine reads via loadOrCreateApiKey). Without this the
+// dashboard mints its own random key on first signup, and the value the
+// /settings page advertises has no relation to the one the engine
+// validates Bearer requests against — which silently breaks every MCP
+// integration.
 function generateApiKey(): string {
+  const provided = process.env.CELIUMS_API_KEY?.trim();
+  if (provided && /^cmk_[A-Za-z0-9_-]+$/.test(provided)) return provided;
   return 'cmk_' + crypto.randomBytes(32).toString('base64url');
 }
 
