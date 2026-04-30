@@ -42,11 +42,11 @@ export class CeliumsClient {
   }
 
   // Authenticated probe: confirms the API key is recognised. Hits
-  // /v1/memories/recall with an empty query, which the engine accepts
+  // /recall with an empty query, which the engine accepts
   // but returns nothing for.
   async authProbe(): Promise<{ ok: boolean; status: number; detail?: string }> {
     try {
-      const res = await fetch(`${this.url.replace(/\/$/, '')}/v1/memories/recall`, {
+      const res = await fetch(`${this.url.replace(/\/$/, '')}/recall`, {
         method: 'POST',
         headers: this.headers(),
         body: JSON.stringify({ userId: this.userId, query: 'ping', limit: 1 }),
@@ -62,7 +62,7 @@ export class CeliumsClient {
   }
 
   async recall(query: string, limit = 10): Promise<RecallHit[]> {
-    const res = await fetch(`${this.url.replace(/\/$/, '')}/v1/memories/recall`, {
+    const res = await fetch(`${this.url.replace(/\/$/, '')}/recall`, {
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify({ userId: this.userId, query, limit }),
@@ -73,7 +73,7 @@ export class CeliumsClient {
   }
 
   async remember(content: string, metadata?: Record<string, unknown>): Promise<{ id?: string }> {
-    const res = await fetch(`${this.url.replace(/\/$/, '')}/v1/memories`, {
+    const res = await fetch(`${this.url.replace(/\/$/, '')}/store`, {
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify({ userId: this.userId, content, metadata }),

@@ -2,7 +2,7 @@
   "name": "celiums-memory-vscode",
   "displayName": "Celiums Memory",
   "description": "Persistent memory for AI assistants in VSCode, Cursor, and Antigravity. Connects your editor to a Celiums Memory server (self-hosted or cloud).",
-  "version": "1.2.7",
+  "version": "1.2.8",
   "publisher": "celiums",
   "license": "Apache-2.0",
   "homepage": "https://celiums.ai",
