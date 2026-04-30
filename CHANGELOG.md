@@ -5,6 +5,57 @@ All notable changes to celiums-memory will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.7] - 2026-04-29
+
+### Fixed
+
+- **MCP OAuth flow accepts the un-prefixed paths Claude.ai actually
+  uses.** The connector POSTs `/authorize`, `/token` and `/register`
+  at the bare root despite our discovery metadata advertising the
+  `/oauth/*` form, so the engine now serves both shapes. Without this
+  the auth handshake hung at a 404 and silently fell back to a hard-
+  coded URL the server didn't implement.
+- **Dynamic Client Registration (RFC 7591).** New unauthenticated
+  `POST /oauth/register` endpoint. Mints a `cmc_…` client id, echoes
+  the requested redirect URIs, and returns the metadata document the
+  spec requires.
+- **Protected Resource Metadata (RFC 9728).** New
+  `/.well-known/oauth-protected-resource` document so Claude.ai's MCP
+  connector can discover which authorization server protects `/mcp`.
+  The 401 `WWW-Authenticate` challenge now includes the
+  `resource_metadata="…"` parameter mandated by the MCP authorization
+  spec, completing the discovery handshake.
+- **Dashboard adopts the engine's `CELIUMS_API_KEY` on first signup.**
+  `createUser()` previously generated its own random key, decoupled
+  from the value the engine validated against. The `/settings` page
+  thus advertised a key that every Bearer request to `/mcp` would
+  reject with 401. The dashboard now prefers `process.env.CELIUMS_API_KEY`
+  when present (the 1-Click droplet exports it via systemd
+  `EnvironmentFile=/etc/celiums/env`), falling back to a fresh random
+  key only outside the droplet context.
+- **Modules schema matches the engine.** The hydrate routine in
+  `packaging/setup.sh` previously created a `fts` column with no
+  reference metadata. The engine's `searchFullText` looks for
+  `search_tsv`, `has_references` and `reference_count`, so `/modules`
+  search returned zero hits even with 5,100 rows loaded. Schema is
+  now identical to `@celiums/modules-starter`'s `hydratePg` (plus a
+  `pg_trgm` GIN index on `name` for the prefix-match fallback).
+- **Caddy routes the un-prefixed OAuth aliases.** Both the static
+  cloud-init Caddyfile and the `celiums-setup` IP/FQDN templates now
+  forward `/authorize*`, `/token`, `/register` to the engine on
+  `127.0.0.1:3210`, and the wildcard `/.well-known/*` was tightened
+  to `/.well-known/oauth-*` + `/openid-*` to avoid accidentally
+  proxying unrelated probes. JSON access logging is enabled per-site
+  at `/var/lib/caddy/access.log` so future OAuth issues are
+  diagnosable without restarting Caddy in debug mode.
+
+### Verified
+
+End-to-end against `test.celiums.io` (Let's Encrypt cert, FQDN mode):
+Claude Web's MCP connector completes the full
+discovery → register → authorize → token exchange and authenticates
+six consecutive `POST /mcp` calls with status 200.
+
 ## [1.2.6] - 2026-04-28
 
 ### Added (Security)
