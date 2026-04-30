@@ -1,0 +1,70 @@
+{
+  "name": "celiums-memory-vscode",
+  "displayName": "Celiums Memory",
+  "description": "Persistent memory for AI assistants in VSCode, Cursor, and Antigravity. Connects your editor to a Celiums Memory server (self-hosted or cloud).",
+  "version": "1.2.7",
+  "publisher": "celiums",
+  "license": "Apache-2.0",
+  "homepage": "https://celiums.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/terrizoaguimor/celiums-memory.git",
+    "directory": "packages/vscode-extension"
+  },
+  "bugs": {
+    "url": "https://github.com/terrizoaguimor/celiums-memory/issues"
+  },
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": ["AI", "Other", "Machine Learning"],
+  "keywords": ["mcp", "memory", "ai", "claude", "cursor", "antigravity", "celiums"],
+  "icon": "media/icon.png",
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      { "command": "celiums.connect",     "title": "Celiums: Connect to Memory server" },
+      { "command": "celiums.disconnect",  "title": "Celiums: Disconnect" },
+      { "command": "celiums.status",      "title": "Celiums: Show connection status" },
+      { "command": "celiums.recall",      "title": "Celiums: Recall a memory" },
+      { "command": "celiums.remember",    "title": "Celiums: Remember something" },
+      { "command": "celiums.openDashboard", "title": "Celiums: Open dashboard in browser" }
+    ],
+    "configuration": {
+      "title": "Celiums Memory",
+      "properties": {
+        "celiums.serverUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Base URL of your Celiums Memory server (e.g. https://memory.example.com or http://127.0.0.1:3210). Leave empty until you run 'Celiums: Connect'."
+        },
+        "celiums.userId": {
+          "type": "string",
+          "default": "default",
+          "description": "User ID scope for memories. Defaults to 'default'."
+        },
+        "celiums.autoRegisterMcp": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically register the Celiums MCP server with the host editor when connected."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "package": "node esbuild.mjs && vsce package --no-dependencies --out dist/",
+    "publish:vsix": "node esbuild.mjs && vsce package --no-dependencies --out dist/"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.96.0",
+    "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.5.0"
+  }
+}

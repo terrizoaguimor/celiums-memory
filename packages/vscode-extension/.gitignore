@@ -1,0 +1,11 @@
+node_modules/
+out/
+*.tsbuildinfo
+.vscode-test/
+
+# We override the repo-root `dist/` ignore for this package so the
+# packaged .vsix ships inside the repo. Build artefacts are filtered
+# back out individually.
+!dist/
+dist/extension.js
+dist/extension.js.map
