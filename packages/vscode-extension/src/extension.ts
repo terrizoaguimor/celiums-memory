@@ -1,20 +1,26 @@
-// Entry point — registers commands and the status bar item, then wires
-// the host to the appropriate MCP backend on activation if credentials
-// are already present.
+// Entry point — registers commands, status bar, MCP provider and the
+// output channel on activation. The MCP provider is wired up
+// unconditionally so the editor knows about it before the user even
+// opens the connect wizard; credentials get pushed into it later.
 
 import * as vscode from 'vscode';
 import { CeliumsClient } from './client';
 import { detectHost, hostLabel, hasNativeMcpApi } from './host';
-import { registerMcp, unregisterCursorMcp } from './mcp';
+import { applyRegistration, ensureProviderRegistered, setRegistration } from './mcp';
 
 const SECRET_KEY = 'celiums.apiKey';
 const CFG_URL = 'celiums.serverUrl';
 const CFG_USER = 'celiums.userId';
-const CFG_AUTOREG = 'celiums.autoRegisterMcp';
 
 let statusItem: vscode.StatusBarItem;
+let log: vscode.OutputChannel;
 
 export async function activate(context: vscode.ExtensionContext) {
+  log = vscode.window.createOutputChannel('Celiums Memory');
+  context.subscriptions.push(log);
+  log.appendLine(`[boot] activating in ${hostLabel(detectHost())} (${vscode.env.appName} ${vscode.version})`);
+  log.appendLine(`[boot] native MCP API present: ${hasNativeMcpApi()}`);
+
   statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusItem.command = 'celiums.status';
   context.subscriptions.push(statusItem);
@@ -26,19 +32,24 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('celiums.recall',        () => cmdRecall(context)),
     vscode.commands.registerCommand('celiums.remember',      () => cmdRemember(context)),
     vscode.commands.registerCommand('celiums.openDashboard', () => cmdOpenDashboard()),
+    vscode.commands.registerCommand('celiums.showLogs',      () => log.show(true)),
   );
 
-  // If we already have credentials, refresh the status indicator and
-  // (re-)register the MCP server with the host. This is idempotent —
-  // VSCode's lm provider replaces previous registrations with the
-  // same id; the file-based path overwrites the same JSON entry.
-  await refreshStatus(context);
-  if (await hasCreds(context)) {
-    const cfg = vscode.workspace.getConfiguration();
-    if (cfg.get<boolean>(CFG_AUTOREG, true)) {
-      await tryRegisterMcp(context, /*silent=*/true);
-    }
+  // Register the MCP provider eagerly so the editor enumerates it
+  // even before the user has connected. provideMcpServerDefinitions
+  // returns [] until credentials show up, then the change emitter
+  // tells the host to re-query.
+  ensureProviderRegistered(context, log);
+
+  // If we already have credentials from a previous session, push
+  // them into the provider now so tools come online without the
+  // user having to re-run Connect.
+  const existing = await loadCreds(context);
+  if (existing) {
+    setRegistration(existing, log);
   }
+
+  await refreshStatus(context);
 }
 
 export function deactivate() {
@@ -50,7 +61,6 @@ export function deactivate() {
 // ────────────────────────────────────────────────────────────────────
 
 async function cmdConnect(ctx: vscode.ExtensionContext) {
-  const host = detectHost();
   const cfg = vscode.workspace.getConfiguration();
 
   const url = await vscode.window.showInputBox({
@@ -65,7 +75,7 @@ async function cmdConnect(ctx: vscode.ExtensionContext) {
 
   const apiKey = await vscode.window.showInputBox({
     title: 'Celiums Memory — API key',
-    prompt: 'Find this on your dashboard\'s Settings page (or /root/.celiums/api-key on the droplet).',
+    prompt: "Find this on your dashboard's Settings page (or /root/.celiums/api-key on the droplet).",
     placeHolder: 'cmk_…',
     password: true,
     ignoreFocusOut: true,
@@ -74,8 +84,8 @@ async function cmdConnect(ctx: vscode.ExtensionContext) {
   if (!apiKey) return;
 
   const userId = cfg.get<string>(CFG_USER, 'default') || 'default';
+  log.appendLine(`[connect] probing ${url} as user "${userId}"`);
 
-  // Probe before persisting so we surface auth issues immediately.
   const client = new CeliumsClient(url.trim(), apiKey.trim(), userId);
   const probe = await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'Celiums: testing connection…' },
@@ -92,18 +102,31 @@ async function cmdConnect(ctx: vscode.ExtensionContext) {
     const msg = probe.where === 'health'
       ? `Couldn't reach ${url}: ${probe.detail}`
       : `API key rejected (${probe.detail || 'unauthorized'}).`;
+    log.appendLine(`[connect] FAILED at ${probe.where}: ${probe.detail}`);
     vscode.window.showErrorMessage(`Celiums: ${msg}`);
     return;
   }
+  log.appendLine('[connect] probe ok — persisting credentials');
 
   await cfg.update(CFG_URL, url.trim(), vscode.ConfigurationTarget.Global);
   await ctx.secrets.store(SECRET_KEY, apiKey.trim());
 
-  if (cfg.get<boolean>(CFG_AUTOREG, true)) {
-    await tryRegisterMcp(ctx, /*silent=*/false);
+  const result = await applyRegistration(detectHost(), { url: url.trim(), apiKey: apiKey.trim() }, ctx, log);
+  log.appendLine(`[connect] applyRegistration → ${result.method}: ${result.detail}`);
+
+  if (result.method === 'manual') {
+    vscode.window.showWarningMessage(
+      `Celiums: ${hostLabel(detectHost())} doesn't expose an MCP API. ` +
+      `Manually add this MCP server: command=npx, args=[-y, @celiums/mcp@latest, --url, ${url}], env CELIUMS_API_KEY=<your key>.`,
+      'Show logs',
+    ).then((p) => { if (p === 'Show logs') log.show(true); });
+  } else {
+    vscode.window.showInformationMessage(
+      `Celiums: connected to ${url} (${result.method}). Tools will appear in your editor's MCP panel.`,
+      'Show logs',
+    ).then((p) => { if (p === 'Show logs') log.show(true); });
   }
 
-  vscode.window.showInformationMessage(`Celiums: connected to ${url} (${hostLabel(host)}).`);
   await refreshStatus(ctx);
 }
 
@@ -112,10 +135,8 @@ async function cmdDisconnect(ctx: vscode.ExtensionContext) {
   await ctx.secrets.delete(SECRET_KEY);
   await vscode.workspace.getConfiguration().update(CFG_URL, '', vscode.ConfigurationTarget.Global);
 
-  if (host === 'cursor') {
-    const removed = await unregisterCursorMcp();
-    if (removed) vscode.window.showInformationMessage('Celiums: removed entry from ~/.cursor/mcp.json');
-  }
+  await applyRegistration(host, undefined, ctx, log);
+  log.appendLine('[disconnect] credentials cleared');
 
   await refreshStatus(ctx);
   vscode.window.showInformationMessage('Celiums: disconnected.');
@@ -125,16 +146,21 @@ async function cmdStatus(ctx: vscode.ExtensionContext) {
   const host = detectHost();
   const url = vscode.workspace.getConfiguration().get<string>(CFG_URL, '');
   const apiKey = await ctx.secrets.get(SECRET_KEY);
+  const native = hasNativeMcpApi();
 
   const lines: string[] = [
-    `Host        : ${hostLabel(host)}`,
+    `Host        : ${hostLabel(host)} (${vscode.env.appName} ${vscode.version})`,
     `Server URL  : ${url || '(not set)'}`,
     `API key     : ${apiKey ? '✓ stored' : '✗ missing'}`,
-    `Native MCP  : ${hasNativeMcpApi() ? 'yes' : 'no'}`,
+    `Native MCP  : ${native ? 'yes — provider registered' : 'no — using file-based or manual fallback'}`,
   ];
 
-  vscode.window.showInformationMessage(lines.join('  ·  '), 'Connect', 'Open Dashboard').then((pick) => {
+  vscode.window.showInformationMessage(
+    lines.join('  ·  '),
+    'Connect', 'Show logs', 'Open Dashboard',
+  ).then((pick) => {
     if (pick === 'Connect') vscode.commands.executeCommand('celiums.connect');
+    if (pick === 'Show logs') log.show(true);
     if (pick === 'Open Dashboard') vscode.commands.executeCommand('celiums.openDashboard');
   });
 }
@@ -223,36 +249,20 @@ function cmdOpenDashboard() {
 // Helpers
 // ────────────────────────────────────────────────────────────────────
 
-async function tryRegisterMcp(ctx: vscode.ExtensionContext, silent: boolean) {
+interface Creds { url: string; apiKey: string; }
+
+async function loadCreds(ctx: vscode.ExtensionContext): Promise<Creds | undefined> {
   const url = vscode.workspace.getConfiguration().get<string>(CFG_URL, '');
   const apiKey = await ctx.secrets.get(SECRET_KEY);
-  if (!url || !apiKey) return;
-
-  try {
-    const result = await registerMcp(detectHost(), { url, apiKey });
-    if (!silent) {
-      if (result.method === 'manual') {
-        vscode.window.showWarningMessage(
-          `Celiums: ${hostLabel(detectHost())} doesn't expose an MCP API. ` +
-          `Configure manually with URL ${url}/mcp and your API key.`,
-        );
-      } else {
-        vscode.window.showInformationMessage(
-          `Celiums: MCP registered (${result.method}) — ${result.detail}`,
-        );
-      }
-    }
-  } catch (e) {
-    vscode.window.showErrorMessage(`Celiums: MCP registration failed — ${(e as Error).message}`);
-  }
+  if (!url || !apiKey) return undefined;
+  return { url, apiKey };
 }
 
 async function refreshStatus(ctx: vscode.ExtensionContext) {
-  const url = vscode.workspace.getConfiguration().get<string>(CFG_URL, '');
-  const apiKey = await ctx.secrets.get(SECRET_KEY);
-  if (url && apiKey) {
+  const creds = await loadCreds(ctx);
+  if (creds) {
     statusItem.text = '$(database) Celiums';
-    statusItem.tooltip = `Connected to ${url}`;
+    statusItem.tooltip = `Connected to ${creds.url}`;
     statusItem.backgroundColor = undefined;
   } else {
     statusItem.text = '$(circle-slash) Celiums';
@@ -262,17 +272,10 @@ async function refreshStatus(ctx: vscode.ExtensionContext) {
   statusItem.show();
 }
 
-async function hasCreds(ctx: vscode.ExtensionContext): Promise<boolean> {
-  const url = vscode.workspace.getConfiguration().get<string>(CFG_URL, '');
-  const apiKey = await ctx.secrets.get(SECRET_KEY);
-  return Boolean(url && apiKey);
-}
-
 async function getClient(ctx: vscode.ExtensionContext): Promise<CeliumsClient | null> {
   const cfg = vscode.workspace.getConfiguration();
-  const url = cfg.get<string>(CFG_URL, '');
-  const apiKey = await ctx.secrets.get(SECRET_KEY);
-  if (!url || !apiKey) {
+  const creds = await loadCreds(ctx);
+  if (!creds) {
     const pick = await vscode.window.showWarningMessage(
       'Celiums: not connected. Set up now?',
       'Connect',
@@ -281,7 +284,7 @@ async function getClient(ctx: vscode.ExtensionContext): Promise<CeliumsClient | 
     return null;
   }
   const userId = cfg.get<string>(CFG_USER, 'default') || 'default';
-  return new CeliumsClient(url, apiKey, userId);
+  return new CeliumsClient(creds.url, creds.apiKey, userId);
 }
 
 function truncate(s: string, n: number): string {
