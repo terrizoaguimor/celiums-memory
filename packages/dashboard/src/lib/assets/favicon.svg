@@ -1,11 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240">
-  <defs>
-    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#00D26A" stop-opacity="0.4"/>
-      <stop offset="100%" stop-color="#00D26A" stop-opacity="0"/>
-    </radialGradient>
-  </defs>
-  <rect width="240" height="240" rx="52" fill="#0a0c0b"/>
-  <circle cx="120" cy="120" r="90" fill="url(#glow)"/>
-  <circle cx="120" cy="120" r="44" fill="#00D26A"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" font-family="'Roboto Slab', Georgia, serif">
+  <rect width="256" height="256" rx="56" fill="#0a0c0b"/>
+  <text x="44" y="135" fill="#f5f5f0" font-size="220" font-weight="500" letter-spacing="-8" dominant-baseline="central">C</text>
+  <circle cx="200" cy="184" r="22" fill="#00D26A"/>
 </svg>
