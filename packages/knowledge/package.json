@@ -26,7 +26,7 @@
   "dependencies": {
     "@celiums/types": "^0.1.0",
     "pg": "^8.13.0",
-    "@qdrant/js-client-rest": "^1.12.0"
+    "@qdrant/js-client-rest": "^1.18.0"
   },
   "devDependencies": {
     "@types/pg": "^8.11.0",

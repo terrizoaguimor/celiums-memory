@@ -71,7 +71,7 @@
     "@celiums/core": "^0.1.5",
     "@celiums/types": "^0.1.1",
     "pg": "^8.13.0",
-    "@qdrant/js-client-rest": "^1.12.0",
+    "@qdrant/js-client-rest": "^1.18.0",
     "ioredis": "^5.4.0"
   },
   "optionalDependencies": {
