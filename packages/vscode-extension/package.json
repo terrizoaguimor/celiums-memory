@@ -68,7 +68,7 @@
     "publish:vsix": "node esbuild.mjs && vsce package --no-dependencies --out dist/"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
+    "@types/node": "^25.8.0",
     "@types/vscode": "^1.96.0",
     "@vscode/vsce": "^3.2.1",
     "esbuild": "^0.28.0",
