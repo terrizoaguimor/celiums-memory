@@ -12,5 +12,5 @@
     "@celiums-memory/server": "workspace:*",
     "@celiums-memory/adapter-mcp": "workspace:*"
   },
-  "devDependencies": { "typescript": "^5.7.0", "tsx": "^4.19.0" }
+  "devDependencies": { "typescript": "^5.7.0", "tsx": "^4.22.0" }
 }
