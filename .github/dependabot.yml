@@ -9,3 +9,34 @@ updates:
       - "dependencies"
     commit-message:
       prefix: "deps"
+    groups:
+      types:
+        patterns:
+          - "@types/*"
+      eslint:
+        patterns:
+          - "@typescript-eslint/*"
+          - "eslint*"
+      tailwind:
+        patterns:
+          - "*tailwind*"
+      svelte:
+        patterns:
+          - "*svelte*"
+          - "svelte*"
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns:
+          - "*"
