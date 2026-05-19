@@ -1,0 +1,16 @@
+# Trivy ignore list — implements ADR-018 §"Vulnerability scanning".
+#
+# Format: one CVE per line. Every entry MUST include a justification
+# AND an expiry date. CI fails the build when an entry is past its
+# expiry without renewal.
+#
+# Example entry shape (uncomment + edit when real entries land):
+#
+# # CVE-2024-XXXXX
+# #   Justification: upstream patch in flight, no exploit path in our
+# #     code (we don't call the affected function).
+# #   Tracked: https://github.com/celiums/celiums-memory/issues/NNN
+# #   Expires: 2026-08-01
+# CVE-2024-XXXXX
+
+# (empty for v1 — every known CVE is patched in this release)

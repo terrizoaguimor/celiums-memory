@@ -1,0 +1,53 @@
+{
+  "name": "@celiums/memory-types",
+  "version": "2.0.0",
+  "description": "TypeScript types for celiums-memory — neuroscience-grounded AI memory",
+  "keywords": [
+    "celiums",
+    "memory",
+    "ai",
+    "types",
+    "typescript",
+    "emotional-ai"
+  ],
+  "homepage": "https://celiums.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/terrizoaguimor/celiums-memory.git",
+    "directory": "packages/types"
+  },
+  "license": "Apache-2.0",
+  "author": {
+    "name": "Celiums Solutions LLC",
+    "email": "hello@celiums.ai"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts --clean --sourcemap",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3"
+  }
+}

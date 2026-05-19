@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "strict": true,
+    // The .ts files were lifted from production .js without param type
+    // annotations. Disabling noImplicitAny + useUnknownInCatchVariables
+    // unblocks the build today; tighten back to fully-typed in a follow-up
+    // pass when each function gets explicit signatures.
+    "noImplicitAny": false,
+    "useUnknownInCatchVariables": false,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "declaration": false,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

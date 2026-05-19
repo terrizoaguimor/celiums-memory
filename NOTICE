@@ -1,0 +1,59 @@
+Celiums Memory
+Copyright 2025-2026 Celiums Solutions LLC
+
+This product includes software developed at
+Celiums Solutions LLC (https://celiums.ai).
+
+================================================================================
+THIRD-PARTY ATTRIBUTIONS
+================================================================================
+
+This product depends on third-party software. Each component is governed by
+its own license; the full list of dependencies and their licenses is
+maintained in the lockfiles (pnpm-lock.yaml at the repo root, and per-package
+lockfiles in packages/*/) and is reproduced in machine-readable form by
+running `pnpm licenses ls`.
+
+The following components are core to the Celiums architecture and are
+acknowledged explicitly:
+
+- PostgreSQL (https://www.postgresql.org) — PostgreSQL License
+- Qdrant Vector Database (https://qdrant.tech) — Apache 2.0
+- Valkey / Redis-compatible cache (https://valkey.io) — BSD-3-Clause
+- pgvector (https://github.com/pgvector/pgvector) — PostgreSQL License
+- HNSW algorithm — Yu. A. Malkov, D. A. Yashunin (academic reference)
+- Anthropic Model Context Protocol specification (https://modelcontextprotocol.io)
+- Apache Hono (https://hono.dev) — MIT
+- Node.js — MIT (with portions under other permissive licenses)
+- TypeScript (https://www.typescriptlang.org) — Apache 2.0
+- AJV JSON Schema validator (https://ajv.js.org) — MIT
+- LangChain.js (https://github.com/langchain-ai/langchainjs) — MIT
+  Used transitively via @librechat/agents to provide turnkey adapters for
+  OpenAI, Anthropic, Google (Gemini + Vertex AI), AWS Bedrock, Mistral AI,
+  Azure OpenAI, DeepSeek, OpenRouter, xAI (Grok), and Moonshot (Kimi).
+- @librechat/agents (https://github.com/danny-avila/LibreChat) — MIT
+  Provides getChatModelClass() and the canonical provider registry that
+  Celiums Memory's via-langchain adapter consumes.
+- cohere-ai SDK (https://github.com/cohere-ai/cohere-typescript) — MIT
+  Used by the manual Cohere adapter for chat + embeddings.
+- ollama npm client (https://github.com/ollama/ollama-js) — MIT
+  Used by the manual Ollama adapter for local-first inference.
+
+================================================================================
+KNOWLEDGE CORPUS
+================================================================================
+
+This engine does not ship or redistribute a knowledge corpus. The
+`forage`, `absorb`, and `sense` tools operate over whatever
+knowledge/skills backend the operator configures (bring your own).
+Any corpus you connect remains governed by its own sources' licenses.
+
+================================================================================
+TRADEMARK NOTICE
+================================================================================
+
+"Celiums", "Celiums Memory", and the Celiums logo are
+trademarks of Celiums Solutions LLC. The Apache 2.0 license granted here
+does NOT grant permission to use these trademarks. See TRADEMARKS.md for
+permitted uses (descriptive references, factual statements about
+compatibility, and similar fair-use scenarios).

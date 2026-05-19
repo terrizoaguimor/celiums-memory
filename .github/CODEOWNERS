@@ -1,0 +1,45 @@
+# Celiums Memory — Code owners
+# Implements ADR-018 §"Required hardening — Required reviewers".
+#
+# Rules:
+# - Every path needs at least one owner.
+# - Security-sensitive paths require 2 maintainer approvals (enforced
+#   via branch protection rules at the GitHub-org level).
+# - Governance docs require BDFL sign-off.
+
+# ── Default owner ─────────────────────────────────────────────────
+*                                       @terrizoaguimor
+
+# ── Security-sensitive paths (2 reviews required) ─────────────────
+/packages/core/src/lib/auth/            @terrizoaguimor
+/packages/core/src/lib/secrets/         @terrizoaguimor
+/packages/core/src/lib/sso/             @terrizoaguimor
+/packages/core/src/lib/rbac/            @terrizoaguimor
+/packages/core/src/lib/multi-tenancy/   @terrizoaguimor
+/packages/core/src/lib/ethics/          @terrizoaguimor
+/packages/core/src/ethics-layer-*.ts    @terrizoaguimor
+/packages/core/src/mcp/security-audit.ts @terrizoaguimor
+/packages/core/src/mcp/schema-validator.ts @terrizoaguimor
+/packages/core/src/lib/bootstrap/       @terrizoaguimor
+
+# ── Supply chain ──────────────────────────────────────────────────
+/.github/workflows/                     @terrizoaguimor
+/.github/dependabot.yml                 @terrizoaguimor
+/.github/CODEOWNERS                     @terrizoaguimor
+/Dockerfile                             @terrizoaguimor
+/dependencies-rationale.md              @terrizoaguimor
+/SECURITY.md                            @terrizoaguimor
+
+# ── Helm chart ────────────────────────────────────────────────────
+/charts/celiums-memory/                 @terrizoaguimor
+
+# ── Governance + ADRs ─────────────────────────────────────────────
+/docs/adr/                              @terrizoaguimor
+/GOVERNANCE.md                          @terrizoaguimor
+/MAINTAINERS.md                         @terrizoaguimor
+/CODE_OF_CONDUCT.md                     @terrizoaguimor
+/LICENSE                                @terrizoaguimor
+/NOTICE                                 @terrizoaguimor
+
+# ── Runbooks (ops review) ─────────────────────────────────────────
+/docs/ops/runbooks/                     @terrizoaguimor

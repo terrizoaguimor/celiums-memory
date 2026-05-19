@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: Apache-2.0
+# Gitleaks config — implements ADR-018 §"Secret scanning + leak prevention".
+#
+# Extends gitleaks' default ruleset with Celiums-specific patterns
+# (the cmk_ prefix from ADR-003 + the calibration profile key form).
+
+title = "Celiums Memory gitleaks config"
+
+# Use gitleaks' built-in catalog of patterns by default, then layer
+# our extensions below.
+[extend]
+useDefault = true
+
+# ── Celiums API key — cmk_<prefix>_<secret> (ADR-003) ──────────────
+[[rules]]
+id = "celiums-api-key"
+description = "Celiums Memory API key (cmk_ format) — ADR-003"
+regex = '''cmk_[A-Za-z0-9]{6,32}_[A-Za-z0-9_\-]{20,}'''
+tags = ["celiums", "api-key"]
+
+# ── Celiums calibration API key (subscriber key) ───────────────────
+[[rules]]
+id = "celiums-calibration-key"
+description = "Celiums Calibrated Profile subscription key (ADR-021)"
+regex = '''cck_[A-Za-z0-9]{6,32}_[A-Za-z0-9_\-]{20,}'''
+tags = ["celiums", "calibration"]
+
+# ── Celiums signing pepper ─────────────────────────────────────────
+[[rules]]
+id = "celiums-api-key-pepper"
+description = "Celiums API key argon pepper (env var leak)"
+regex = '''CELIUMS_API_KEY_PEPPER\s*=\s*['"][^'"]{16,}['"]'''
+tags = ["celiums", "pepper"]
+
+# ── DigitalOcean Inference key (we set this in dev examples) ──────
+[[rules]]
+id = "do-inference-key"
+description = "DigitalOcean Inference / sk-do-* key"
+regex = '''sk-do-[A-Za-z0-9_\-]{30,}'''
+tags = ["digitalocean"]
+
+# ── Allowlist ──────────────────────────────────────────────────────
+# Paths and patterns that are safe to ignore. Restrict carefully.
+[allowlist]
+description = "Allowlist for known-safe test fixtures + docs."
+paths = [
+  # Test files often carry placeholder secrets.
+  '''.*\.test\.ts$''',
+  '''.*\.spec\.ts$''',
+  '''packages/core/src/__tests__/.*''',
+  # Docs that demonstrate key shapes — placeholder only.
+  '''docs/.*\.md$''',
+  '''README\.md$''',
+  '''CONTRIBUTING\.md$''',
+]
+regexes = [
+  # Placeholder secrets in docs (cmk_test_*, cmk_example_*, etc.)
+  '''cmk_(test|example|placeholder|sample|fixture)_[A-Za-z0-9_\-]{20,}''',
+  # The well-known AWS example key in docs.
+  '''AKIAIOSFODNN7EXAMPLE''',
+]

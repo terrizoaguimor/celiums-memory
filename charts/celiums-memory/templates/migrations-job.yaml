@@ -1,0 +1,76 @@
+{{- if .Values.migrations.enabled -}}
+# Pre-install + pre-upgrade hook per ADR-013 §"Migration handling".
+# Idempotent — schema migrations bring the DB to the version this
+# chart release expects.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "celiums-memory.fullname" . }}-migrate
+  labels:
+    {{- include "celiums-memory.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": {{ join "," .Values.migrations.hooks | quote }}
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "celiums-memory.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "celiums-memory.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command: ["node", "/app/dist/scripts/migrate.js"]
+          env:
+            - name: CELIUMS_MIGRATE_MODE
+              value: apply
+            {{- if .Values.externalServices.postgres.host }}
+            - name: CELIUMS_PG_HOST
+              value: {{ .Values.externalServices.postgres.host | quote }}
+            - name: CELIUMS_PG_PORT
+              value: {{ .Values.externalServices.postgres.port | quote }}
+            - name: CELIUMS_PG_SSLMODE
+              value: {{ .Values.externalServices.postgres.sslmode | quote }}
+            {{- if .Values.externalServices.postgres.existingSecret }}
+            - name: CELIUMS_PG_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalServices.postgres.existingSecret }}
+                  key: username
+            - name: CELIUMS_PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalServices.postgres.existingSecret }}
+                  key: password
+            - name: CELIUMS_PG_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalServices.postgres.existingSecret }}
+                  key: database
+            {{- end }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.migrations.resources | nindent 12 }}
+{{- end }}

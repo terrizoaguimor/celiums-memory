@@ -1,0 +1,82 @@
+name: celiums-memory
+region: nyc
+
+# DigitalOcean App Platform spec for celiums-memory
+# Deploy in 1 click: https://cloud.digitalocean.com/apps/new?repo=https://github.com/terrizoaguimor/celiums-memory/tree/main
+
+services:
+  - name: api
+    dockerfile_path: Dockerfile
+    source_dir: /
+    github:
+      repo: terrizoaguimor/celiums-memory
+      branch: main
+      deploy_on_push: true
+    http_port: 3210
+    instance_count: 1
+    instance_size_slug: basic-xs
+    health_check:
+      http_path: /health
+      initial_delay_seconds: 30
+      period_seconds: 30
+      timeout_seconds: 5
+      success_threshold: 1
+      failure_threshold: 3
+    envs:
+      - key: NODE_ENV
+        value: production
+        scope: RUN_AND_BUILD_TIME
+      - key: PORT
+        value: "3210"
+        scope: RUN_TIME
+      - key: HOST
+        value: "0.0.0.0"
+        scope: RUN_TIME
+      - key: PERSONALITY
+        value: balanced
+        scope: RUN_TIME
+      # Auto-injected by DO when you attach the database below
+      - key: DATABASE_URL
+        value: ${db.DATABASE_URL}
+        scope: RUN_TIME
+      - key: VALKEY_URL
+        value: ${cache.DATABASE_URL}
+        scope: RUN_TIME
+      # Qdrant runs as a worker service in the same app
+      - key: QDRANT_URL
+        value: http://qdrant:6333
+        scope: RUN_TIME
+
+  # Qdrant as an internal service
+  - name: qdrant
+    image:
+      registry_type: DOCKER_HUB
+      registry: qdrant
+      repository: qdrant
+      tag: v1.14.0
+    internal_ports:
+      - 6333
+    instance_count: 1
+    instance_size_slug: basic-xxs
+
+# Managed PostgreSQL with pgvector
+databases:
+  - name: db
+    engine: PG
+    version: "17"
+    production: false
+    cluster_name: celiums-memory-pg
+    db_name: celiums_memory
+    db_user: celiums
+
+  # Managed Valkey/Redis
+  - name: cache
+    engine: REDIS
+    version: "7"
+    production: false
+    cluster_name: celiums-memory-cache
+
+# Public domain (optional, default uses ondigitalocean.app)
+# domains:
+#   - domain: memory.yourdomain.com
+#     type: PRIMARY

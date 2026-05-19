@@ -1,0 +1,284 @@
+# Celiums Memory — Helm values (ADR-013)
+#
+# This file is the operator-facing surface. Every knob is documented;
+# every default reflects the recommendation for Tier 3 production
+# deployments using EXTERNAL managed services for Postgres + Qdrant +
+# Valkey. In-cluster sub-charts are available for staging / eval.
+
+# ── image ───────────────────────────────────────────────────────────
+image:
+  repository: ghcr.io/celiums/memory
+  # Pin a SHA in production. Tag is for dev convenience.
+  tag: "1.3.0"
+  pullPolicy: IfNotPresent
+  # Pull secret for private registries. Leave empty for public images.
+  pullSecrets: []
+    # - name: regcred
+
+# ── replicas + autoscaling ──────────────────────────────────────────
+replicaCount: 3
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 12
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Pod Disruption Budget — at least N pods always available during
+# rolling node operations. Tied to replicaCount baseline.
+pdb:
+  enabled: true
+  minAvailable: 2
+  # If you set maxUnavailable, leave minAvailable null:
+  # maxUnavailable: 1
+
+# ── resources ───────────────────────────────────────────────────────
+# Defaults sized for the average tenant. Tune per your traffic.
+resources:
+  requests:
+    cpu: "500m"
+    memory: "512Mi"
+  limits:
+    cpu: "2"
+    memory: "2Gi"
+
+# ── service + ingress ──────────────────────────────────────────────
+service:
+  type: ClusterIP
+  port: 3210
+  metricsPort: 3211
+  # Annotations propagated to the Service object (e.g. for AWS NLB).
+  annotations: {}
+
+ingress:
+  enabled: true
+  className: nginx
+  # Host on which the engine HTTP API is reachable. CHANGE THIS.
+  hosts:
+    - host: memory.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: celiums-memory-tls
+      hosts:
+        - memory.example.com
+  annotations:
+    # cert-manager auto-issue
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+
+# ── pod security ───────────────────────────────────────────────────
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+  readOnlyRootFilesystem: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# Node placement
+nodeSelector: {}
+tolerations: []
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          topologyKey: kubernetes.io/hostname
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: celiums-memory
+
+# ── data backends ──────────────────────────────────────────────────
+# Production: leave sub-charts disabled; point engine at external
+# managed services. Staging: enable sub-charts.
+
+postgresql:
+  enabled: false
+  # When enabled: see Bitnami chart values. Minimum-viable example:
+  # auth:
+  #   username: celiums
+  #   database: celiums_memory
+  #   existingSecret: celiums-pg-secret
+
+qdrant:
+  enabled: false
+  # When enabled: see qdrant/qdrant-helm values.
+
+valkey:
+  enabled: false
+  # When enabled: see Bitnami valkey chart values.
+
+# External connection details — used when sub-charts are disabled.
+# Pulled from Secret references for credentials, plain ConfigMap for
+# hosts. Setting a value here overrides the inline default.
+externalServices:
+  postgres:
+    host: ""
+    port: 5432
+    sslmode: require
+    existingSecret: ""            # Secret with keys: username, password, database
+  qdrant:
+    url: ""                       # https://qdrant.cluster.internal:6334
+    existingApiKeySecret: ""      # Secret with key: api_key
+  valkey:
+    url: ""                       # redis://valkey.cluster.internal:6379
+    existingPasswordSecret: ""    # Secret with key: password
+
+# ── auth (ADR-003) ─────────────────────────────────────────────────
+auth:
+  # 'enabled' or 'disabled' (Tier 1 local mode only — never in cluster!).
+  mode: enabled
+  # API key pepper — REQUIRED. From Secret.
+  apiKeyPepperSecret:
+    name: celiums-memory-pepper
+    key: pepper
+  # OIDC config — empty disables OIDC; populate for SSO.
+  oidc:
+    enabled: false
+    issuer: ""           # e.g. https://idp.example.com
+    audience: "celiums-memory"
+    jwksUrl: ""          # defaults to <issuer>/.well-known/jwks.json
+    clientSecretRef:
+      name: celiums-memory-oidc
+      key: client-secret
+
+# ── secrets (ADR-005) ──────────────────────────────────────────────
+secrets:
+  # env | file | kubernetes | sops-age | vault
+  backend: kubernetes
+  # When backend=file or sops-age, mount the secrets directory:
+  filePath: ""
+  # When backend=vault:
+  vault:
+    address: ""
+    mount: kv
+    path: ""
+    tokenSecret:
+      name: celiums-memory-vault-token
+      key: token
+
+# ── multi-tenancy (ADR-009) ────────────────────────────────────────
+multitenancy:
+  enabled: true
+  defaultTenantId: "00000000-0000-4c6c-8000-000000000001"
+  # Reserved for future: enable schema-per-tenant operator (ADR-013
+  # operator section). Defer to v2.
+  operator:
+    enabled: false
+
+# ── observability (ADR-012) ────────────────────────────────────────
+observability:
+  # Prometheus Operator ServiceMonitor for scraping /metrics.
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+  # Grafana dashboards as ConfigMaps. Apply if your Grafana picks up
+  # dashboards from ConfigMaps with the grafana_dashboard label.
+  grafanaDashboards:
+    enabled: true
+    labels:
+      grafana_dashboard: "1"
+  # Prometheus alert rules per ADR-012.
+  prometheusRule:
+    enabled: true
+    additionalLabels: {}
+  # OpenTelemetry collector endpoint — empty disables trace export.
+  otlpEndpoint: ""
+  # Log level: debug | info | warn | error | fatal.
+  logLevel: info
+  # Include raw content in debug logs. NEVER in production.
+  logIncludeContent: false
+
+# ── rate limit + quota ─────────────────────────────────────────────
+rateLimit:
+  enabled: true
+  # Per-IP (edge) limit. Token bucket.
+  edgeCapacity: 60
+  edgeRefillPerSecond: 1.0
+
+quotas:
+  defaultPlan: pro
+
+# ── bootstrap (ADR-025) ────────────────────────────────────────────
+bootstrap:
+  enabled: true
+  ttlHours: 4
+  budgetTokens: 2000
+  exemptTools: []
+
+# ── ethics (ADR-021) ───────────────────────────────────────────────
+ethics:
+  # 'baseline' is the OSS default. Paid Calibrated Profiles loaded via
+  # CELIUMS_CALIBRATION_API_KEY against calibration.celiums.ai.
+  defaultProfile: baseline
+  calibrationApiKeySecret:
+    name: ""        # empty disables paid profiles
+    key: api-key
+
+# ── networking (ADR-006) ───────────────────────────────────────────
+networkPolicy:
+  enabled: true
+  # When enabled, traffic egress is restricted to:
+  # - postgres host/port
+  # - qdrant host/port
+  # - valkey host/port
+  # - configured LLM provider hostnames
+  # - OIDC issuer (when configured)
+  # Add additional egress rules below.
+  additionalEgress: []
+
+# ── backup verifier (ADR-014) ──────────────────────────────────────
+# Nightly restore drill. Spins up a sandbox Postgres, restores the
+# latest pgBackRest incremental, runs smoke queries, tears down.
+backup:
+  verifier:
+    enabled: false           # default off; enable when pgBackRest archive is wired
+    schedule: "0 3 * * *"    # 03:00 UTC daily
+    stanza: celiums-memory
+    pushgatewayUrl: ""       # optional — push the verification metric here
+    credentialsSecret: celiums-backup-verifier-creds
+    resources:
+      requests: { cpu: "200m", memory: "512Mi" }
+      limits:   { cpu: "2",    memory: "2Gi" }
+
+# ── migrations job ─────────────────────────────────────────────────
+migrations:
+  enabled: true
+  # Resources for the one-shot migration job.
+  resources:
+    requests: { cpu: "100m", memory: "256Mi" }
+    limits:   { cpu: "1",    memory: "512Mi" }
+  # Job hook policy. ADR-013 §"Migration handling" — pre-install +
+  # pre-upgrade. Set to "pre-install" only when upgrading is manual.
+  hooks:
+    - pre-install
+    - pre-upgrade
+
+# ── service mesh integration (optional) ────────────────────────────
+serviceMesh:
+  # none | istio | linkerd
+  type: none
+
+# ── service account ────────────────────────────────────────────────
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# ── extra env / env-from ───────────────────────────────────────────
+extraEnv: []
+  # - name: CELIUMS_CUSTOM_FLAG
+  #   value: "value"
+extraEnvFrom: []
+  # - secretRef:
+  #     name: celiums-memory-extra-secrets

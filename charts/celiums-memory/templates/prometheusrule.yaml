@@ -1,0 +1,104 @@
+{{- if .Values.observability.prometheusRule.enabled -}}
+# Alert rules per ADR-012 §"Alert rules (shipped)".
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "celiums-memory.fullname" . }}
+  labels:
+    {{- include "celiums-memory.labels" . | nindent 4 }}
+    {{- with .Values.observability.prometheusRule.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: celiums-memory.rules
+      rules:
+
+        # ── error rate ──────────────────────────────────────────────
+        - alert: CeliumsHighErrorRate
+          expr: |
+            (
+              sum(rate(celiums_http_requests_total{status=~"5.."}[5m]))
+              /
+              sum(rate(celiums_http_requests_total[5m]))
+            ) > 0.01
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Celiums HTTP error rate > 1% for 5m"
+            description: "5xx rate is {{ "{{" }} $value | humanizePercentage {{ "}}" }} over the last 5m."
+            runbook_url: "https://docs.celiums.ai/ops/runbooks/high-error-rate"
+
+        # ── recall latency ──────────────────────────────────────────
+        - alert: CeliumsRecallLatencyP99High
+          expr: |
+            histogram_quantile(0.99,
+              sum by (le) (rate(celiums_memory_recall_duration_seconds_bucket[10m]))
+            ) > 2
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Recall p99 > 2s for 10m"
+            runbook_url: "https://docs.celiums.ai/ops/runbooks/recall-latency-p99"
+
+        # ── DB pool saturation ──────────────────────────────────────
+        - alert: CeliumsDBSaturated
+          expr: |
+            avg_over_time(celiums_db_pool_in_use[5m]) > 0.9
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Postgres pool >90% for 5m"
+            runbook_url: "https://docs.celiums.ai/ops/runbooks/db-saturated"
+
+        # ── quota spike ────────────────────────────────────────────
+        - alert: CeliumsQuotaSpikeUnusual
+          expr: |
+            sum by (tenant_id) (rate(celiums_quota_exceeded_total[5m]))
+              >
+            3 * sum by (tenant_id) (avg_over_time(rate(celiums_quota_exceeded_total[5m])[1h:5m]))
+          for: 10m
+          labels:
+            severity: info
+          annotations:
+            summary: "Quota exceeded rate >3× baseline for tenant {{ "{{" }} $labels.tenant_id {{ "}}" }}"
+            runbook_url: "https://docs.celiums.ai/ops/runbooks/quota-spike-unusual"
+
+        # ── audit log failures ─────────────────────────────────────
+        - alert: CeliumsAuditWriteFailures
+          expr: |
+            increase(celiums_audit_writes_total{decision="deny"}[10m]) == 0
+            AND
+            absent_over_time(celiums_audit_writes_total[15m])
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: "security_audit_log writes appear stalled (no events 15m)"
+            runbook_url: "https://docs.celiums.ai/ops/runbooks/audit-write-failures"
+
+        # ── rate-limit fail-open ───────────────────────────────────
+        - alert: CeliumsRateLimitFailopen
+          expr: |
+            increase(celiums_ratelimit_total{outcome="fail-open"}[5m]) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Rate limiter is failing open — Valkey unreachable"
+            runbook_url: "https://docs.celiums.ai/ops/runbooks/ratelimit-failopen"
+
+        # ── bootstrap failures (ADR-025) ───────────────────────────
+        - alert: CeliumsBootstrapComposerFailure
+          expr: |
+            increase(celiums_bootstrap_total{reason="composer-failed"}[10m]) > 5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Bootstrap composer failures > 5 in 10m"
+            runbook_url: "https://docs.celiums.ai/ops/runbooks/bootstrap-composer-failure"
+{{- end }}

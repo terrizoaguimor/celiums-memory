@@ -1,0 +1,40 @@
+{
+  "name": "celiums",
+  "version": "0.6.1",
+  "description": "Persistent memory for Claude Code — agents remember decisions, patterns, errors and solutions across sessions via memory.celiums.ai. 5 hooks + 6 MCP tools + 9 cognitive reflex skills.",
+  "author": {
+    "name": "Celiums Solutions LLC",
+    "email": "hello@celiums.ai",
+    "url": "https://celiums.ai"
+  },
+  "homepage": "https://celiums.ai",
+  "license": "Apache-2.0",
+  "mcpServers": {
+    "celiums-memory": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/src/bridge.mjs"],
+      "env": {
+        "CELIUMS_MEMORY_URL": "${memory_url}",
+        "CELIUMS_MEMORY_USER_ID": "${user_id}",
+        "CELIUMS_API_KEY": "${api_key}"
+      }
+    }
+  },
+  "hooks": {
+    "SessionStart": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/src/hooks/session-start.mjs" }] }
+    ],
+    "UserPromptSubmit": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/src/hooks/user-prompt.mjs" }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/src/hooks/post-tool-use.mjs" }] }
+    ],
+    "Stop": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/src/hooks/stop.mjs" }] }
+    ],
+    "SessionEnd": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/src/hooks/session-end.mjs" }] }
+    ]
+  }
+}

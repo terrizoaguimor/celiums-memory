@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://celiums.ai/schemas/v1/mcp-inputs/recall.schema.json",
+  "title": "recall.input",
+  "description": "Input schema for the MCP `recall` tool. Strict mode — unknown properties are rejected. P0-A: projectId='all' is allowed at schema layer but enforced at handler layer (admin:cross_project scope check + security_audit_log).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["query"],
+  "properties": {
+    "query": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8000,
+      "description": "Semantic query."
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50,
+      "description": "Max memories to return."
+    },
+    "projectId": {
+      "$ref": "https://celiums.ai/schemas/v1/common/project-id.schema.json"
+    },
+    "userId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Override user scope. Most callers should omit this and inherit from context."
+    },
+    "agentId": {
+      "$ref": "https://celiums.ai/schemas/v1/common/agent-id.schema.json"
+    }
+  }
+}

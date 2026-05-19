@@ -1,0 +1,112 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Celiums Solutions LLC
+#
+# Staging image build for celiums-memory (Track 1 backend with secure
+# tools). Multi-stage; final runtime is Node 22 alpine with non-root user.
+#
+# What this builds:
+#   - packages/core compiled via tsup → dist/
+#   - All Track 1 lib/* surfaces: aal, storage, sync, runtime, ethics,
+#     rbac, sso, observability, migrations
+#   - 11 secure tools exposed via dispatcher
+#   - Entry: packages/core/dist/quickstart.js (HTTP MCP server on :3210)
+#
+# What this does NOT build:
+#   - plugin-claude-code (separate package, not a server)
+#   - the knowledge corpus (bring your own; not bundled)
+#
+# Build args:
+#   GIT_SHA — short commit hash baked into /etc/celiums-build-info
+#
+# Push target:
+#   registry.digitalocean.com/celiums-cr/celiums-memory:staging-<sha>
+
+############################
+# Stage 1 — deps + build
+############################
+FROM node:22-alpine AS builder
+
+# Build-time deps for native modules (better-sqlite3 needs python + make)
+RUN apk add --no-cache python3 make g++ libc6-compat
+
+# pnpm via corepack (matches packageManager: pnpm@9.4.0 in package.json)
+RUN corepack enable && corepack prepare pnpm@9.4.0 --activate
+
+WORKDIR /build
+
+# Copy lockfile + workspace config first for max cache reuse
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+
+# Copy the workspace packages. core (the app) + types (core dep) are the
+# build targets; the other packages are peers in the workspace.
+COPY packages/ ./packages/
+COPY scripts/ ./scripts/
+COPY schemas/ ./schemas/
+COPY tsconfig.base.json* ./
+
+# Install: --frozen-lockfile prevents drift, --prod=false because we need
+# devDeps (tsup, typescript) to build.
+RUN pnpm install --frozen-lockfile
+
+# Build packages/core only — that's the deployable. Other packages are
+# workspace-linked deps only.
+RUN pnpm --filter @celiums/memory build
+
+############################
+# Stage 2 — prune to runtime deps
+############################
+FROM node:22-alpine AS deps-prune
+
+RUN apk add --no-cache python3 make g++ libc6-compat
+RUN corepack enable && corepack prepare pnpm@9.4.0 --activate
+
+WORKDIR /build
+
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY packages/ ./packages/
+
+# Production install — strips devDeps, keeps optionalDependencies
+# (better-sqlite3) and workspace links resolved.
+RUN pnpm install --frozen-lockfile --prod
+
+############################
+# Stage 3 — runtime
+############################
+FROM node:22-alpine AS runtime
+
+# tini = clean signal handling for PID 1; curl for healthcheck
+RUN apk add --no-cache tini curl
+
+# Non-root user
+RUN addgroup -S celiums && adduser -S -G celiums celiums
+
+WORKDIR /app
+
+# Copy compiled output + pruned node_modules (workspace-aware)
+COPY --from=builder /build/packages/core/dist ./packages/core/dist
+COPY --from=builder /build/packages/core/package.json ./packages/core/package.json
+COPY --from=builder /build/packages/types ./packages/types
+COPY --from=deps-prune /build/node_modules ./node_modules
+COPY --from=deps-prune /build/packages/core/node_modules ./packages/core/node_modules
+
+# Migration scripts (init container or `celiums migrate up` command)
+COPY --from=builder /build/scripts ./scripts
+COPY --from=builder /build/schemas ./schemas
+
+# Bake build info — visible in pod logs + /health response
+ARG GIT_SHA=unknown
+RUN echo "{\"git_sha\":\"${GIT_SHA}\",\"built_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"image\":\"celiums-memory:staging\"}" > /etc/celiums-build-info \
+    && chown celiums:celiums /etc/celiums-build-info \
+    && chown -R celiums:celiums /app
+
+USER celiums
+
+ENV NODE_ENV=production
+ENV PORT=3210
+EXPOSE 3210
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD curl -fsS http://localhost:3210/health || exit 1
+
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["node", "packages/core/dist/quickstart.js"]

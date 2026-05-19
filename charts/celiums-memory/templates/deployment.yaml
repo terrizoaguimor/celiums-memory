@@ -1,0 +1,183 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "celiums-memory.fullname" . }}
+  labels:
+    {{- include "celiums-memory.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "celiums-memory.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "celiums-memory.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Force pod rollout when ConfigMap / Secret changes.
+        checksum/config: {{ toYaml .Values | sha256sum | trunc 16 }}
+        {{- if eq .Values.serviceMesh.type "linkerd" }}
+        linkerd.io/inject: enabled
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "celiums-memory.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: celiums-memory
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 3210
+              protocol: TCP
+            - name: metrics
+              containerPort: 3211
+              protocol: TCP
+          env:
+            - name: CELIUMS_AUTH
+              value: {{ .Values.auth.mode | quote }}
+            - name: CELIUMS_LOG_LEVEL
+              value: {{ .Values.observability.logLevel | quote }}
+            - name: CELIUMS_LOG_INCLUDE_CONTENT
+              value: {{ .Values.observability.logIncludeContent | quote }}
+            - name: CELIUMS_SECRETS_BACKEND
+              value: {{ .Values.secrets.backend | quote }}
+            - name: CELIUMS_BOOTSTRAP
+              value: {{ if .Values.bootstrap.enabled }}enabled{{ else }}disabled{{ end }}
+            {{- if .Values.secrets.filePath }}
+            - name: CELIUMS_SECRETS_PATH
+              value: {{ .Values.secrets.filePath | quote }}
+            {{- end }}
+            - name: CELIUMS_API_KEY_PEPPER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.apiKeyPepperSecret.name }}
+                  key: {{ .Values.auth.apiKeyPepperSecret.key }}
+            {{- if .Values.auth.oidc.enabled }}
+            - name: CELIUMS_OIDC_ISSUER
+              value: {{ .Values.auth.oidc.issuer | quote }}
+            - name: CELIUMS_OIDC_AUDIENCE
+              value: {{ .Values.auth.oidc.audience | quote }}
+            {{- if .Values.auth.oidc.jwksUrl }}
+            - name: CELIUMS_OIDC_JWKS_URL
+              value: {{ .Values.auth.oidc.jwksUrl | quote }}
+            {{- end }}
+            - name: CELIUMS_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.oidc.clientSecretRef.name }}
+                  key: {{ .Values.auth.oidc.clientSecretRef.key }}
+            {{- end }}
+            {{- if .Values.externalServices.postgres.host }}
+            - name: CELIUMS_PG_HOST
+              value: {{ .Values.externalServices.postgres.host | quote }}
+            - name: CELIUMS_PG_PORT
+              value: {{ .Values.externalServices.postgres.port | quote }}
+            - name: CELIUMS_PG_SSLMODE
+              value: {{ .Values.externalServices.postgres.sslmode | quote }}
+            {{- if .Values.externalServices.postgres.existingSecret }}
+            - name: CELIUMS_PG_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalServices.postgres.existingSecret }}
+                  key: username
+            - name: CELIUMS_PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalServices.postgres.existingSecret }}
+                  key: password
+            - name: CELIUMS_PG_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalServices.postgres.existingSecret }}
+                  key: database
+            {{- end }}
+            {{- end }}
+            {{- if .Values.externalServices.qdrant.url }}
+            - name: CELIUMS_QDRANT_URL
+              value: {{ .Values.externalServices.qdrant.url | quote }}
+            {{- if .Values.externalServices.qdrant.existingApiKeySecret }}
+            - name: CELIUMS_QDRANT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalServices.qdrant.existingApiKeySecret }}
+                  key: api_key
+            {{- end }}
+            {{- end }}
+            {{- if .Values.externalServices.valkey.url }}
+            - name: CELIUMS_VALKEY_URL
+              value: {{ .Values.externalServices.valkey.url | quote }}
+            {{- end }}
+            {{- if .Values.observability.otlpEndpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.observability.otlpEndpoint | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: celiums-memory
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if eq .Values.secrets.backend "file" }}
+            - name: secrets
+              mountPath: {{ .Values.secrets.filePath }}
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if eq .Values.secrets.backend "file" }}
+        - name: secrets
+          secret:
+            secretName: {{ include "celiums-memory.fullname" . }}-files
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

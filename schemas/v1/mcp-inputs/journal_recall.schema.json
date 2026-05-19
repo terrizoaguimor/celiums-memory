@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://celiums.ai/schemas/v1/mcp-inputs/journal_recall.schema.json",
+  "title": "journal_recall.input",
+  "description": "Input schema for the MCP `journal_recall` tool. Strict mode. P0-B: inherit_from is constrained to the same agent-id shape; format malformations are rejected at schema layer, existence + audit logging at handler layer.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "query": {
+      "type": "string",
+      "maxLength": 8000
+    },
+    "entry_type": {
+      "type": "string",
+      "enum": ["reflection", "decision", "lesson", "belief", "emotion", "arc", "doubt"]
+    },
+    "entryType": {
+      "type": "string",
+      "enum": ["reflection", "decision", "lesson", "belief", "emotion", "arc", "doubt"]
+    },
+    "tags": {
+      "type": "array",
+      "maxItems": 32,
+      "items": { "$ref": "https://celiums.ai/schemas/v1/common/string-tag.schema.json" }
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "inherit_from": {
+      "$ref": "https://celiums.ai/schemas/v1/common/agent-id.schema.json"
+    },
+    "inheritFrom": {
+      "$ref": "https://celiums.ai/schemas/v1/common/agent-id.schema.json"
+    },
+    "include_superseded": { "type": "boolean" },
+    "includeSuperseded": { "type": "boolean" },
+    "semantic_threshold": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "semanticThreshold": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "conversation_id": {
+      "$ref": "https://celiums.ai/schemas/v1/common/uuid.schema.json"
+    },
+    "conversationId": {
+      "$ref": "https://celiums.ai/schemas/v1/common/uuid.schema.json"
+    },
+    "agentId": {
+      "$ref": "https://celiums.ai/schemas/v1/common/agent-id.schema.json"
+    }
+  }
+}

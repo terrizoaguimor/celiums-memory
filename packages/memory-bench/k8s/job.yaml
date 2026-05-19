@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: Apache-2.0
+# Memory-bench runner — ONE Job per ablation ARM (see docs/BENCHMARK.md §5).
+# Replace ${ARM} (full|no-affect|no-circadian|no-both) and apply 4 times,
+# OR template via kustomize. The matching celiums-memory-bench-${ARM}
+# Deployment must already be running with that arm's CELIUMS_RECALL_DISABLE_*
+# env (the toggles are process-wide; the runner does NOT flip them).
+#
+# Secrets (DO Inference key VPC-scoped, bench cmk) come from the
+# `memory-bench-secrets` Secret — NEVER inline, NEVER committed.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: memory-bench-${ARM}
+  namespace: distill
+  labels: { app: memory-bench, arm: "${ARM}" }
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 86400
+  template:
+    metadata:
+      labels: { app: memory-bench, arm: "${ARM}" }
+    spec:
+      restartPolicy: Never
+      imagePullSecrets: [{ name: registry-celiums-cr }]
+      containers:
+        - name: runner
+          image: registry.digitalocean.com/celiums-cr/memory-bench:latest
+          args: ["--datasets", "longmemeval,locomo", "--limit", "50", "--run", "pilot-1"]
+          env:
+            - { name: ARM, value: "${ARM}" }
+            # arm-specific bench memory Service (deployed with the arm env)
+            - { name: MEMORY_BASE_URL, value: "http://celiums-memory-bench-${ARM}.distill.svc.cluster.local:3210" }
+            - { name: DO_INFERENCE_URL, value: "https://inference.do-ai.run/v1" }
+            - { name: BENCH_DATA_DIR, value: "/data" }
+            - { name: BENCH_OSS_MODEL, value: "openai-gpt-oss-120b" }
+            - { name: BENCH_CLAUDE_MODEL, value: "anthropic-claude-4.6-sonnet" }
+            - { name: BENCH_JUDGE_OFFICIAL, value: "openai-gpt-4o" }
+            - { name: BENCH_JUDGE_OSS, value: "openai-gpt-oss-120b" }
+          envFrom:
+            - secretRef: { name: memory-bench-secrets }   # CELIUMS_BENCH_CMK, DO_INFERENCE_KEY
+          volumeMounts:
+            - { name: data, mountPath: /data, readOnly: true }
+          resources:
+            requests: { cpu: "500m", memory: 1Gi }
+            limits: { cpu: "2", memory: 4Gi }
+      volumes:
+        # Datasets pulled once from DO Spaces (s3://mars-celiums/bench/)
+        # into a PVC by a one-shot init Job; mounted read-only here.
+        - name: data
+          persistentVolumeClaim: { claimName: memory-bench-data }

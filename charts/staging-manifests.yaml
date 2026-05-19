@@ -1,0 +1,125 @@
+# Celiums-memory STAGING — K8s manifests
+#
+# Apply: kubectl apply -f charts/staging-manifests.yaml
+# Replace IMAGE_TAG placeholder before applying.
+#
+# Mirrors the production memory namespace shape (deployment + service +
+# ingressroute) but in memory-staging with the new secure-tools image.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celiums-memory-staging
+  namespace: memory-staging
+  labels:
+    app: celiums-memory
+    tier: staging
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: celiums-memory
+      tier: staging
+  template:
+    metadata:
+      labels:
+        app: celiums-memory
+        tier: staging
+    spec:
+      # hostNetwork: the production pod uses host networking so it can
+      # reach Qdrant at 10.200.0.4 (DO VPC private IP, not in-cluster).
+      # Without this, staging pods get an overlay IP (10.150.x.x) that
+      # can't route to the VPC service. Caveat: with hostNetwork the
+      # process MUST listen on a port not already in use on the host —
+      # prod owns 3210, so staging runs on 3211.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      imagePullSecrets:
+        - name: registry-celiums-cr
+      containers:
+        - name: memory
+          # Tag substituted at apply time
+          image: REPLACE_IMAGE
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3211
+              hostPort: 3211
+          env:
+            - name: PORT
+              value: "3211"
+          envFrom:
+            - secretRef:
+                name: celiums-memory-env-staging
+          # Override sync mode to local-only by default (no ZK overhead).
+          # Operators flip to cloud-synced via CELIUMS_SYNC_MODE +
+          # CELIUMS_ZK_PASSPHRASE in the secret when testing ZK paths.
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 3211
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 24
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3211
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3211
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: celiums-memory-staging
+  namespace: memory-staging
+  labels:
+    app: celiums-memory
+    tier: staging
+spec:
+  selector:
+    app: celiums-memory
+    tier: staging
+  ports:
+    - name: http
+      port: 3211
+      targetPort: 3211
+  type: ClusterIP
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: celiums-memory-staging
+  namespace: memory-staging
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - kind: Rule
+      match: Host(`staging-memory.celiums.ai`)
+      services:
+        - name: celiums-memory-staging
+          port: 3211
+  tls:
+    secretName: celiums-ai-wildcard-tls

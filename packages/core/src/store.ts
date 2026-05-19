@@ -1,0 +1,1627 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Celiums Solutions LLC
+
+/**
+ * packages/core/src/store.ts
+ *
+ * The HIPPOCAMPUS — Central memory store.
+ * Handles encoding, storage, retrieval, and lifecycle management
+ * across PostgreSQL (long-term), Qdrant (semantic), and Valkey (working memory).
+ */
+
+import { Pool, PoolClient } from 'pg';
+import { QdrantClient } from '@qdrant/js-client-rest';
+import Redis from 'ioredis';
+import { randomUUID } from 'crypto';
+import { resolveTimezone, type TzSignals, type ResolvedTz } from './lib/tz-resolve.js';
+import { inferActivityRhythm, offsetToEtcZone } from './lib/activity-rhythm.js';
+import type {
+  MemoryRecord,
+  MemoryState,
+  MemoryType,
+  MemoryScope,
+  Entity,
+} from '@celiums/memory-types';
+
+// ============================================================
+// Configuration
+// ============================================================
+
+export interface StoreConfig {
+  postgres: {
+    host: string;
+    port: number;
+    database: string;
+    user: string;
+    password: string;
+    max?: number;
+    ssl?: boolean;
+  };
+  qdrant: {
+    url: string;
+    apiKey?: string;
+    collectionName?: string;
+  };
+  valkey: {
+    host: string;
+    port: number;
+    password?: string;
+    db?: number;
+    keyPrefix?: string;
+    tls?: { rejectUnauthorized?: boolean };
+  };
+  embedding: {
+    endpoint: string;
+    apiKey?: string;
+    model?: string;
+    dimensions?: number;
+  };
+}
+
+// ============================================================
+// Constants
+// ============================================================
+
+const QDRANT_COLLECTION = process.env.QDRANT_COLLECTION || 'celiums_memories';
+const VECTOR_DIMENSIONS = 1536;
+const VALKEY_PREFIX = 'celiums:mem:';
+const VALKEY_TTL_SECONDS = 3600; // 1 hour cache
+
+// ============================================================
+// SQL — Table creation DDL
+// ============================================================
+
+const CREATE_EXTENSIONS_SQL = `
+  CREATE EXTENSION IF NOT EXISTS pgcrypto;
+  CREATE EXTENSION IF NOT EXISTS pg_trgm;
+`;
+
+const CREATE_TYPES_SQL = `
+  DO $$ BEGIN
+    CREATE TYPE memory_type AS ENUM ('episodic', 'semantic', 'procedural', 'emotional');
+  EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+  DO $$ BEGIN
+    CREATE TYPE memory_state AS ENUM ('encoding', 'active', 'consolidated', 'decayed', 'archived');
+  EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+  DO $$ BEGIN
+    CREATE TYPE memory_scope AS ENUM ('session', 'project', 'global');
+  EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+  DO $$ BEGIN
+    CREATE TYPE entity_type AS ENUM (
+      'person', 'project', 'technology', 'concept',
+      'organization', 'location', 'event', 'preference', 'pattern'
+    );
+  EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+`;
+
+// NOTE: All id columns are TEXT (not UUID) so the API can use opaque
+// string identifiers like "alice", "bob", "project-x" without needing
+// UUID generation on the client side. The default still uses
+// gen_random_uuid()::TEXT for auto-generated IDs.
+const CREATE_USERS_SQL = `
+  CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+    external_id VARCHAR(255) UNIQUE,
+    timezone VARCHAR(50) NOT NULL DEFAULT 'UTC',
+    communication_style TEXT,
+    preferences JSONB DEFAULT '{}',
+    known_patterns TEXT[] DEFAULT '{}',
+    sleep_schedule JSONB DEFAULT '{"start": "23:00", "end": "07:00"}',
+    last_active_at TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  );
+`;
+
+// 2026-04-11: per-user circadian + persisted limbic state.
+// Each user gets their OWN biological clock — timezone, chronotype, factors,
+// PAD vector. The previous global single-LimbicEngine model meant the rhythm
+// was hardcoded to the server owner's timezone.
+const CREATE_USER_PROFILES_SQL = `
+  CREATE TABLE IF NOT EXISTS user_profiles (
+    user_id           TEXT PRIMARY KEY,
+    timezone_iana     TEXT          NOT NULL DEFAULT 'UTC',
+    timezone_offset   NUMERIC(5,2)  NOT NULL DEFAULT 0,
+    peak_hour         NUMERIC(4,2)  NOT NULL DEFAULT 11.0,
+    amplitude         NUMERIC(4,3)  NOT NULL DEFAULT 0.300,
+    base_arousal      NUMERIC(4,3)  NOT NULL DEFAULT 0.000,
+    lethargy_rate     NUMERIC(5,4)  NOT NULL DEFAULT 0.0500,
+    hemisphere        SMALLINT      NOT NULL DEFAULT 1,
+    seasonal_amp      NUMERIC(4,3)  NOT NULL DEFAULT 0.000,
+    pad_pleasure      NUMERIC(5,4)  NOT NULL DEFAULT 0.0000,
+    pad_arousal       NUMERIC(5,4)  NOT NULL DEFAULT 0.0000,
+    pad_dominance     NUMERIC(5,4)  NOT NULL DEFAULT 0.0000,
+    session_activity  NUMERIC(5,4)  NOT NULL DEFAULT 0.0000,
+    stress_level      NUMERIC(5,4)  NOT NULL DEFAULT 0.0000,
+    caffeine_level    NUMERIC(5,4)  NOT NULL DEFAULT 0.0000,
+    sleep_debt        NUMERIC(5,4)  NOT NULL DEFAULT 0.0000,
+    cognitive_load    NUMERIC(5,4)  NOT NULL DEFAULT 0.0000,
+    emotional_acc     NUMERIC(5,4)  NOT NULL DEFAULT 0.0000,
+    exercise_level    NUMERIC(5,4)  NOT NULL DEFAULT 0.0000,
+    motivation_trend  NUMERIC(5,4)  NOT NULL DEFAULT 0.5000,
+    last_interaction  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    interaction_count BIGINT        NOT NULL DEFAULT 0,
+    communication_style TEXT        NOT NULL DEFAULT 'neutral',
+    preferences         JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    known_patterns      TEXT[]      NOT NULL DEFAULT ARRAY[]::TEXT[],
+    created_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_user_profiles_updated  ON user_profiles(updated_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_user_profiles_last_int ON user_profiles(last_interaction DESC);
+
+  -- #165 Layer B: timezone provenance + trust. timezone_iana already
+  -- exists (DEFAULT 'UTC'); these record HOW it was resolved so the
+  -- agent never asserts local phase on an unconfirmed/spoofed tz.
+  --   tz_source: default | browserGeo | ip | behavior | stored
+  --   tz_confidence: 0..1 (0 = UTC fallback, never assert phase)
+  -- Idempotent — runs every boot, harmless once present.
+  ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS tz_source        TEXT          NOT NULL DEFAULT 'default';
+  ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS tz_confidence    NUMERIC(4,3)  NOT NULL DEFAULT 0;
+  ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS tz_vpn_suspected BOOLEAN       NOT NULL DEFAULT false;
+  ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS tz_last_resolved TIMESTAMPTZ;
+
+  -- #165 Layer B: VPN-IMMUNE activity histogram. 24 buckets indexed by
+  -- UTC hour, incremented server-side on every real interaction. A VPN /
+  -- spoofed clock cannot move it; only genuine activity-time shifts do.
+  -- inferActivityRhythm() reads this to derive the behaviour tz signal.
+  ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS activity_hist INTEGER[]
+    NOT NULL DEFAULT (array_fill(0, ARRAY[24]));
+
+  -- Seed the anonymous default user
+  INSERT INTO user_profiles (user_id, timezone_iana, timezone_offset, peak_hour)
+  VALUES ('default', 'UTC', 0, 11)
+  ON CONFLICT (user_id) DO NOTHING;
+`;
+
+// #165 Layer B: SQL fragment that increments the current UTC-hour bucket
+// of the VPN-immune activity histogram. Folded into every UPDATE that
+// already bumps last_interaction so it costs zero extra round-trips.
+// Postgres arrays are 1-indexed; UTC hour 0..23 → bucket 1..24.
+const ACTIVITY_BUMP_SQL =
+  `activity_hist[(EXTRACT(HOUR FROM (now() AT TIME ZONE 'UTC')))::int + 1] = ` +
+  `COALESCE(activity_hist[(EXTRACT(HOUR FROM (now() AT TIME ZONE 'UTC')))::int + 1], 0) + 1`;
+
+const CREATE_PROJECTS_SQL = `
+  CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+    user_id TEXT NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    tech_stack TEXT[] DEFAULT '{}',
+    conventions TEXT[] DEFAULT '{}',
+    current_goals TEXT[] DEFAULT '{}',
+    recent_decisions TEXT[] DEFAULT '{}',
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(user_id, name)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id) WHERE is_active = true;
+`;
+
+const CREATE_SESSIONS_SQL = `
+  CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+    user_id TEXT NOT NULL,
+    project_id TEXT,
+    started_at TIMESTAMPTZ DEFAULT NOW(),
+    ended_at TIMESTAMPTZ,
+    is_consolidated BOOLEAN DEFAULT false,
+    consolidation_started_at TIMESTAMPTZ,
+    consolidation_completed_at TIMESTAMPTZ,
+    message_count INTEGER DEFAULT 0,
+    summary TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_sessions_user_active ON sessions(user_id, started_at DESC);
+`;
+
+const CREATE_MEMORIES_SQL = `
+  CREATE TABLE IF NOT EXISTS memories (
+    id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+    user_id TEXT NOT NULL,
+    project_id TEXT,
+    session_id TEXT,
+
+    content TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    memory_type memory_type NOT NULL,
+    scope memory_scope NOT NULL DEFAULT 'project',
+
+    importance FLOAT NOT NULL DEFAULT 0.5,
+    emotional_valence FLOAT NOT NULL DEFAULT 0.0,
+    emotional_arousal FLOAT NOT NULL DEFAULT 0.0,
+    emotional_dominance FLOAT NOT NULL DEFAULT 0.0,
+    confidence FLOAT NOT NULL DEFAULT 0.8,
+
+    strength FLOAT NOT NULL DEFAULT 1.0,
+    retrieval_count INTEGER NOT NULL DEFAULT 0,
+    last_retrieved_at TIMESTAMPTZ DEFAULT NOW(),
+    decay_rate FLOAT NOT NULL DEFAULT 0.1,
+
+    state memory_state NOT NULL DEFAULT 'encoding',
+    consolidated_at TIMESTAMPTZ,
+    consolidation_count INTEGER NOT NULL DEFAULT 0,
+
+    linked_memory_ids TEXT[] DEFAULT '{}',
+    source_message_ids TEXT[] DEFAULT '{}',
+    tags TEXT[] DEFAULT '{}',
+    entities JSONB DEFAULT '[]',
+
+    limbic_snapshot JSONB,
+
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id);
+  CREATE INDEX IF NOT EXISTS idx_memories_user_project ON memories(user_id, project_id);
+  CREATE INDEX IF NOT EXISTS idx_memories_user_state ON memories(user_id, state);
+  CREATE INDEX IF NOT EXISTS idx_memories_user_importance ON memories(user_id, importance DESC);
+  CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope);
+  CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type);
+  CREATE INDEX IF NOT EXISTS idx_memories_content_trgm ON memories USING gin (content gin_trgm_ops);
+  CREATE INDEX IF NOT EXISTS idx_memories_tags ON memories USING gin (tags);
+  CREATE INDEX IF NOT EXISTS idx_memories_last_retrieved ON memories(last_retrieved_at);
+`;
+
+// ============================================================
+// Helper: map DB row → MemoryRecord
+// ============================================================
+
+function rowToMemoryRecord(row: any): MemoryRecord {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    projectId: row.project_id ?? null,
+    sessionId: row.session_id ?? '',
+    content: row.content,
+    summary: row.summary,
+    memoryType: row.memory_type as MemoryType,
+    scope: row.scope as MemoryScope,
+    importance: parseFloat(row.importance),
+    emotionalValence: parseFloat(row.emotional_valence),
+    emotionalArousal: parseFloat(row.emotional_arousal),
+    emotionalDominance: parseFloat(row.emotional_dominance ?? '0'),
+    confidence: parseFloat(row.confidence),
+    strength: parseFloat(row.strength),
+    retrievalCount: parseInt(row.retrieval_count, 10),
+    lastRetrievedAt: new Date(row.last_retrieved_at),
+    decayRate: parseFloat(row.decay_rate),
+    state: row.state as MemoryState,
+    consolidatedAt: row.consolidated_at ? new Date(row.consolidated_at) : null,
+    consolidationCount: parseInt(row.consolidation_count, 10),
+    linkedMemoryIds: row.linked_memory_ids ?? [],
+    sourceMessageIds: row.source_message_ids ?? [],
+    tags: row.tags ?? [],
+    entities: (row.entities ?? []) as Entity[],
+    limbicSnapshot: row.limbic_snapshot ?? null,
+    createdAt: new Date(row.created_at),
+    updatedAt: new Date(row.updated_at),
+    version: parseInt(row.version ?? '1', 10),
+  };
+}
+
+// ============================================================
+// MemoryStore class
+// ============================================================
+
+export class MemoryStore {
+  private pg: Pool;
+  private qdrant: QdrantClient;
+  private redis: Redis;
+  private config: StoreConfig;
+  private collectionName: string;
+  private valkeyPrefix: string;
+  private vectorDimensions: number;
+
+  constructor(config: StoreConfig) {
+    this.config = config;
+    this.collectionName = config.qdrant.collectionName ?? QDRANT_COLLECTION;
+    this.valkeyPrefix = config.valkey.keyPrefix ?? VALKEY_PREFIX;
+    this.vectorDimensions = config.embedding.dimensions ?? VECTOR_DIMENSIONS;
+
+    this.pg = new Pool({
+      host: config.postgres.host,
+      port: config.postgres.port,
+      database: config.postgres.database,
+      user: config.postgres.user,
+      password: config.postgres.password,
+      max: config.postgres.max ?? 20,
+      ssl: config.postgres.ssl ? { rejectUnauthorized: false } : undefined,
+    });
+    this.pg.on('error', (err: Error) => {
+      console.error('[celiums-memory] pg pool idle error (non-fatal):', err.message);
+    });
+
+    this.qdrant = new QdrantClient({
+      url: config.qdrant.url,
+      apiKey: config.qdrant.apiKey,
+    });
+
+    this.redis = new Redis({
+      host: config.valkey.host,
+      port: config.valkey.port,
+      password: config.valkey.password,
+      db: config.valkey.db ?? 0,
+      tls: config.valkey.tls,
+      lazyConnect: true,
+    });
+  }
+
+  // ----------------------------------------------------------
+  // initialize() — Create tables, Qdrant collection, connect Valkey
+  // ----------------------------------------------------------
+  async initialize(): Promise<void> {
+    // PostgreSQL: create types and tables
+    const client: PoolClient = await this.pg.connect();
+    try {
+      await client.query(CREATE_EXTENSIONS_SQL);
+      await client.query(CREATE_TYPES_SQL);
+      await client.query(CREATE_USERS_SQL);
+      await client.query(CREATE_USER_PROFILES_SQL);
+      await client.query(CREATE_PROJECTS_SQL);
+      await client.query(CREATE_SESSIONS_SQL);
+      await client.query(CREATE_MEMORIES_SQL);
+    } finally {
+      client.release();
+    }
+
+    // Qdrant: create collection if not exists
+    try {
+      const collections = await this.qdrant.getCollections();
+      const exists = collections.collections.some(
+        (c) => c.name === this.collectionName
+      );
+      if (!exists) {
+        await this.qdrant.createCollection(this.collectionName, {
+          vectors: {
+            size: this.vectorDimensions,
+            distance: 'Cosine',
+          },
+          optimizers_config: {
+            default_segment_number: 2,
+          },
+          replication_factor: 1,
+        });
+
+        // Create payload indices for filtering
+        await this.qdrant.createPayloadIndex(this.collectionName, {
+          field_name: 'user_id',
+          field_schema: 'keyword',
+        });
+        await this.qdrant.createPayloadIndex(this.collectionName, {
+          field_name: 'project_id',
+          field_schema: 'keyword',
+        });
+        await this.qdrant.createPayloadIndex(this.collectionName, {
+          field_name: 'scope',
+          field_schema: 'keyword',
+        });
+        await this.qdrant.createPayloadIndex(this.collectionName, {
+          field_name: 'importance',
+          field_schema: 'float',
+        });
+        await this.qdrant.createPayloadIndex(this.collectionName, {
+          field_name: 'state',
+          field_schema: 'keyword',
+        });
+      }
+    } catch (err: any) {
+      // If collection already exists, that's fine
+      if (!err.message?.includes('already exists')) {
+        throw err;
+      }
+    }
+
+    // Valkey: connect
+    if (this.redis.status === 'wait') {
+      await this.redis.connect();
+    }
+  }
+
+  // ----------------------------------------------------------
+  // saveMemory() — Encode a memory into all three stores
+  // ----------------------------------------------------------
+  async saveMemory(memory: MemoryRecord): Promise<MemoryRecord> {
+    // ── Ethics Gate — The Three Laws ────────────────────
+    // This check runs BEFORE anything else. Cannot be bypassed.
+    // DELIBERATELY Layer A only (deterministic). Do NOT route this gate
+    // through evaluateFullPipeline: its default auditMode is 'radar', which
+    // classifies but NEVER blocks (returns passed:true) — using it here
+    // disabled the gate and let real harm through (incident 2026-05-17,
+    // rolled back). Per the Atlas-reviewed redesign the enforcement decision
+    // is Layer A's deterministic block; Layer K is flag-only and lives in an
+    // advisory review-queue path, it never auto-allows a write. Never base
+    // this gate on `passed` from the full pipeline.
+    const { ethics } = await import('./ethics.js');
+    const ethicsResult = ethics.evaluate(memory.content);
+    if (!ethicsResult.passed) {
+      const v = ethicsResult.violations[0];
+      console.warn(`[ethics] Law ${v.law} violation blocked — ${v.reason}`);
+      // Log to audit table (best-effort, non-blocking)
+      this.pg.query(
+        `INSERT INTO ethics_audit (user_id, law_violated, confidence, reason, action_attempted, blocked)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [memory.userId, v.law, v.confidence, v.reason, memory.content.slice(0, 500), true]
+      ).catch(() => {}); // best-effort — don't block on audit failure
+      throw new Error(`Memory blocked by Ethics Engine — Law ${v.law}: ${v.reason}`);
+    }
+
+    const id = memory.id || randomUUID();
+    const now = new Date();
+
+    // 1. Insert into PostgreSQL
+    const insertSQL = `
+      INSERT INTO memories (
+        id, user_id, project_id, session_id,
+        content, summary, memory_type, scope,
+        importance, emotional_valence, emotional_arousal, emotional_dominance, confidence,
+        strength, retrieval_count, last_retrieved_at, decay_rate,
+        state, consolidated_at, consolidation_count,
+        linked_memory_ids, source_message_ids, tags, entities,
+        limbic_snapshot,
+        created_at, updated_at
+      ) VALUES (
+        $1, $2, $3, $4,
+        $5, $6, $7, $8,
+        $9, $10, $11, $12, $13,
+        $14, $15, $16, $17,
+        $18, $19, $20,
+        $21, $22, $23, $24,
+        $25,
+        $26, $27
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        content = EXCLUDED.content,
+        summary = EXCLUDED.summary,
+        importance = EXCLUDED.importance,
+        emotional_valence = EXCLUDED.emotional_valence,
+        emotional_arousal = EXCLUDED.emotional_arousal,
+        emotional_dominance = EXCLUDED.emotional_dominance,
+        confidence = EXCLUDED.confidence,
+        strength = EXCLUDED.strength,
+        retrieval_count = EXCLUDED.retrieval_count,
+        last_retrieved_at = EXCLUDED.last_retrieved_at,
+        state = EXCLUDED.state,
+        consolidated_at = EXCLUDED.consolidated_at,
+        consolidation_count = EXCLUDED.consolidation_count,
+        linked_memory_ids = EXCLUDED.linked_memory_ids,
+        tags = EXCLUDED.tags,
+        entities = EXCLUDED.entities,
+        updated_at = NOW()
+      RETURNING *;
+    `;
+
+    const values = [
+      id,
+      memory.userId,
+      memory.projectId,
+      memory.sessionId || null,
+      memory.content,
+      memory.summary,
+      memory.memoryType,
+      memory.scope,
+      memory.importance,
+      memory.emotionalValence,
+      memory.emotionalArousal,
+      memory.emotionalDominance ?? 0,
+      memory.confidence,
+      memory.strength,
+      memory.retrievalCount,
+      memory.lastRetrievedAt ?? now,
+      memory.decayRate,
+      memory.state,
+      memory.consolidatedAt,
+      memory.consolidationCount,
+      memory.linkedMemoryIds ?? [],
+      memory.sourceMessageIds ?? [],
+      memory.tags ?? [],
+      JSON.stringify(memory.entities ?? []),
+      memory.limbicSnapshot ? JSON.stringify(memory.limbicSnapshot) : null,
+      memory.createdAt ?? now,
+      now,
+    ];
+
+    const result = await this.pg.query(insertSQL, values);
+    const saved = rowToMemoryRecord(result.rows[0]);
+
+    // 2. Embed content and upsert into Qdrant
+    const vector = await this.embed(memory.content);
+    await this.qdrant.upsert(this.collectionName, {
+      wait: true,
+      points: [
+        {
+          id: id,
+          vector: vector,
+          payload: {
+            user_id: memory.userId,
+            project_id: memory.projectId ?? '',
+            session_id: memory.sessionId ?? '',
+            memory_type: memory.memoryType,
+            scope: memory.scope,
+            importance: memory.importance,
+            emotional_valence: memory.emotionalValence,
+            emotional_arousal: memory.emotionalArousal,
+            emotional_dominance: memory.emotionalDominance ?? 0,
+            state: memory.state,
+            strength: memory.strength,
+            tags: memory.tags ?? [],
+            summary: memory.summary,
+            created_at: (memory.createdAt ?? now).toISOString(),
+            last_retrieved_at: (memory.lastRetrievedAt ?? now).toISOString(),
+          },
+        },
+      ],
+    });
+
+    // 3. Cache in Valkey
+    const cacheKey = `${this.valkeyPrefix}${id}`;
+    await this.redis.setex(cacheKey, VALKEY_TTL_SECONDS, JSON.stringify(saved));
+
+    return saved;
+  }
+
+  // ----------------------------------------------------------
+  // getMemory() — Retrieve a single memory by ID
+  // ----------------------------------------------------------
+  async getMemory(id: string): Promise<MemoryRecord | null> {
+    // Check Valkey cache first
+    const cacheKey = `${this.valkeyPrefix}${id}`;
+    const cached = await this.redis.get(cacheKey);
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      // Restore Date objects
+      parsed.lastRetrievedAt = new Date(parsed.lastRetrievedAt);
+      parsed.consolidatedAt = parsed.consolidatedAt
+        ? new Date(parsed.consolidatedAt)
+        : null;
+      parsed.createdAt = new Date(parsed.createdAt);
+      parsed.updatedAt = new Date(parsed.updatedAt);
+      return parsed as MemoryRecord;
+    }
+
+    // Fall back to PostgreSQL
+    const result = await this.pg.query('SELECT * FROM memories WHERE id = $1', [
+      id,
+    ]);
+    if (result.rows.length === 0) return null;
+
+    const record = rowToMemoryRecord(result.rows[0]);
+
+    // Populate cache
+    await this.redis.setex(cacheKey, VALKEY_TTL_SECONDS, JSON.stringify(record));
+
+    return record;
+  }
+
+  // ----------------------------------------------------------
+  // searchByImportance() — Get memories above importance threshold
+  // ----------------------------------------------------------
+  async searchByImportance(
+    userId: string,
+    minImportance: number,
+    limit: number = 50
+  ): Promise<MemoryRecord[]> {
+    const result = await this.pg.query(
+      `SELECT * FROM memories
+       WHERE user_id = $1
+         AND importance >= $2
+         AND state NOT IN ('decayed')
+       ORDER BY importance DESC, last_retrieved_at DESC
+       LIMIT $3`,
+      [userId, minImportance, limit]
+    );
+    return result.rows.map(rowToMemoryRecord);
+  }
+
+  // ----------------------------------------------------------
+  // deleteMemories() — Remove memories from all three stores
+  // ----------------------------------------------------------
+  async deleteMemories(ids: string[]): Promise<number> {
+    if (ids.length === 0) return 0;
+
+    // 1. Delete from PostgreSQL
+    const result = await this.pg.query(
+      'DELETE FROM memories WHERE id = ANY($1) RETURNING id',
+      [ids]
+    );
+    const deletedCount = result.rowCount ?? 0;
+
+    // 2. Delete from Qdrant
+    try {
+      await this.qdrant.delete(this.collectionName, {
+        wait: true,
+        points: ids,
+      });
+    } catch (err: any) {
+      // Log but don't fail — PG is source of truth
+      console.error('[MemoryStore] Qdrant delete error:', err.message);
+    }
+
+    // 3. Delete from Valkey
+    const pipeline = this.redis.pipeline();
+    for (const id of ids) {
+      pipeline.del(`${this.valkeyPrefix}${id}`);
+    }
+    await pipeline.exec();
+
+    return deletedCount;
+  }
+
+  // ----------------------------------------------------------
+  // updateLifecycle() — Update importance and state
+  // ----------------------------------------------------------
+  async updateLifecycle(
+    id: string,
+    importance: number,
+    state: MemoryState
+  ): Promise<MemoryRecord | null> {
+    const result = await this.pg.query(
+      `UPDATE memories
+       SET importance = $2, state = $3, updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [id, importance, state]
+    );
+    if (result.rows.length === 0) return null;
+
+    const record = rowToMemoryRecord(result.rows[0]);
+
+    // Update Qdrant payload
+    try {
+      await this.qdrant.setPayload(this.collectionName, {
+        points: [id],
+        payload: {
+          importance: importance,
+          state: state,
+        },
+      });
+    } catch (err: any) {
+      console.error('[MemoryStore] Qdrant payload update error:', err.message);
+    }
+
+    // Invalidate Valkey cache
+    await this.redis.del(`${this.valkeyPrefix}${id}`);
+
+    return record;
+  }
+
+  // ----------------------------------------------------------
+  // reactivate() — Spaced repetition: boost memory on recall
+  // ----------------------------------------------------------
+  async reactivate(id: string): Promise<MemoryRecord | null> {
+    const result = await this.pg.query(
+      `UPDATE memories
+       SET importance = GREATEST(importance, 0.8),
+           state = 'active',
+           last_retrieved_at = NOW(),
+           retrieval_count = retrieval_count + 1,
+           strength = strength + 0.1 * (1.0 + retrieval_count * 0.05),
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [id]
+    );
+    if (result.rows.length === 0) return null;
+
+    const record = rowToMemoryRecord(result.rows[0]);
+
+    // Update Qdrant payload
+    try {
+      await this.qdrant.setPayload(this.collectionName, {
+        points: [id],
+        payload: {
+          importance: record.importance,
+          state: 'active',
+          strength: record.strength,
+          last_retrieved_at: record.lastRetrievedAt.toISOString(),
+        },
+      });
+    } catch (err: any) {
+      console.error('[MemoryStore] Qdrant reactivate error:', err.message);
+    }
+
+    // Invalidate cache
+    await this.redis.del(`${this.valkeyPrefix}${id}`);
+
+    return record;
+  }
+
+  // ----------------------------------------------------------
+  // getForLifecycle() — Get memories needing decay processing
+  // ----------------------------------------------------------
+  async getForLifecycle(
+    userId: string,
+    batchSize: number = 200
+  ): Promise<MemoryRecord[]> {
+    const result = await this.pg.query(
+      `SELECT * FROM memories
+       WHERE user_id = $1
+         AND state IN ('active', 'consolidated', 'encoding')
+       ORDER BY last_retrieved_at ASC
+       LIMIT $2`,
+      [userId, batchSize]
+    );
+    return result.rows.map(rowToMemoryRecord);
+  }
+
+  // ----------------------------------------------------------
+  // health() — Check connectivity to all three stores
+  // ----------------------------------------------------------
+  async health(): Promise<{
+    postgres: boolean;
+    qdrant: boolean;
+    valkey: boolean;
+    overall: boolean;
+  }> {
+    let postgres = false;
+    let qdrant = false;
+    let valkey = false;
+
+    // PostgreSQL
+    try {
+      const res = await this.pg.query('SELECT 1 AS ok');
+      postgres = res.rows[0]?.ok === 1;
+    } catch {
+      postgres = false;
+    }
+
+    // Qdrant
+    try {
+      const collections = await this.qdrant.getCollections();
+      qdrant = Array.isArray(collections.collections);
+    } catch {
+      qdrant = false;
+    }
+
+    // Valkey
+    try {
+      const pong = await this.redis.ping();
+      valkey = pong === 'PONG';
+    } catch {
+      valkey = false;
+    }
+
+    return {
+      postgres,
+      qdrant,
+      valkey,
+      overall: postgres && qdrant && valkey,
+    };
+  }
+
+  // ----------------------------------------------------------
+  // embed() — Call embedding endpoint with deterministic fallback
+  //
+  // Tries the configured endpoint first. On failure (404, network error,
+  // bad response), falls back to a deterministic word-hash embedding so
+  // the system remains operational even when the embedding service is
+  // down or misconfigured. Logs the fallback event but never throws.
+  // ----------------------------------------------------------
+  async embed(text: string): Promise<number[]> {
+    const endpoint = this.config.embedding.endpoint;
+    const apiKey = this.config.embedding.apiKey;
+    const model = this.config.embedding.model ?? 'text-embedding-3-small';
+
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
+        body: JSON.stringify({ input: text, model }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Embedding endpoint ${response.status}`);
+      }
+
+      const json = (await response.json()) as any;
+      if (json.data?.[0]?.embedding) return json.data[0].embedding as number[];
+      if (json.embedding && Array.isArray(json.embedding)) return json.embedding as number[];
+      if (Array.isArray(json)) return json as number[];
+      throw new Error('Unexpected response format');
+    } catch (err) {
+      // Fallback to deterministic embedding — keeps the system alive
+      // when the embedding service is unreachable or misconfigured.
+      if (process.env.CELIUMS_DEBUG) {
+        process.stderr.write(`[celiums-memory] Embedding fallback: ${(err as Error).message}\n`);
+      }
+      return this.deterministicEmbed(text);
+    }
+  }
+
+  /**
+   * Deterministic word-level embedding fallback.
+   * Same algorithm as InMemoryMemoryStore — similar texts produce
+   * similar vectors via word hashing with TF-like weighting.
+   * Not as good as a real embedding model, but keeps the system
+   * operational when the embedding service is down.
+   */
+  private deterministicEmbed(text: string): number[] {
+    const dim = this.vectorDimensions;
+    const vector = new Array(dim).fill(0);
+    const normalized = text.toLowerCase().trim();
+    const stopwords = new Set([
+      'the','a','an','is','are','was','were','be','been','being','have','has','had',
+      'do','does','did','will','would','could','should','may','might','shall','can',
+      'to','of','in','for','on','with','at','by','from','as','into','through','during',
+      'before','after','and','but','or','not','no','so','if','then','than','that','this',
+      'it','its','i','me','my','we','our','you','your','he','she','they','them','his','her','their',
+    ]);
+    const words = normalized.split(/\W+/).filter(w => w.length > 1 && !stopwords.has(w));
+    for (const word of words) {
+      let h1 = 0, h2 = 0, h3 = 0;
+      for (let j = 0; j < word.length; j++) {
+        const c = word.charCodeAt(j);
+        h1 = ((h1 << 5) - h1 + c) | 0;
+        h2 = ((h2 * 31) + c) | 0;
+        h3 = ((h3 ^ c) * 16777619) | 0;
+      }
+      const indices = [
+        Math.abs(h1) % dim, Math.abs(h2) % dim, Math.abs(h3) % dim,
+        Math.abs(h1 ^ h2) % dim, Math.abs(h2 ^ h3) % dim, Math.abs(h1 ^ h3) % dim,
+      ];
+      const weight = 1.0 / Math.max(words.length, 1);
+      for (const idx of indices) vector[idx] += weight;
+    }
+    for (let i = 0; i < words.length - 1; i++) {
+      const bigram = words[i] + '_' + words[i + 1];
+      let bh = 0;
+      for (let j = 0; j < bigram.length; j++) bh = ((bh << 5) - bh + bigram.charCodeAt(j)) | 0;
+      vector[Math.abs(bh) % dim] += 0.5 / Math.max(words.length, 1);
+    }
+    const magnitude = Math.sqrt(vector.reduce((sum, v) => sum + v * v, 0));
+    if (magnitude > 0) for (let i = 0; i < dim; i++) vector[i] /= magnitude;
+    return vector;
+  }
+
+  // ----------------------------------------------------------
+  // getUserProfile() — Get user preferences, timezone, patterns
+  // ----------------------------------------------------------
+  async getUserProfile(
+    userId: string
+  ): Promise<{
+    id: string;
+    externalId: string;
+    timezone: string;
+    communicationStyle: string | null;
+    preferences: Record<string, any>;
+    knownPatterns: string[];
+    sleepSchedule: { start: string; end: string };
+    lastActiveAt: Date;
+  } | null> {
+    const result = await this.pg.query('SELECT * FROM users WHERE id = $1', [
+      userId,
+    ]);
+    if (result.rows.length === 0) return null;
+
+    const row = result.rows[0];
+    return {
+      id: row.id,
+      externalId: row.external_id,
+      timezone: row.timezone,
+      communicationStyle: row.communication_style,
+      preferences: row.preferences ?? {},
+      knownPatterns: row.known_patterns ?? [],
+      sleepSchedule: row.sleep_schedule ?? { start: '23:00', end: '07:00' },
+      lastActiveAt: new Date(row.last_active_at),
+    };
+  }
+
+  // ----------------------------------------------------------
+  // getProjectContext() — Get project goals, conventions, decisions
+  // ----------------------------------------------------------
+  async getProjectContext(
+    projectId: string
+  ): Promise<{
+    id: string;
+    userId: string;
+    name: string;
+    description: string | null;
+    techStack: string[];
+    conventions: string[];
+    currentGoals: string[];
+    recentDecisions: string[];
+    isActive: boolean;
+  } | null> {
+    const result = await this.pg.query(
+      'SELECT * FROM projects WHERE id = $1',
+      [projectId]
+    );
+    if (result.rows.length === 0) return null;
+
+    const row = result.rows[0];
+    return {
+      id: row.id,
+      userId: row.user_id,
+      name: row.name,
+      description: row.description,
+      techStack: row.tech_stack ?? [],
+      conventions: row.conventions ?? [],
+      currentGoals: row.current_goals ?? [],
+      recentDecisions: row.recent_decisions ?? [],
+      isActive: row.is_active,
+    };
+  }
+
+  // ----------------------------------------------------------
+  // Semantic search via Qdrant (used by recall.ts)
+  // ----------------------------------------------------------
+  async semanticSearch(
+    vector: number[],
+    userId: string,
+    projectId: string | null,
+    limit: number = 30,
+    scoreThreshold: number = 0.3
+  ): Promise<Array<{ id: string; score: number }>> {
+    const mustFilters: any[] = [
+      { key: 'user_id', match: { value: userId } },
+      {
+        key: 'state',
+        match: { any: ['active', 'consolidated', 'encoding'] },
+      },
+    ];
+
+    // Include both project-specific and global memories
+    if (projectId) {
+      mustFilters.push({
+        key: 'project_id',
+        match: { any: [projectId, '', 'global'] },
+      });
+    }
+
+    const results = await this.qdrant.search(this.collectionName, {
+      vector: vector,
+      limit: limit,
+      score_threshold: scoreThreshold,
+      filter: {
+        must: mustFilters,
+      },
+      with_payload: false,
+    });
+
+    return results.map((r) => ({
+      id: r.id as string,
+      score: r.score,
+    }));
+  }
+
+  // ----------------------------------------------------------
+  // Full-text search via PostgreSQL trigram (used by recall.ts)
+  // ----------------------------------------------------------
+  async fullTextSearch(
+    query: string,
+    userId: string,
+    projectId: string | null,
+    limit: number = 20
+  ): Promise<Array<{ id: string; score: number }>> {
+    const sql = projectId
+      ? `SELECT id, similarity(content, $1) AS score
+         FROM memories
+         WHERE user_id = $2
+           AND (project_id = $3 OR project_id = '' OR project_id IS NULL OR scope = 'global')
+           AND state NOT IN ('decayed')
+           AND similarity(content, $1) > 0.05
+         ORDER BY score DESC
+         LIMIT $4`
+      : `SELECT id, similarity(content, $1) AS score
+         FROM memories
+         WHERE user_id = $2
+           AND state NOT IN ('decayed')
+           AND similarity(content, $1) > 0.05
+         ORDER BY score DESC
+         LIMIT $3`;
+
+    const params = projectId
+      ? [query, userId, projectId, limit]
+      : [query, userId, limit];
+
+    const result = await this.pg.query(sql, params);
+    return result.rows.map((r: any) => ({
+      id: r.id,
+      score: parseFloat(r.score),
+    }));
+  }
+
+  // ----------------------------------------------------------
+  // getMemoriesByIds() — Batch fetch (used by recall.ts)
+  // ----------------------------------------------------------
+  async getMemoriesByIds(ids: string[]): Promise<MemoryRecord[]> {
+    if (ids.length === 0) return [];
+
+    const result = await this.pg.query(
+      'SELECT * FROM memories WHERE id = ANY($1)',
+      [ids]
+    );
+    return result.rows.map(rowToMemoryRecord);
+  }
+
+  // ----------------------------------------------------------
+  // getRecentSessionMemories() — Get recent memories for context
+  // ----------------------------------------------------------
+  async getRecentSessionMemories(
+    userId: string,
+    sessionId: string,
+    limit: number = 20
+  ): Promise<MemoryRecord[]> {
+    const result = await this.pg.query(
+      `SELECT * FROM memories
+       WHERE user_id = $1 AND session_id = $2
+       ORDER BY created_at DESC
+       LIMIT $3`,
+      [userId, sessionId, limit]
+    );
+    return result.rows.map(rowToMemoryRecord);
+  }
+
+  // ----------------------------------------------------------
+  // findSimilarMemories() — For deduplication during consolidation
+  // ----------------------------------------------------------
+  async findSimilarMemories(
+    vector: number[],
+    userId: string,
+    threshold: number = 0.92,
+    limit: number = 5
+  ): Promise<Array<{ id: string; score: number }>> {
+    const results = await this.qdrant.search(this.collectionName, {
+      vector: vector,
+      limit: limit,
+      score_threshold: threshold,
+      filter: {
+        must: [{ key: 'user_id', match: { value: userId } }],
+      },
+      with_payload: false,
+    });
+
+    return results.map((r) => ({
+      id: r.id as string,
+      score: r.score,
+    }));
+  }
+
+  // ----------------------------------------------------------
+  // updateMemory() — Partial update of a memory record
+  // ----------------------------------------------------------
+  async updateMemory(
+    id: string,
+    updates: Partial<
+      Pick<
+        MemoryRecord,
+        | 'content'
+        | 'summary'
+        | 'importance'
+        | 'emotionalValence'
+        | 'emotionalArousal'
+        | 'emotionalDominance'
+        | 'confidence'
+        | 'strength'
+        | 'state'
+        | 'consolidatedAt'
+        | 'consolidationCount'
+        | 'linkedMemoryIds'
+        | 'tags'
+        | 'entities'
+      >
+    >
+  ): Promise<MemoryRecord | null> {
+    const setClauses: string[] = ['updated_at = NOW()'];
+    const values: any[] = [];
+    let paramIndex = 1;
+
+    const fieldMap: Record<string, string> = {
+      content: 'content',
+      summary: 'summary',
+      importance: 'importance',
+      emotionalValence: 'emotional_valence',
+      emotionalArousal: 'emotional_arousal',
+      emotionalDominance: 'emotional_dominance',
+      confidence: 'confidence',
+      strength: 'strength',
+      state: 'state',
+      consolidatedAt: 'consolidated_at',
+      consolidationCount: 'consolidation_count',
+      linkedMemoryIds: 'linked_memory_ids',
+      tags: 'tags',
+      entities: 'entities',
+    };
+
+    for (const [key, dbCol] of Object.entries(fieldMap)) {
+      if ((updates as any)[key] !== undefined) {
+        let val = (updates as any)[key];
+        if (key === 'entities') val = JSON.stringify(val);
+        setClauses.push(`${dbCol} = $${paramIndex}`);
+        values.push(val);
+        paramIndex++;
+      }
+    }
+
+    values.push(id);
+
+    const sql = `UPDATE memories SET ${setClauses.join(', ')} WHERE id = $${paramIndex} RETURNING *`;
+    const result = await this.pg.query(sql, values);
+    if (result.rows.length === 0) return null;
+
+    const record = rowToMemoryRecord(result.rows[0]);
+
+    // If content changed, re-embed
+    if (updates.content) {
+      const vector = await this.embed(updates.content);
+      await this.qdrant.upsert(this.collectionName, {
+        wait: true,
+        points: [
+          {
+            id: id,
+            vector: vector,
+            payload: {
+              user_id: record.userId,
+              project_id: record.projectId ?? '',
+              session_id: record.sessionId ?? '',
+              memory_type: record.memoryType,
+              scope: record.scope,
+              importance: record.importance,
+              state: record.state,
+              strength: record.strength,
+              summary: record.summary,
+              last_retrieved_at: record.lastRetrievedAt.toISOString(),
+            },
+          },
+        ],
+      });
+    } else {
+      // Update payload only
+      const payloadUpdates: Record<string, any> = {};
+      if (updates.importance !== undefined)
+        payloadUpdates.importance = updates.importance;
+      if (updates.state !== undefined) payloadUpdates.state = updates.state;
+      if (updates.strength !== undefined)
+        payloadUpdates.strength = updates.strength;
+      if (updates.summary !== undefined)
+        payloadUpdates.summary = updates.summary;
+
+      if (Object.keys(payloadUpdates).length > 0) {
+        try {
+          await this.qdrant.setPayload(this.collectionName, {
+            points: [id],
+            payload: payloadUpdates,
+          });
+        } catch (err: any) {
+          console.error('[MemoryStore] Qdrant payload update error:', err.message);
+        }
+      }
+    }
+
+    // Invalidate cache
+    await this.redis.del(`${this.valkeyPrefix}${id}`);
+
+    return record;
+  }
+
+  // ----------------------------------------------------------
+  // updateSession() — Update session record
+  // ----------------------------------------------------------
+  async updateSession(
+    sessionId: string,
+    updates: {
+      endedAt?: Date;
+      isConsolidated?: boolean;
+      consolidationStartedAt?: Date;
+      consolidationCompletedAt?: Date;
+      summary?: string;
+      messageCount?: number;
+    }
+  ): Promise<void> {
+    const setClauses: string[] = [];
+    const values: any[] = [];
+    let paramIndex = 1;
+
+    if (updates.endedAt !== undefined) {
+      setClauses.push(`ended_at = $${paramIndex++}`);
+      values.push(updates.endedAt);
+    }
+    if (updates.isConsolidated !== undefined) {
+      setClauses.push(`is_consolidated = $${paramIndex++}`);
+      values.push(updates.isConsolidated);
+    }
+    if (updates.consolidationStartedAt !== undefined) {
+      setClauses.push(`consolidation_started_at = $${paramIndex++}`);
+      values.push(updates.consolidationStartedAt);
+    }
+    if (updates.consolidationCompletedAt !== undefined) {
+      setClauses.push(`consolidation_completed_at = $${paramIndex++}`);
+      values.push(updates.consolidationCompletedAt);
+    }
+    if (updates.summary !== undefined) {
+      setClauses.push(`summary = $${paramIndex++}`);
+      values.push(updates.summary);
+    }
+    if (updates.messageCount !== undefined) {
+      setClauses.push(`message_count = $${paramIndex++}`);
+      values.push(updates.messageCount);
+    }
+
+    if (setClauses.length === 0) return;
+
+    values.push(sessionId);
+    await this.pg.query(
+      `UPDATE sessions SET ${setClauses.join(', ')} WHERE id = $${paramIndex}`,
+      values
+    );
+  }
+
+  // ----------------------------------------------------------
+  // Bulk update for lifecycle processing
+  // ----------------------------------------------------------
+  async bulkUpdateLifecycle(
+    updates: Array<{
+      id: string;
+      importance: number;
+      strength: number;
+      state: MemoryState;
+    }>
+  ): Promise<void> {
+    if (updates.length === 0) return;
+
+    const client = await this.pg.connect();
+    try {
+      await client.query('BEGIN');
+
+      for (const u of updates) {
+        await client.query(
+          `UPDATE memories
+           SET importance = $2, strength = $3, state = $4, updated_at = NOW()
+           WHERE id = $1`,
+          [u.id, u.importance, u.strength, u.state]
+        );
+      }
+
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    // Batch update Qdrant payloads
+    for (const u of updates) {
+      try {
+        await this.qdrant.setPayload(this.collectionName, {
+          points: [u.id],
+          payload: {
+            importance: u.importance,
+            strength: u.strength,
+            state: u.state,
+          },
+        });
+      } catch (err: any) {
+        console.error(
+          `[MemoryStore] Qdrant bulk update error for ${u.id}:`,
+          err.message
+        );
+      }
+    }
+
+    // Invalidate caches
+    const pipeline = this.redis.pipeline();
+    for (const u of updates) {
+      pipeline.del(`${this.valkeyPrefix}${u.id}`);
+    }
+    await pipeline.exec();
+  }
+
+  // ============================================================
+  // Per-user circadian profile (user_profiles table) — added 2026-04-11
+  // ============================================================
+
+  /**
+   * Load a user's circadian profile + persisted PAD/factors.
+   * Returns null if the user has no row yet.
+   */
+  async loadCircadianProfile(userId: string): Promise<{
+    userId: string;
+    circadian: {
+      timezoneIana: string;
+      timezoneOffset: number;
+      peakHour: number;
+      amplitude: number;
+      baseArousal: number;
+      lethargyRate: number;
+      hemisphere: 1 | -1;
+      seasonalAmplitude: number;
+    };
+    pad: { pleasure: number; arousal: number; dominance: number };
+    factors: {
+      sessionActivity: number;
+      stressLevel: number;
+      caffeineLevel: number;
+      sleepDebt: number;
+      cognitiveLoad: number;
+      emotionalAccumulator: number;
+      exerciseLevel: number;
+      motivationTrend: number;
+    };
+    lastInteraction: Date;
+    interactionCount: number;
+    communicationStyle: string;
+    preferences: Record<string, any>;
+    knownPatterns: string[];
+    createdAt: Date;
+    updatedAt: Date;
+  } | null> {
+    const r = await this.pg.query(
+      'SELECT * FROM user_profiles WHERE user_id = $1',
+      [userId],
+    );
+    if (r.rows.length === 0) return null;
+    const row = r.rows[0];
+    return {
+      userId: row.user_id,
+      circadian: {
+        timezoneIana: row.timezone_iana,
+        timezoneOffset: Number(row.timezone_offset),
+        peakHour: Number(row.peak_hour),
+        amplitude: Number(row.amplitude),
+        baseArousal: Number(row.base_arousal),
+        lethargyRate: Number(row.lethargy_rate),
+        hemisphere: (Number(row.hemisphere) === -1 ? -1 : 1),
+        seasonalAmplitude: Number(row.seasonal_amp),
+      },
+      pad: {
+        pleasure: Number(row.pad_pleasure),
+        arousal: Number(row.pad_arousal),
+        dominance: Number(row.pad_dominance),
+      },
+      factors: {
+        sessionActivity: Number(row.session_activity),
+        stressLevel: Number(row.stress_level),
+        caffeineLevel: Number(row.caffeine_level),
+        sleepDebt: Number(row.sleep_debt),
+        cognitiveLoad: Number(row.cognitive_load),
+        emotionalAccumulator: Number(row.emotional_acc),
+        exerciseLevel: Number(row.exercise_level),
+        motivationTrend: Number(row.motivation_trend),
+      },
+      lastInteraction: new Date(row.last_interaction),
+      interactionCount: Number(row.interaction_count),
+      communicationStyle: row.communication_style,
+      preferences: row.preferences ?? {},
+      knownPatterns: row.known_patterns ?? [],
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at),
+    };
+  }
+
+  /**
+   * Get-or-create. If the profile doesn't exist, insert with sane defaults
+   * (UTC timezone, peakHour 11) and return it.
+   */
+  async ensureCircadianProfile(userId: string) {
+    const existing = await this.loadCircadianProfile(userId);
+    if (existing) return existing;
+    await this.pg.query(
+      `INSERT INTO user_profiles (user_id) VALUES ($1)
+       ON CONFLICT (user_id) DO NOTHING`,
+      [userId],
+    );
+    const created = await this.loadCircadianProfile(userId);
+    if (!created) {
+      throw new Error(`Failed to create user_profile for ${userId}`);
+    }
+    return created;
+  }
+
+  /**
+   * Update circadian config (timezone, peakHour, amplitude, etc.).
+   * Only the fields present in `patch` are touched. Returns the updated row.
+   */
+  async updateCircadianConfig(
+    userId: string,
+    patch: Partial<{
+      timezoneIana: string;
+      timezoneOffset: number;
+      peakHour: number;
+      amplitude: number;
+      baseArousal: number;
+      lethargyRate: number;
+      hemisphere: 1 | -1;
+      seasonalAmplitude: number;
+    }>,
+  ) {
+    // Make sure the row exists first
+    await this.ensureCircadianProfile(userId);
+
+    const sets: string[] = [];
+    const vals: any[] = [userId];
+    let i = 2;
+    const map: Record<string, string> = {
+      timezoneIana: 'timezone_iana',
+      timezoneOffset: 'timezone_offset',
+      peakHour: 'peak_hour',
+      amplitude: 'amplitude',
+      baseArousal: 'base_arousal',
+      lethargyRate: 'lethargy_rate',
+      hemisphere: 'hemisphere',
+      seasonalAmplitude: 'seasonal_amp',
+    };
+    for (const [k, col] of Object.entries(map)) {
+      if ((patch as any)[k] !== undefined) {
+        sets.push(`${col} = $${i++}`);
+        vals.push((patch as any)[k]);
+      }
+    }
+    if (sets.length === 0) {
+      return this.loadCircadianProfile(userId);
+    }
+    await this.pg.query(
+      `UPDATE user_profiles SET ${sets.join(', ')} WHERE user_id = $1`,
+      vals,
+    );
+    return this.loadCircadianProfile(userId);
+  }
+
+  /**
+   * #165 Layer B — resolve the user's REAL timezone from multi-signal
+   * input (browser geo / IP+MaxMind / behavior / stored) and persist it
+   * WITH provenance (tz_source, tz_confidence, tz_vpn_suspected). This is
+   * the seam the request/signup path calls once it has IP + optional
+   * browser-geo; it closes the root bug where every profile defaulted to
+   * UTC because nothing ever captured the user's zone.
+   *
+   * No-downgrade rule: a signal-less call resolves to source='utc' and is
+   * a NO-OP write — we never clobber a previously good tz with a guess.
+   * timezone_offset is stored in HOURS (column contract; computeCircadianFor
+   * expects hours, fractional ok for India/Nepal).
+   */
+  async resolveAndPersistTimezone(
+    userId: string,
+    signals: TzSignals,
+  ): Promise<ResolvedTz> {
+    await this.ensureCircadianProfile(userId);
+
+    // Pull the VPN-immune behaviour signal + current provenance in one
+    // read. Behaviour auto-augments every resolution (the caller need
+    // not know about it) and self-throttles writes (safe to call
+    // fire-and-forget on every request).
+    const cur = await this.pg.query(
+      `SELECT activity_hist, tz_confidence, tz_last_resolved
+         FROM user_profiles WHERE user_id = $1`,
+      [userId],
+    );
+    const row = cur.rows[0] as
+      | { activity_hist?: number[]; tz_confidence?: string | number; tz_last_resolved?: string | null }
+      | undefined;
+
+    const rhythm = inferActivityRhythm(row?.activity_hist ?? null);
+    const augmented: TzSignals = { ...signals };
+    if (!augmented.behaviorIana && rhythm.offsetMinutes !== null && rhythm.confidence >= 0.4) {
+      augmented.behaviorIana = offsetToEtcZone(rhythm.offsetMinutes);
+    }
+
+    const r = resolveTimezone(augmented);
+    if (r.source === 'utc') return r; // never clobber a known tz with a fallback
+
+    // The Etc/GMT zone fed to the resolver is whole-hour only; when
+    // behaviour actually WON, persist the estimator's EXACT offset (it
+    // keeps half-hour zones like India/Nepal correct). tzIana stays the
+    // Etc label (fixed-offset, no DST — correct for a behavioural prior).
+    const persistOffsetHours =
+      (r.source === 'behavior' && rhythm.offsetMinutes !== null)
+        ? rhythm.offsetMinutes / 60
+        : r.offsetMinutes / 60;
+
+    // Self-throttle: if we resolved recently (<6h) at >= this confidence,
+    // skip the write — avoids churn under fire-and-forget per-request use.
+    const prevConf = row?.tz_confidence != null ? Number(row.tz_confidence) : 0;
+    const lastTs = row?.tz_last_resolved ? new Date(row.tz_last_resolved).getTime() : 0;
+    const freshlyResolved = lastTs > 0 && Date.now() - lastTs < 6 * 3_600_000;
+    if (freshlyResolved && prevConf >= r.confidence) return r;
+
+    await this.pg.query(
+      `UPDATE user_profiles
+          SET timezone_iana = $2,
+              timezone_offset = $3,
+              tz_source = $4,
+              tz_confidence = $5,
+              tz_vpn_suspected = $6,
+              tz_last_resolved = NOW()
+        WHERE user_id = $1`,
+      [userId, r.tzIana, persistOffsetHours, r.source, r.confidence, r.vpnSuspected],
+    );
+    return r;
+  }
+
+  /**
+   * Persist a user's PAD vector after the limbic engine processes an event.
+   * Also bumps last_interaction and interaction_count.
+   */
+  async persistUserPad(
+    userId: string,
+    pad: { pleasure: number; arousal: number; dominance: number },
+  ): Promise<void> {
+    await this.pg.query(
+      `UPDATE user_profiles
+         SET pad_pleasure = $2,
+             pad_arousal = $3,
+             pad_dominance = $4,
+             last_interaction = NOW(),
+             interaction_count = interaction_count + 1,
+             ${ACTIVITY_BUMP_SQL}
+       WHERE user_id = $1`,
+      [userId, pad.pleasure, pad.arousal, pad.dominance],
+    );
+  }
+
+  /**
+   * Persist updated factor accumulators (caffeine, stress, etc.).
+   */
+  async persistUserFactors(
+    userId: string,
+    factors: {
+      sessionActivity: number;
+      stressLevel: number;
+      caffeineLevel: number;
+      sleepDebt: number;
+      cognitiveLoad: number;
+      emotionalAccumulator: number;
+      exerciseLevel: number;
+      motivationTrend: number;
+    },
+  ): Promise<void> {
+    await this.pg.query(
+      `UPDATE user_profiles
+         SET session_activity = $2,
+             stress_level = $3,
+             caffeine_level = $4,
+             sleep_debt = $5,
+             cognitive_load = $6,
+             emotional_acc = $7,
+             exercise_level = $8,
+             motivation_trend = $9
+       WHERE user_id = $1`,
+      [
+        userId,
+        factors.sessionActivity,
+        factors.stressLevel,
+        factors.caffeineLevel,
+        factors.sleepDebt,
+        factors.cognitiveLoad,
+        factors.emotionalAccumulator,
+        factors.exerciseLevel,
+        factors.motivationTrend,
+      ],
+    );
+  }
+
+  /**
+   * Lightweight last_interaction bump (no PAD change). Used by /recall when
+   * we want to count the user as active without altering emotional state.
+   */
+  async touchUserInteraction(userId: string): Promise<void> {
+    await this.pg.query(
+      `UPDATE user_profiles
+         SET last_interaction = NOW(),
+             interaction_count = interaction_count + 1,
+             ${ACTIVITY_BUMP_SQL}
+       WHERE user_id = $1`,
+      [userId],
+    );
+  }
+
+  // ----------------------------------------------------------
+  // Cleanup / shutdown
+  // ----------------------------------------------------------
+  async shutdown(): Promise<void> {
+    await this.pg.end();
+    this.redis.disconnect();
+  }
+}

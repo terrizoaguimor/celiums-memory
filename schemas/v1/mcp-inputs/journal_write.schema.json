@@ -1,0 +1,68 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://celiums.ai/schemas/v1/mcp-inputs/journal_write.schema.json",
+  "title": "journal_write.input",
+  "description": "Input schema for the MCP `journal_write` tool. Strict mode. P0-C: tags MUST be string[]; preceded_by MUST be UUID[]. Schema enforces both at the MCP boundary so handlers don't have to repeat the check.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["entry_type", "content"],
+  "properties": {
+    "entry_type": {
+      "type": "string",
+      "enum": ["reflection", "decision", "lesson", "belief", "emotion", "arc", "doubt"]
+    },
+    "content": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+    },
+    "preceded_by": {
+      "type": "array",
+      "maxItems": 16,
+      "items": { "$ref": "https://celiums.ai/schemas/v1/common/uuid.schema.json" }
+    },
+    "valence": {
+      "type": "number",
+      "minimum": -1,
+      "maximum": 1
+    },
+    "valence_reason": {
+      "type": "string",
+      "maxLength": 512
+    },
+    "tags": {
+      "type": "array",
+      "maxItems": 32,
+      "items": { "$ref": "https://celiums.ai/schemas/v1/common/string-tag.schema.json" }
+    },
+    "visibility": {
+      "type": "string",
+      "enum": ["self", "user-shared"]
+    },
+    "referenced_user_memory": {
+      "type": "array",
+      "maxItems": 16,
+      "items": { "$ref": "https://celiums.ai/schemas/v1/common/uuid.schema.json" }
+    },
+    "conversation_id": {
+      "$ref": "https://celiums.ai/schemas/v1/common/uuid.schema.json"
+    },
+    "conversationId": {
+      "$ref": "https://celiums.ai/schemas/v1/common/uuid.schema.json"
+    },
+    "valenceReason": { "type": "string", "maxLength": 512 },
+    "precededBy": {
+      "type": "array",
+      "maxItems": 16,
+      "items": { "$ref": "https://celiums.ai/schemas/v1/common/uuid.schema.json" }
+    },
+    "referencedUserMemory": {
+      "type": "array",
+      "maxItems": 16,
+      "items": { "$ref": "https://celiums.ai/schemas/v1/common/uuid.schema.json" }
+    },
+    "agentId": {
+      "$ref": "https://celiums.ai/schemas/v1/common/agent-id.schema.json"
+    }
+  }
+}

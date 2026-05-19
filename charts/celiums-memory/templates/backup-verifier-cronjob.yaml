@@ -1,0 +1,68 @@
+{{- if and .Values.backup .Values.backup.verifier.enabled -}}
+# ADR-014 §"Backup verification" — nightly restore test.
+# Spins up a throwaway Postgres pod, restores the latest incremental,
+# runs smoke queries, tears down. Emits celiums_backup_verify_success
+# metric on success; alerts fire on absent_over_time.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "celiums-memory.fullname" . }}-backup-verifier
+  labels:
+    {{- include "celiums-memory.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.verifier.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 7
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            {{- include "celiums-memory.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: backup-verifier
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "celiums-memory.serviceAccountName" . }}
+          {{- with .Values.image.pullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: verifier
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              securityContext:
+                {{- toYaml .Values.securityContext | nindent 16 }}
+              command: ["node", "/app/dist/scripts/backup-verify.js"]
+              env:
+                # Verifier connects to pgBackRest archive + spawns a
+                # throwaway target. Uses a SEPARATE credentials Secret
+                # than the production engine — verifier role has only
+                # what it needs to restore + smoke-query a sandbox.
+                - name: CELIUMS_BACKUP_ARCHIVE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.backup.verifier.credentialsSecret }}
+                      key: archive_url
+                - name: CELIUMS_BACKUP_S3_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.backup.verifier.credentialsSecret }}
+                      key: s3_key
+                - name: CELIUMS_BACKUP_S3_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.backup.verifier.credentialsSecret }}
+                      key: s3_secret
+                - name: CELIUMS_BACKUP_STANZA
+                  value: {{ .Values.backup.verifier.stanza | quote }}
+                - name: CELIUMS_BACKUP_PROMETHEUS_PUSHGATEWAY
+                  value: {{ .Values.backup.verifier.pushgatewayUrl | quote }}
+              resources:
+                {{- toYaml .Values.backup.verifier.resources | nindent 16 }}
+{{- end }}

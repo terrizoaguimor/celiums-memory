@@ -1,0 +1,66 @@
+apiVersion: v2
+name: celiums-memory
+description: |
+  Celiums Memory — persistent memory infrastructure for AI agents.
+  Tier 3 (Enterprise) Helm chart per ADR-013. Production-grade K8s
+  deployment with optional in-cluster Postgres + Qdrant + Valkey
+  sub-charts, or pointer-to-external-managed for the same.
+
+# Chart version is independent of app version, but pinned per release.
+# When you bump appVersion, bump the chart minor.
+version: 0.1.0
+appVersion: "1.3.0"
+
+type: application
+kubeVersion: ">=1.27.0"
+
+home: https://celiums.ai
+icon: https://celiums.ai/logo.svg
+sources:
+  - https://github.com/celiums/celiums-memory
+
+maintainers:
+  - name: Mario Gutierrez
+    email: hello@celiums.ai
+    url: https://celiums.ai
+
+keywords:
+  - memory
+  - ai-agents
+  - mcp
+  - cognitive-architecture
+  - persistent-memory
+  - postgres
+  - qdrant
+
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/containsSecurityUpdates: "false"
+  artifacthub.io/category: ai-machine-learning
+
+# Optional sub-charts. ALL DISABLED BY DEFAULT — operators on
+# managed Postgres / Qdrant / Valkey (the production posture) point
+# the engine at external addresses via values.yaml. Enabling these
+# spins up in-cluster instances suitable for staging/eval.
+dependencies:
+  - name: postgresql
+    version: "15.5.x"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: postgresql.enabled
+    tags:
+      - in-cluster
+      - database
+  - name: qdrant
+    version: "0.7.x"
+    repository: "https://qdrant.github.io/qdrant-helm"
+    condition: qdrant.enabled
+    tags:
+      - in-cluster
+      - vector
+  - name: valkey
+    version: "1.x"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: valkey.enabled
+    tags:
+      - in-cluster
+      - cache

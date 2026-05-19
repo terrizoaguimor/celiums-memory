@@ -1,0 +1,14 @@
+{
+  "name": "celiums-ethics-harvester",
+  "version": "2.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "pnpm exec tsx src/pipeline.ts",
+    "dev": "pnpm exec tsx --watch src/pipeline.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,12 @@
+dependencies:
+- name: postgresql
+  repository: https://charts.bitnami.com/bitnami
+  version: 15.5.38
+- name: qdrant
+  repository: https://qdrant.github.io/qdrant-helm
+  version: 0.7.6
+- name: valkey
+  repository: https://charts.bitnami.com/bitnami
+  version: 1.0.3
+digest: sha256:70fe021c52098296fd279235a6fce5f00a248ddac851c2bfc74227dac2e6103c
+generated: "2026-05-12T14:09:18.092864-05:00"

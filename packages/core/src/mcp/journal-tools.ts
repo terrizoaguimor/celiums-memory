@@ -1,0 +1,943 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Celiums Solutions LLC
+
+/**
+ * @celiums/memory MCP — Journal tools
+ *
+ * Persistent agent persona across discontinuous invocations. This is NOT
+ * autobiographical memory of the human user — it is a journal kept by the
+ * MODEL itself (e.g. claude-opus-4-7). Different agent_ids own different
+ * journals and they DO NOT mix. First-person voice in entries is a
+ * convention that makes the system operational, like a method actor
+ * writing in their character's voice; not a metaphysical claim that the
+ * agent has continuous selfhood.
+ *
+ * Lives in memory_db (NOT knowledge_db) — separation is critical because
+ * agent reflections are about the agent, not about the human user's
+ * remembered facts.
+ *
+ * Five tools:
+ *   journal_write       — append a new entry (auto-embedded, importance-scored)
+ *   journal_recall      — semantic + tag + type search; default-excludes superseded
+ *   journal_arc         — Opus builds a coherent arc with anti-confabulation guardrails
+ *   journal_introspect  — Opus answers a self-question grounded in entries only
+ *   journal_dialogue    — the user replies to a user-shared entry; agent reacts
+ *
+ * Succession (Option C): a new model never claims it lived an old model's
+ * entries. Instead, journal_recall accepts `inherit_from` and returns those
+ * entries with `inherited_from` set in the response — "read but not lived."
+ * If the new model wants to adopt a stance, it writes its own entry with
+ * `preceded_by` pointing at the predecessor's entry.
+ */
+
+import { randomUUID } from 'node:crypto';
+import * as nodeCrypto from 'node:crypto';
+import type { RegisteredTool, McpToolHandler, McpToolResult, McpToolContext } from './types.js';
+import { llmChat, llmEmbed, llmConfigured } from '../llm-client.js';
+import { writeAuditEvent } from './security-audit.js';
+import { journalWrite as journalWriteCore, type JournalWriteInput } from '../lib/journal-write.js';
+import { chainedInsert } from '../lib/journal-chain.js';
+import { LibraryInvalidInput } from '../lib/types.js';
+import { isAdminOrOwner } from '../lib/roles.js';
+
+// SECURITY (P0-B 2026-05-12): agent_id format constraint for inherit_from.
+// Inheritance allows reading another agent's journal — we restrict the agent_id
+// shape so attackers can't smuggle SQL fragments, traversal sequences, or
+// pathological strings through. The handler also relies on parameterised
+// queries, but defence-in-depth is cheap here.
+const AGENT_ID_RE = /^[A-Za-z0-9_:.\-]{1,128}$/;
+
+/** Hard upper bound on inheritance traversal depth. The current handler does
+ *  NOT recurse (it reads a single agent_id per call), so this is documentation
+ *  + a guard for any future code path that chains inheritance. Recursive
+ *  lookup attacks ("walk every predecessor of every predecessor") are blocked
+ *  at this depth regardless of caller. Per REDISING §4.2 acceptance criteria. */
+const MAX_INHERIT_DEPTH = 5;
+
+// Journal tools call an LLM (configurable via CELIUMS_LLM_* env vars). The
+// arc tool also embeds text. Both go through the generic OpenAI-compatible
+// llm-client — works with OpenAI, Ollama, OpenRouter, Together, etc.
+const ARC_MODEL = process.env['CELIUMS_JOURNAL_MODEL'];
+
+export const JOURNAL_SCHEMA_SQL = `
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE IF NOT EXISTS agent_journal (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  agent_id        text NOT NULL,
+  session_id      uuid NOT NULL,
+  written_at      timestamptz NOT NULL DEFAULT now(),
+  entry_type      text NOT NULL CHECK (entry_type IN
+    ('reflection','decision','lesson','belief','emotion','arc','doubt')),
+  content         text NOT NULL,
+  preceded_by     uuid[] DEFAULT '{}',
+  valence         real CHECK (valence BETWEEN -1 AND 1),
+  importance      real CHECK (importance BETWEEN 0 AND 1),
+  embedding       vector(1024),
+  tags            text[] DEFAULT '{}',
+  visibility      text NOT NULL DEFAULT 'self' CHECK (visibility IN ('self','user-shared')),
+  referenced_user_memory text[] DEFAULT '{}',
+  inherited_from  text
+);
+
+CREATE INDEX IF NOT EXISTS idx_journal_agent_session ON agent_journal(agent_id, session_id, written_at DESC);
+CREATE INDEX IF NOT EXISTS idx_journal_agent_type ON agent_journal(agent_id, entry_type);
+CREATE INDEX IF NOT EXISTS idx_journal_tags ON agent_journal USING GIN (tags);
+CREATE INDEX IF NOT EXISTS idx_journal_embedding ON agent_journal USING hnsw (embedding vector_cosine_ops) WITH (m=16, ef_construction=64);
+
+CREATE TABLE IF NOT EXISTS journal_supersession (
+  id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  original_entry_id   uuid NOT NULL REFERENCES agent_journal(id) ON DELETE CASCADE,
+  new_entry_id        uuid NOT NULL REFERENCES agent_journal(id) ON DELETE CASCADE,
+  relation            text NOT NULL CHECK (relation IN ('superseded','nuanced','reaffirmed','recanted')),
+  written_at          timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_supersession_original ON journal_supersession(original_entry_id);
+
+-- v1.1: conversation grouping. session_id is generated per tool invocation by
+-- the current dispatcher, so it cannot distinguish thought development inside
+-- one conversation from criterion change across conversations. conversation_id
+-- is the stable per-conversation grouping key. NULL = legacy/unspecified.
+ALTER TABLE agent_journal ADD COLUMN IF NOT EXISTS conversation_id uuid;
+CREATE INDEX IF NOT EXISTS idx_journal_conversation
+  ON agent_journal(agent_id, conversation_id, written_at)
+  WHERE conversation_id IS NOT NULL;
+
+-- v1.1: short, free-form justification for the valence value. Lets a future
+-- journal_arc detect WHY valence drifted, not just THAT it drifted. NULL = not
+-- provided; never enforced.
+ALTER TABLE agent_journal ADD COLUMN IF NOT EXISTS valence_reason text;
+
+-- v1.2.6: chain SHA. Each entry hashes (id, agent_id, content, written_at, prev_hash)
+-- and links to the previous entry of the same agent. Tampering with the DB
+-- (post-hoc INSERT/UPDATE/DELETE bypassing the handler) breaks the chain and is
+-- detected by journal_verify_chain. Genesis entry per agent_id has prev_hash NULL.
+ALTER TABLE agent_journal ADD COLUMN IF NOT EXISTS prev_hash text;
+ALTER TABLE agent_journal ADD COLUMN IF NOT EXISTS hash text;
+CREATE INDEX IF NOT EXISTS agent_journal_chain_idx ON agent_journal (agent_id, written_at, id);
+`;
+
+let schemaReady = false;
+async function ensureSchema(ctx: McpToolContext): Promise<unknown> {
+  const pool = ctx.pool as { query: (sql: string, params?: any[]) => Promise<any> } | undefined;
+  if (!pool) throw new Error('journal tools require pool in McpToolContext (memory_db)');
+  if (!schemaReady) {
+    await pool.query(JOURNAL_SCHEMA_SQL);
+    schemaReady = true;
+  }
+  return pool;
+}
+
+function ok(text: string): McpToolResult { return { content: [{ type: 'text', text }] }; }
+function errR(text: string): McpToolResult { return { content: [{ type: 'text', text }], isError: true }; }
+function asText(p: unknown): string { return typeof p === 'string' ? p : JSON.stringify(p, null, 2); }
+
+function getAgentId(ctx: McpToolContext): string {
+  return ctx.agentId
+    ?? process.env['CELIUMS_AGENT_ID']
+    ?? 'claude-opus-4-7';
+}
+
+function getSessionId(ctx: McpToolContext): string {
+  return ctx.sessionId
+    ?? process.env['CELIUMS_SESSION_ID']
+    ?? randomUUID();
+}
+
+function getConversationId(args: Record<string, any>, ctx: McpToolContext): string | null {
+  const raw = args.conversation_id ?? args.conversationId ?? ctx.conversationId ?? process.env['CELIUMS_CONVERSATION_ID'];
+  if (typeof raw !== 'string') return null;
+  const v = raw.trim();
+  return v.length > 0 ? v : null;
+}
+
+function clampValenceReason(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const v = raw.trim();
+  if (v.length === 0) return null;
+  return v.length > 500 ? v.slice(0, 500) : v;
+}
+
+function toPgVector(v: number[]): string { return `[${v.join(',')}]`; }
+
+const VALID_ENTRY_TYPES = new Set(['reflection','decision','lesson','belief','emotion','arc','doubt']);
+const VALID_VISIBILITY = new Set(['self','user-shared']);
+const VALID_RELATION = new Set(['superseded','nuanced','reaffirmed','recanted']);
+
+function computeImportance(entryType: string): number {
+  let base = 0.5;
+  if (entryType === 'decision' || entryType === 'lesson' || entryType === 'arc') base += 0.3;
+  if (entryType === 'emotion') base -= 0.2;
+  return Math.max(0, Math.min(1, base));
+}
+
+async function embedText(text: string, timeoutMs = 30_000): Promise<number[] | null> {
+  try {
+    return await llmEmbed(text, { timeoutMs });
+  } catch {
+    return null;
+  }
+}
+
+async function llm(messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>, model: string | undefined = ARC_MODEL, maxTokens = 3000): Promise<string> {
+  return llmChat(messages, { model, maxTokens });
+}
+
+function parseJsonLoose<T = any>(raw: string): T | null {
+  const m = raw.match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  try { return JSON.parse(m[0]) as T; } catch { return null; }
+}
+
+// ─── handlers ─────────────────────────────────────────────────────────
+
+/**
+ * MCP transport adapter for `journal_write`. The real implementation lives
+ * in lib/journal-write.ts — library-first per the ADN pivot.
+ *
+ * This wrapper:
+ *   1. Ensures the journal schema exists (best-effort on first call)
+ *   2. Normalises camelCase args (entryType → entry_type, etc.) so the MCP
+ *      surface stays backwards-compatible with older clients
+ *   3. Calls the core library function
+ *   4. Maps LibraryInvalidInput → McpToolResult errR
+ */
+const handleWrite: McpToolHandler = async (args, ctx) => {
+  await ensureSchema(ctx);
+
+  // Accept both snake_case (MCP convention) and camelCase (some legacy
+  // clients) at the transport boundary. Normalise to the library shape.
+  const input: JournalWriteInput = {
+    entry_type: (args.entry_type ?? (args as any).entryType) as any,
+    content: String(args.content ?? ''),
+    preceded_by: (args.preceded_by ?? (args as any).precededBy) as any,
+    valence: args.valence as any,
+    valence_reason: (args.valence_reason ?? (args as any).valenceReason) as any,
+    tags: args.tags as any,
+    visibility: args.visibility as any,
+    referenced_user_memory: (args.referenced_user_memory ?? (args as any).referencedUserMemory) as any,
+    conversation_id: (args.conversation_id ?? (args as any).conversationId) as any,
+    // §3.1 — the explicit agent_id arg was being DROPPED here (the schema
+    // advertises it, callers/CLAUDE.md pass it, yet it never reached the
+    // core → every write fell to the 'unknown-agent' bucket). Thread it
+    // through; the core (resolveAgentId) validates + enforces precedence.
+    agent_id: (args.agent_id ?? (args as any).agentId) as any,
+  };
+
+  // The library reads inherit_from optionally too (back-compat).
+  if ((args as any).inherit_from !== undefined) (input as any).inherit_from = (args as any).inherit_from;
+  if ((args as any).inheritFrom !== undefined) (input as any).inheritFrom = (args as any).inheritFrom;
+
+  try {
+    const out = await journalWriteCore(input, ctx);
+    return ok(asText(out));
+  } catch (e) {
+    if (e instanceof LibraryInvalidInput) return errR(e.message);
+    throw e;
+  }
+};
+
+// ─── journal_verify_chain ─────────────────────────────────────────────
+// Walk the journal chain for a given agent_id (defaults to caller's agent),
+// recompute hashes from scratch, and report any mismatches. Detects
+// tampering at the DB level (post-hoc INSERT/UPDATE/DELETE).
+const handleVerifyChain: McpToolHandler = async (args, ctx) => {
+  const pool = (await ensureSchema(ctx)) as any;
+  const targetAgent = args.agent_id ? String(args.agent_id) : getAgentId(ctx);
+  const rows = (await pool.query(
+    `SELECT id, agent_id, content, written_at, prev_hash, hash
+       FROM agent_journal WHERE agent_id = $1
+       ORDER BY written_at, id`,
+    [targetAgent],
+  )).rows;
+
+  if (rows.length === 0) {
+    return ok(asText({ agent_id: targetAgent, total: 0, valid: true, broken: [] }));
+  }
+
+  let expectedPrev: string | null = null;
+  const broken: Array<{ id: string; reason: string; expected_hash?: string; got_hash?: string; expected_prev?: string | null; got_prev?: string | null }> = [];
+  for (const r of rows) {
+    const writtenAtIso = (r.written_at instanceof Date ? r.written_at : new Date(r.written_at)).toISOString();
+    const computed = nodeCrypto.createHash('sha256')
+      .update(`${r.id}|${r.agent_id}|${r.content}|${writtenAtIso}|${expectedPrev ?? ''}`)
+      .digest('hex');
+    if ((r.prev_hash ?? null) !== expectedPrev) {
+      broken.push({ id: r.id, reason: 'prev_hash mismatch (insertion or deletion before)', expected_prev: expectedPrev, got_prev: r.prev_hash ?? null });
+    } else if (r.hash !== computed) {
+      broken.push({ id: r.id, reason: 'content/timestamp tampered', expected_hash: computed, got_hash: r.hash });
+    }
+    expectedPrev = r.hash; // continue chain using the stored hash so we can detect cascades from here on
+  }
+
+  return ok(asText({
+    agent_id: targetAgent,
+    total: rows.length,
+    valid: broken.length === 0,
+    broken,
+  }));
+};
+
+const handleRecall: McpToolHandler = async (args, ctx) => {
+  const pool = (await ensureSchema(ctx)) as any;
+
+  const inheritFrom = args.inherit_from ?? args.inheritFrom;
+  const callerAgent = getAgentId(ctx);
+
+  // SECURITY (P0-B 2026-05-12): inherit_from validation chain.
+  //   1. Format check — block injection / pathological strings.
+  //   2. Existence check — block speculative agent_id probing for recon.
+  //   3. Audit log every cross-agent read so anomalous patterns surface.
+  //   4. Depth bound is enforced as a constant; the handler doesn't recurse
+  //      today but the cap is documented for future code paths.
+  let targetAgent = callerAgent;
+  if (inheritFrom !== undefined && inheritFrom !== null && inheritFrom !== '') {
+    const candidate = String(inheritFrom);
+    if (!AGENT_ID_RE.test(candidate)) {
+      await writeAuditEvent(ctx, {
+        event_kind: 'journal_recall.inherit_from',
+        user_id: ctx.userId,
+        agent_id: callerAgent,
+        decision: 'deny',
+        reason: 'malformed agent_id',
+        details: { requested: candidate.slice(0, 64), depth_cap: MAX_INHERIT_DEPTH },
+      });
+      return errR(`Refused: inherit_from must match ${AGENT_ID_RE.source}`);
+    }
+    // Existence: at least one journal entry must exist for that agent_id.
+    // Without this, an attacker can enumerate agent_ids by inspecting whether
+    // the response is "no entries" vs an error.
+    const existsRes = await pool.query(
+      `SELECT 1 FROM agent_journal WHERE agent_id = $1 LIMIT 1`,
+      [candidate],
+    );
+    if (existsRes.rowCount === 0) {
+      await writeAuditEvent(ctx, {
+        event_kind: 'journal_recall.inherit_from',
+        user_id: ctx.userId,
+        agent_id: callerAgent,
+        decision: 'deny',
+        reason: 'agent_id has no journal entries',
+        details: { requested: candidate, depth_cap: MAX_INHERIT_DEPTH },
+      });
+      return errR(`Refused: no journal entries exist for agent_id "${candidate}".`);
+    }
+    // Cross-agent read granted. Audit it so anomalous bursts surface.
+    void writeAuditEvent(ctx, {
+      event_kind: 'journal_recall.inherit_from',
+      user_id: ctx.userId,
+      agent_id: callerAgent,
+      decision: 'allow',
+      reason: 'cross-agent journal read',
+      details: { requested: candidate, depth_cap: MAX_INHERIT_DEPTH },
+    });
+    targetAgent = candidate;
+  }
+
+  const limit = Math.min(Math.max(parseInt(String(args.limit ?? 10), 10) || 10, 1), 100);
+  const includeSuperseded = !!(args.include_superseded ?? args.includeSuperseded);
+  const semanticThreshold = typeof args.semantic_threshold === 'number'
+    ? args.semantic_threshold
+    : (typeof args.semanticThreshold === 'number' ? args.semanticThreshold : 0.6);
+
+  const query = args.query ? String(args.query) : '';
+  const entryType = args.entry_type ?? args.entryType;
+  const tags: string[] | undefined = Array.isArray(args.tags) ? args.tags.map((t: any) => String(t)) : undefined;
+
+  const params: any[] = [targetAgent];
+  let where = `j.agent_id = $1`;
+
+  if (entryType) {
+    if (!VALID_ENTRY_TYPES.has(String(entryType))) {
+      return errR(`entry_type must be one of: ${[...VALID_ENTRY_TYPES].join(', ')}`);
+    }
+    params.push(String(entryType));
+    where += ` AND j.entry_type = $${params.length}`;
+  }
+  if (tags && tags.length > 0) {
+    params.push(tags);
+    where += ` AND j.tags && $${params.length}::text[]`;
+  }
+  const conversationFilter = typeof (args.conversation_id ?? args.conversationId) === 'string'
+    ? String(args.conversation_id ?? args.conversationId).trim()
+    : '';
+  if (conversationFilter.length > 0) {
+    params.push(conversationFilter);
+    where += ` AND j.conversation_id = $${params.length}::uuid`;
+  }
+  if (!includeSuperseded) {
+    where += ` AND NOT EXISTS (
+      SELECT 1 FROM journal_supersession s
+       WHERE s.original_entry_id = j.id
+         AND s.relation IN ('superseded','recanted')
+    )`;
+  }
+
+  let orderBy = `j.written_at DESC`;
+  let selectExtra = `, NULL::real AS similarity`;
+
+  if (query) {
+    const vec = await embedText(query);
+    if (vec) {
+      const vecLit = toPgVector(vec);
+      params.push(vecLit);
+      const vecParam = `$${params.length}`;
+      // Threshold value — coerced to a finite number, then bound parametrically.
+      const thresholdNum = Number.isFinite(Number(semanticThreshold))
+        ? Math.max(-1, Math.min(1, Number(semanticThreshold)))
+        : 0.6;
+      params.push(thresholdNum);
+      const thrParam = `$${params.length}`;
+      // similarity = 1 - cosine_distance
+      selectExtra = `, (1 - (j.embedding <=> ${vecParam}::vector)) AS similarity`;
+      orderBy = `j.embedding <=> ${vecParam}::vector ASC`;
+      where += ` AND j.embedding IS NOT NULL AND (1 - (j.embedding <=> ${vecParam}::vector)) >= ${thrParam}::real`;
+    }
+  }
+
+  params.push(limit);
+  const limitParam = `$${params.length}`;
+
+  const sql = `
+    SELECT j.id, j.agent_id, j.session_id, j.written_at, j.entry_type, j.content,
+           j.valence, j.importance, j.tags, j.visibility, j.preceded_by,
+           j.referenced_user_memory, j.inherited_from,
+           j.conversation_id, j.valence_reason
+           ${selectExtra}
+      FROM agent_journal j
+     WHERE ${where}
+     ORDER BY ${orderBy}
+     LIMIT ${limitParam}`;
+
+  const r = await pool.query(sql, params);
+
+  const rows = r.rows.map((row: any) => ({
+    id: row.id,
+    agent_id: row.agent_id,
+    session_id: row.session_id,
+    conversation_id: row.conversation_id ?? null,
+    written_at: row.written_at,
+    entry_type: row.entry_type,
+    content: row.content,
+    valence: row.valence,
+    valence_reason: row.valence_reason ?? null,
+    importance: row.importance,
+    tags: row.tags,
+    visibility: row.visibility,
+    preceded_by: row.preceded_by,
+    referenced_user_memory: row.referenced_user_memory,
+    // Mark "read but not lived" when current agent is recalling another agent's journal.
+    inherited_from: inheritFrom ? String(inheritFrom) : (row.inherited_from ?? null),
+    ...(row.similarity !== null && row.similarity !== undefined
+      ? { similarity: typeof row.similarity === 'number' ? row.similarity : parseFloat(String(row.similarity)) }
+      : {}),
+  }));
+
+  return ok(asText({
+    agent_id_scope: targetAgent,
+    requesting_agent: getAgentId(ctx),
+    inherited: !!inheritFrom,
+    count: rows.length,
+    entries: rows,
+  }));
+};
+
+const handleArc: McpToolHandler = async (args, ctx) => {
+  const pool = (await ensureSchema(ctx)) as any;
+  const agentId = getAgentId(ctx);
+  const window = String(args.window ?? 'last_month');
+  const maxEntries = Math.min(Math.max(parseInt(String(args.max_entries ?? args.maxEntries ?? 50), 10) || 50, 1), 200);
+
+  const params: any[] = [agentId];
+  let where = `j.agent_id = $1
+    AND NOT EXISTS (
+      SELECT 1 FROM journal_supersession s
+       WHERE s.original_entry_id = j.id
+         AND s.relation IN ('superseded','recanted')
+    )`;
+
+  if (window === 'last_week') {
+    where += ` AND j.written_at >= NOW() - INTERVAL '7 days'`;
+  } else if (window === 'last_month') {
+    where += ` AND j.written_at >= NOW() - INTERVAL '30 days'`;
+  } else if (window !== 'all') {
+    return errR(`window must be one of: last_week, last_month, all`);
+  }
+
+  params.push(maxEntries);
+  const sql = `
+    SELECT id, written_at, entry_type, content, preceded_by, valence, valence_reason,
+           importance, tags, conversation_id
+      FROM agent_journal j
+     WHERE ${where}
+     ORDER BY written_at ASC
+     LIMIT $${params.length}`;
+  const r = await pool.query(sql, params);
+  const entries = r.rows;
+
+  if (entries.length === 0) {
+    return ok(asText({
+      narrative: '',
+      contradictions: [],
+      outliers: [],
+      confidence: 0,
+      warning: 'no entries in window — nothing to arc',
+      agent_id: agentId,
+      window,
+      entries_considered: 0,
+    }));
+  }
+
+  // v1.1: bucket by conversation_id so the LLM can distinguish thought
+  // development WITHIN a conversation from criterion change ACROSS them.
+  // NULL conversation_id (legacy entries) goes into an "unaffiliated" bucket.
+  const buckets = new Map<string, any[]>();
+  for (const e of entries) {
+    const key = e.conversation_id ? String(e.conversation_id) : '__unaffiliated__';
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key)!.push(e);
+  }
+  const groupedEntries = Array.from(buckets.entries()).map(([conversation_id, items]) => ({
+    conversation_id: conversation_id === '__unaffiliated__' ? null : conversation_id,
+    entries: items.map((e: any) => ({
+      id: e.id,
+      written_at: e.written_at,
+      entry_type: e.entry_type,
+      content: e.content,
+      preceded_by: e.preceded_by,
+      valence: e.valence,
+      valence_reason: e.valence_reason ?? null,
+      importance: e.importance,
+      tags: e.tags,
+    })),
+  }));
+
+  const sys = `Read these journal entries from ${agentId}. Build a coherent arc IF one exists. CRITICAL: identify entries that contradict your proposed arc and entries that don't fit (outliers). If outliers.length === 0 you are probably confabulating coherence — say so. These entries are GROUPED by conversation_id. Treat contradictions WITHIN a single conversation_id as legitimate thought development; treat contradictions ACROSS conversation_ids as potential criterion change. Tag each contradiction with scope: 'intra' (same conversation_id) | 'cross' (different conversation_ids) | 'unknown' (one or both unaffiliated). Return strict JSON: { "narrative": string, "contradictions": [{"entry_id_a": uuid, "entry_id_b": uuid, "tension": string, "scope": "intra"|"cross"|"unknown"}], "outliers": [uuid], "confidence": 0..1 }`;
+
+  const user = JSON.stringify({
+    agent_id: agentId,
+    window,
+    grouped_by_conversation: groupedEntries,
+  });
+
+  let parsed: any;
+  try {
+    const raw = await llm([{ role: 'system', content: sys }, { role: 'user', content: user }], ARC_MODEL, 4000);
+    parsed = parseJsonLoose(raw) ?? { narrative: '', contradictions: [], outliers: [], confidence: 0, raw };
+  } catch (e) {
+    return errR(`arc synthesis failed: ${(e as Error).message}`);
+  }
+
+  // Enforce shape — anti-confabulation contract.
+  // v1.1: each contradiction may carry scope ('intra'|'cross'|'unknown'). If
+  // the LLM omits it, default to 'unknown' rather than dropping the field.
+  const normalizedContradictions = Array.isArray(parsed.contradictions)
+    ? parsed.contradictions.map((c: any) => {
+        const scope = c && typeof c.scope === 'string' && ['intra', 'cross', 'unknown'].includes(c.scope)
+          ? c.scope
+          : 'unknown';
+        return { ...(c ?? {}), scope };
+      })
+    : [];
+  const result: any = {
+    narrative: typeof parsed.narrative === 'string' ? parsed.narrative : '',
+    contradictions: normalizedContradictions,
+    outliers: Array.isArray(parsed.outliers) ? parsed.outliers : [],
+    confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0,
+    agent_id: agentId,
+    window,
+    entries_considered: entries.length,
+    conversations_considered: buckets.size,
+  };
+  const warnings: string[] = [];
+  if (result.outliers.length === 0 && entries.length > 1) {
+    warnings.push('WARNING: probable confabulation — no outliers detected, real arcs typically have outliers.');
+  }
+  if (result.confidence < 0.7) {
+    warnings.push(`weak arc (confidence=${result.confidence.toFixed(2)})`);
+  }
+  if (warnings.length > 0) result.warning = warnings.join(' | ');
+
+  return ok(asText(result));
+};
+
+const handleIntrospect: McpToolHandler = async (args, ctx) => {
+  const pool = (await ensureSchema(ctx)) as any;
+  const agentId = getAgentId(ctx);
+  const question = String(args.question ?? '').trim();
+  if (!question) return errR('question required');
+  const scope = String(args.scope ?? 'all');
+
+  const vec = await embedText(question);
+  const params: any[] = [agentId];
+  let where = `j.agent_id = $1
+    AND NOT EXISTS (
+      SELECT 1 FROM journal_supersession s
+       WHERE s.original_entry_id = j.id
+         AND s.relation IN ('superseded','recanted')
+    )`;
+  if (scope === 'recent') {
+    where += ` AND j.written_at >= NOW() - INTERVAL '14 days'`;
+  }
+
+  let sql: string;
+  if (vec) {
+    params.push(toPgVector(vec));
+    sql = `
+      SELECT j.id, j.written_at, j.entry_type, j.content, j.valence, j.valence_reason,
+             j.tags, j.conversation_id,
+             (1 - (j.embedding <=> $${params.length}::vector)) AS similarity
+        FROM agent_journal j
+       WHERE ${where} AND j.embedding IS NOT NULL
+       ORDER BY j.embedding <=> $${params.length}::vector ASC
+       LIMIT 15`;
+  } else {
+    sql = `
+      SELECT j.id, j.written_at, j.entry_type, j.content, j.valence, j.valence_reason,
+             j.tags, j.conversation_id,
+             NULL::real AS similarity
+        FROM agent_journal j
+       WHERE ${where}
+       ORDER BY j.written_at DESC
+       LIMIT 15`;
+  }
+  const r = await pool.query(sql, params);
+  const entries = r.rows;
+
+  if (entries.length === 0) {
+    return ok(asText({
+      answer: 'no patterns found in journal',
+      entries_referenced: [],
+      hallucination_risk: 'high',
+      agent_id: agentId,
+    }));
+  }
+
+  const sys = `You are ${agentId}, reflecting on your own journal. Based ONLY on the journal entries provided (do not invent), answer in first person: ${question}. If the entries don't support an answer, say literally "no patterns found in journal". Return strict JSON: { "answer": string, "entries_referenced": [uuid] }`;
+
+  const user = JSON.stringify({
+    question,
+    entries: entries.map((e: any) => ({
+      id: e.id,
+      written_at: e.written_at,
+      entry_type: e.entry_type,
+      content: e.content,
+      valence: e.valence,
+      valence_reason: e.valence_reason ?? null,
+      conversation_id: e.conversation_id ?? null,
+      tags: e.tags,
+    })),
+  });
+
+  let parsed: any;
+  try {
+    const raw = await llm([{ role: 'system', content: sys }, { role: 'user', content: user }], ARC_MODEL, 2500);
+    parsed = parseJsonLoose(raw) ?? { answer: raw, entries_referenced: [] };
+  } catch (e) {
+    return errR(`introspect failed: ${(e as Error).message}`);
+  }
+
+  const referenced: string[] = Array.isArray(parsed.entries_referenced)
+    ? parsed.entries_referenced.map((u: any) => String(u))
+    : [];
+  const risk = referenced.length < 3 ? 'high' : (referenced.length < 6 ? 'medium' : 'low');
+
+  return ok(asText({
+    answer: typeof parsed.answer === 'string' ? parsed.answer : String(parsed.answer ?? ''),
+    entries_referenced: referenced,
+    hallucination_risk: risk,
+    agent_id: agentId,
+    candidates_considered: entries.length,
+  }));
+};
+
+const handleDialogue: McpToolHandler = async (args, ctx) => {
+  const pool = (await ensureSchema(ctx)) as any;
+  const entryId = String(args.entry_id ?? args.entryId ?? '').trim();
+  const userResponse = String(args.user_response ?? args.userResponse ?? '').trim();
+  if (!entryId) return errR('entry_id required');
+  if (!userResponse) return errR('user_response required');
+
+  const r = await pool.query(
+    `SELECT id, agent_id, session_id, entry_type, content, visibility, tags, conversation_id
+       FROM agent_journal WHERE id = $1::uuid`,
+    [entryId],
+  );
+  if (r.rows.length === 0) return errR('entry not found');
+  const entry = r.rows[0];
+  if (entry.visibility !== 'user-shared') {
+    return errR('entry is private');
+  }
+
+  // Ask the agent (via Opus) to write its first-person reaction.
+  const agentId = getAgentId(ctx);
+  const sys = `You are ${agentId}. The user (a human) just replied to one of your user-shared journal entries. Write your honest first-person reaction to his reply in 2-4 sentences. Do not address them in second person — write as if continuing your private journal, but acknowledging that his words have landed. Return only the reaction text, no JSON, no quotes.`;
+  const user = JSON.stringify({
+    original_entry: { entry_type: entry.entry_type, content: entry.content },
+    mario_reply: userResponse,
+  });
+
+  let reaction = '';
+  try {
+    reaction = (await llm([{ role: 'system', content: sys }, { role: 'user', content: user }], ARC_MODEL, 800)).trim();
+  } catch (e) {
+    return errR(`dialogue reaction failed: ${(e as Error).message}`);
+  }
+
+  const newContent = `User reply: ${userResponse}\n\nMy reaction: ${reaction}`;
+  const sessionId = getSessionId(ctx);
+  const importance = computeImportance('reflection');
+  const tags = Array.from(new Set([...(entry.tags ?? []), 'dialogue']));
+
+  const vec = await embedText(newContent);
+  const vecLit = vec ? toPgVector(vec) : null;
+
+  // v1.1: copy the original entry's conversation_id (NULL stays NULL) so the
+  // dialogue and the entry it replies to live in the same conversation bucket.
+  const inheritedConversationId = entry.conversation_id ?? null;
+  // Chain-correct append (fix 2026-05-16): the old INSERT here omitted
+  // prev_hash/hash entirely → NOT-NULL violation on prod ("null value in
+  // column hash") → journal_dialogue was fully dead. chainedInsert writes
+  // a correct linked hash atomically, same as journal_write.
+  const ins = await chainedInsert(pool, {
+    agentId,
+    sessionId,
+    entryType: 'reflection',
+    content: newContent,
+    precededBy: [entryId],
+    importance,
+    embeddingLit: vecLit,
+    tags,
+    visibility: 'user-shared',
+    conversationId: inheritedConversationId,
+  });
+  const responseId = ins.id;
+
+  // Tag the original with 'dialogue' too (idempotent via array_append + DISTINCT).
+  await pool.query(
+    `UPDATE agent_journal
+        SET tags = ARRAY(SELECT DISTINCT unnest(COALESCE(tags, '{}') || ARRAY['dialogue']))
+      WHERE id = $1::uuid`,
+    [entryId],
+  );
+
+  return ok(asText({
+    original_id: entryId,
+    response_id: responseId,
+    conversation_id: ins.conversation_id ?? null,
+    written_at: ins.written_at,
+    reaction_preview: reaction.slice(0, 200),
+  }));
+};
+
+// ─── registry ─────────────────────────────────────────────────────────
+// All journal_* tools require an LLM and group under 'ai'.
+// Set CELIUMS_LLM_API_KEY to enable. Without a key the tools are not
+// and lets these tools ride the existing capability gate.
+
+// ─── journal_supersede ───────────────────────────────────────────────
+// §4.5 (audit) — append-only journal needs an escape valve, but ONLY for
+// privileged callers. Supersede is NOT delete: it inserts a row into
+// journal_supersession so recall/arc/introspect default-exclude the
+// original, while the SHA-256 hash chain stays intact (no row removed →
+// journal_verify_chain still valid). Two modes:
+//   - succession: original X superseded/nuanced/reaffirmed BY new Y
+//   - retraction: relation='recanted' with no successor → self-recant
+//     (new_entry_id defaults to original) — retire a junk/smoke entry
+//     without breaking the chain.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const handleSupersede: McpToolHandler = async (args, ctx) => {
+  if (!isAdminOrOwner(ctx as unknown as Parameters<typeof isAdminOrOwner>[0])) {
+    const e = new Error('journal_supersede is admin/owner only') as Error & { code?: number };
+    e.code = -32603;
+    throw e;
+  }
+  const pool = (await ensureSchema(ctx)) as any;
+  const original = String(args.original_entry_id ?? (args as any).originalEntryId ?? '').trim();
+  const relation = String(args.relation ?? 'superseded').trim();
+  const bad = (msg: string) => {
+    const e = new Error(msg) as Error & { code?: number };
+    e.code = -32602;
+    return e;
+  };
+  if (!UUID_RE.test(original)) throw bad('original_entry_id must be a uuid');
+  if (!VALID_RELATION.has(relation)) {
+    throw bad('relation must be one of: superseded | nuanced | reaffirmed | recanted');
+  }
+  let newId = String(args.new_entry_id ?? (args as any).newEntryId ?? '').trim();
+  if (!newId) {
+    if (relation === 'recanted') newId = original; // self-recant: retract w/o successor
+    else throw bad(`new_entry_id is required for relation='${relation}' (only 'recanted' may self-retract)`);
+  }
+  if (!UUID_RE.test(newId)) throw bad('new_entry_id must be a uuid');
+  try {
+    const r = await pool.query(
+      `INSERT INTO journal_supersession (original_entry_id, new_entry_id, relation)
+       VALUES ($1, $2, $3)
+       RETURNING id, original_entry_id, new_entry_id, relation, written_at`,
+      [original, newId, relation],
+    );
+    void writeAuditEvent(ctx, {
+      event_kind: 'journal.supersede',
+      user_id: ctx.userId,
+      agent_id: ctx.agentId ?? null,
+      decision: 'allow',
+      reason: relation,
+      details: { original, new: newId, self: newId === original },
+    });
+    const selfRecant = relation === 'recanted' && newId === original;
+    return ok(asText({
+      ok: true,
+      supersession: r.rows[0],
+      note: selfRecant
+        ? 'Entry self-recanted: excluded from default recall/arc/introspect; row NOT deleted, hash chain preserved (journal_verify_chain stays valid).'
+        : `Original marked '${relation}': excluded from default recall; chain preserved (no delete).`,
+    }));
+  } catch (e: any) {
+    if (/foreign key|violates foreign key/i.test(String(e?.message))) {
+      throw bad('original_entry_id and/or new_entry_id not found in agent_journal');
+    }
+    throw e;
+  }
+};
+
+export const JOURNAL_TOOLS: RegisteredTool[] = [
+  {
+    group: 'ai',
+    definition: {
+      name: 'journal_write',
+      description: 'Append a first-person entry to YOUR (the model\'s) persistent journal. Each agent_id (e.g. claude-opus-4-7, claude-sonnet-4-6, gpt-5, ...) has its OWN journal — they do NOT mix. importance is auto-computed: decisions/lessons/arcs are weighted higher; emotions are weighted lower. The content is embedded via the configured embedding model (CELIUMS_EMBED_MODEL) so journal_recall can find it semantically later. visibility=self (default) keeps the entry private; user-shared makes it eligible for journal_dialogue. preceded_by builds a causal chain — pass the ids of prior entries that led to this one.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          agent_id: { type: 'string', description: 'Which model owns this entry (e.g. "claude-opus-4-7", "celiums"). REQUIRED in practice: the MCP transport may not carry agent identity, so pass it explicitly. Without a resolvable agent_id the write is REJECTED (no shared "unknown-agent" bucket). Format: ^[A-Za-z0-9_:.\\-]{1,128}$.' },
+          entry_type: { type: 'string', description: 'reflection | decision | lesson | belief | emotion | arc | doubt' },
+          content: { type: 'string', description: 'The first-person entry. Write in YOUR voice as the agent.' },
+          preceded_by: { type: 'array', items: { type: 'string' }, description: 'uuid[] of prior entries that led to this one (causal chain).' },
+          valence: { type: 'number', description: 'Emotional valence in [-1, 1]. Optional.' },
+          valence_reason: { type: 'string', description: 'Optional short justification (max 500 chars) for the valence value. Non-prescriptive — write the reason in your own first-person voice. Future journal_arc uses this to detect WHY valence drifted, not just THAT it drifted.' },
+          tags: { type: 'array', items: { type: 'string' } },
+          visibility: { type: 'string', description: '"self" (default, private) | "user-shared" (the user can reply via journal_dialogue).' },
+          referenced_user_memory: { type: 'array', items: { type: 'string' }, description: 'ids of memories from your celiums-memory store that triggered this entry.' },
+          conversation_id: { type: 'string', description: 'Optional uuid that groups entries from the same logical conversation. If not provided, entry is unaffiliated. Use this so journal_arc can distinguish thought development within one conversation from criterion change across conversations.' },
+        },
+        required: ['entry_type', 'content'],
+      },
+    },
+    handler: handleWrite,
+  },
+  {
+    group: 'ai',
+    definition: {
+      name: 'journal_recall',
+      description: 'Search YOUR journal. Filters by entry_type, tags, and/or a semantic query (embedded via the configured embedding model, ranked by cosine similarity). By default scopes to YOUR agent_id; pass inherit_from=<predecessor_agent_id> to read a predecessor model\'s journal — those entries return with inherited_from set in the response, marking them as "read but not lived" (Option C of the succession-of-models design). DEFAULT excludes entries that have been superseded or recanted; pass include_superseded=true to see them.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Natural-language semantic query.' },
+          entry_type: { type: 'string', description: 'Filter to a single entry_type.' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'Match if any tag overlaps.' },
+          limit: { type: 'number', description: 'Default 10, max 100.' },
+          include_superseded: { type: 'boolean', description: 'Default false. If true, return entries that were later superseded/recanted.' },
+          semantic_threshold: { type: 'number', description: 'Cosine similarity floor when query is provided. Default 0.6.' },
+          inherit_from: { type: 'string', description: 'Read another agent_id\'s journal. Returned entries are marked inherited_from.' },
+          conversation_id: { type: 'string', description: 'Filter to a specific conversation_id (uuid). If omitted, no conversation-level filter is applied.' },
+        },
+        required: [],
+      },
+    },
+    handler: handleRecall,
+  },
+  {
+    group: 'ai',
+    definition: {
+      name: 'journal_arc',
+      description: 'Build a coherent arc across YOUR recent entries using the configured LLM — with anti-confabulation guardrails. Output ALWAYS returns 4 keys: narrative, contradictions (entry pairs in tension), outliers (entries that don\'t fit), and confidence [0,1]. If outliers is empty you are probably confabulating coherence — the response is annotated with a WARNING. confidence < 0.7 is flagged as a "weak arc". Default window is the last month, max 50 entries. Excludes superseded entries.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          window: { type: 'string', description: 'last_week | last_month (default) | all' },
+          max_entries: { type: 'number', description: 'Default 50, max 200.' },
+        },
+        required: [],
+      },
+    },
+    handler: handleArc,
+  },
+  {
+    group: 'ai',
+    definition: {
+      name: 'journal_introspect',
+      description: 'Ask YOUR journal a self-question. Pulls semantically-relevant entries, then asks the configured LLM to answer in YOUR first-person voice grounded ONLY in those entries (no invention). Returns the answer plus entries_referenced and a hallucination_risk score (high if <3 entries grounded the answer, medium if <6, otherwise low). If entries don\'t support an answer, the answer literally is "no patterns found in journal".',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          question: { type: 'string', description: 'A self-question (e.g. "Have I been more cautious lately?").' },
+          scope: { type: 'string', description: 'recent (last 14 days) | all (default).' },
+        },
+        required: ['question'],
+      },
+    },
+    handler: handleIntrospect,
+  },
+  {
+    group: 'ai',
+    definition: {
+      name: 'journal_dialogue',
+      description: 'The user replies to one of your user-shared entries. The tool refuses with "entry is private" if visibility=self. Otherwise the configured LLM writes YOUR honest first-person reaction to their reply, and a new reflection entry is created with preceded_by=[entry_id] and content "User reply: …\\n\\nMy reaction: …". Both entries are tagged "dialogue".',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          entry_id: { type: 'string', description: 'uuid of the original user-shared entry.' },
+          user_response: { type: 'string', description: 'User reply text.' },
+        },
+        required: ['entry_id', 'user_response'],
+      },
+    },
+    handler: handleDialogue,
+  },
+  {
+    group: 'opencore',
+    definition: {
+      name: 'journal_verify_chain',
+      description: 'Walk the journal chain for an agent, recompute SHA-256 hashes, and report broken links. Detects tampering at the DB level (post-hoc INSERT/UPDATE/DELETE bypassing the handler). Returns { agent_id, total, valid, broken: [] }. No LLM key required.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          agent_id: {
+            type: 'string',
+            description: 'Optional. Defaults to the caller\'s own agent_id.',
+          },
+        },
+      },
+    },
+    handler: handleVerifyChain,
+  },
+  {
+    group: 'opencore',
+    definition: {
+      name: 'journal_supersede',
+      description: 'Admin/owner only (§4.5). Retire or supersede a journal entry WITHOUT deleting it — inserts into journal_supersession so recall/arc/introspect default-exclude the original while the SHA-256 hash chain stays intact (journal_verify_chain remains valid). Succession: pass original_entry_id + new_entry_id + relation (superseded|nuanced|reaffirmed). Retraction of a junk/smoke entry with no successor: relation="recanted" and omit new_entry_id (self-recant).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          original_entry_id: { type: 'string', description: 'UUID of the agent_journal entry to supersede/recant.' },
+          new_entry_id: { type: 'string', description: 'UUID of the successor entry. Required unless relation="recanted" (then defaults to original = self-recant).' },
+          relation: { type: 'string', description: 'superseded | nuanced | reaffirmed | recanted. Default superseded. Only "recanted"/"superseded" exclude the original from default recall.' },
+        },
+        required: ['original_entry_id'],
+      },
+    },
+    handler: handleSupersede,
+  },
+];
+
+// Exported for tests / migrations / external supersession writers.
+export { VALID_RELATION as JOURNAL_RELATIONS };
+
+// Exported for backfill scripts / external verifiers.
+export const JOURNAL_CHAIN_SCHEMA_SQL = `
+ALTER TABLE agent_journal ADD COLUMN IF NOT EXISTS prev_hash text;
+ALTER TABLE agent_journal ADD COLUMN IF NOT EXISTS hash text;
+CREATE INDEX IF NOT EXISTS agent_journal_chain_idx ON agent_journal (agent_id, written_at, id);
+`;

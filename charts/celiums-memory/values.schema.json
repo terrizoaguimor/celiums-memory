@@ -1,0 +1,197 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "celiums-memory chart values",
+  "description": "Strict schema for ADR-013 Helm chart values. helm install validates against this.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["image", "auth", "secrets"],
+  "properties": {
+    "image": {
+      "type": "object",
+      "required": ["repository", "tag"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag":        { "type": "string", "minLength": 1 },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] },
+        "pullSecrets": { "type": "array" }
+      }
+    },
+    "replicaCount": { "type": "integer", "minimum": 1, "maximum": 100 },
+    "autoscaling": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minReplicas": { "type": "integer", "minimum": 1 },
+        "maxReplicas": { "type": "integer", "minimum": 1 },
+        "targetCPUUtilizationPercentage": { "type": ["integer", "null"], "minimum": 1, "maximum": 100 },
+        "targetMemoryUtilizationPercentage": { "type": ["integer", "null"], "minimum": 1, "maximum": 100 }
+      }
+    },
+    "pdb": {
+      "type": "object",
+      "properties": {
+        "enabled":        { "type": "boolean" },
+        "minAvailable":   { "type": ["integer", "string", "null"] },
+        "maxUnavailable": { "type": ["integer", "string", "null"] }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "required": ["mode", "apiKeyPepperSecret"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["enabled", "disabled"] },
+        "apiKeyPepperSecret": {
+          "type": "object",
+          "required": ["name", "key"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "key":  { "type": "string", "minLength": 1 }
+          }
+        },
+        "oidc": {
+          "type": "object",
+          "properties": {
+            "enabled":  { "type": "boolean" },
+            "issuer":   { "type": "string" },
+            "audience": { "type": "string" },
+            "jwksUrl":  { "type": "string" },
+            "clientSecretRef": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "key":  { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "required": ["backend"],
+      "properties": {
+        "backend": {
+          "type": "string",
+          "enum": ["env", "file", "kubernetes", "sops-age", "vault",
+                   "aws-secretsmanager", "gcp-secretmanager", "azure-keyvault"]
+        },
+        "filePath": { "type": "string" }
+      }
+    },
+    "multitenancy": {
+      "type": "object",
+      "properties": {
+        "enabled":          { "type": "boolean" },
+        "defaultTenantId":  { "type": "string", "format": "uuid" },
+        "operator": {
+          "type": "object",
+          "properties": { "enabled": { "type": "boolean" } }
+        }
+      }
+    },
+    "observability": {
+      "type": "object",
+      "properties": {
+        "logLevel": { "type": "string", "enum": ["debug", "info", "warn", "error", "fatal"] },
+        "logIncludeContent": { "type": "boolean" },
+        "otlpEndpoint": { "type": "string" },
+        "serviceMonitor": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "interval": { "type": "string" },
+            "scrapeTimeout": { "type": "string" }
+          }
+        },
+        "prometheusRule": {
+          "type": "object",
+          "properties": { "enabled": { "type": "boolean" } }
+        }
+      }
+    },
+    "rateLimit": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "edgeCapacity": { "type": "integer", "minimum": 1 },
+        "edgeRefillPerSecond": { "type": "number", "minimum": 0 }
+      }
+    },
+    "quotas": {
+      "type": "object",
+      "properties": {
+        "defaultPlan": { "type": "string", "enum": ["free", "pro", "enterprise"] }
+      }
+    },
+    "bootstrap": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "ttlHours": { "type": "integer", "minimum": 1, "maximum": 168 },
+        "budgetTokens": { "type": "integer", "minimum": 100, "maximum": 8000 },
+        "exemptTools": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "ethics": {
+      "type": "object",
+      "properties": {
+        "defaultProfile": { "type": "string" },
+        "calibrationApiKeySecret": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "key":  { "type": "string" }
+          }
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "additionalEgress": { "type": "array" }
+      }
+    },
+    "serviceMesh": {
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["none", "istio", "linkerd"] }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string" },
+        "annotations": { "type": "object" }
+      }
+    },
+    "backup": {
+      "type": "object",
+      "properties": {
+        "verifier": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "schedule": { "type": "string", "minLength": 9 },
+            "stanza": { "type": "string", "minLength": 1 },
+            "pushgatewayUrl": { "type": "string" },
+            "credentialsSecret": { "type": "string" }
+          }
+        }
+      }
+    },
+    "postgresql": {
+      "type": "object",
+      "properties": { "enabled": { "type": "boolean" } }
+    },
+    "qdrant": {
+      "type": "object",
+      "properties": { "enabled": { "type": "boolean" } }
+    },
+    "valkey": {
+      "type": "object",
+      "properties": { "enabled": { "type": "boolean" } }
+    }
+  }
+}

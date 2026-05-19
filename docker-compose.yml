@@ -1,0 +1,80 @@
+# ─────────────────────────────────────────────────────────
+#  Celiums — Production stack
+#
+#  Quick start:
+#    1. cp .env.example .env        # edit passwords
+#    2. docker compose up -d        # start infra (PG + Qdrant + Valkey)
+#    3. pnpm install                # install deps
+#    4. pnpm start                  # start Celiums
+#
+#  That's it. Health check: curl http://localhost:3210/health
+# ─────────────────────────────────────────────────────────
+
+services:
+
+  # ─── PostgreSQL 17 + pgvector ────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: celiums
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: celiums_memory
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U celiums -d celiums_memory"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─── Qdrant — vector store ──────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:v1.14.0
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      - "127.0.0.1:6333:6333"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/localhost/6333' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─── Valkey — cache + distributed mutex ─────────────────
+  valkey:
+    image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    command: >
+      valkey-server
+      --requirepass ${VALKEY_PASSWORD:?Set VALKEY_PASSWORD in .env}
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+    volumes:
+      - valkey_data:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a ${VALKEY_PASSWORD} ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─── Cloudflare Tunnel (optional) ───────────────────────
+  # Enable with: docker compose --profile tunnel up -d
+  # Set CLOUDFLARE_TUNNEL_TOKEN in your .env
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:-placeholder}
+    profiles:
+      - tunnel
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  valkey_data:

@@ -1,0 +1,257 @@
+# SPDX-License-Identifier: Apache-2.0
+# Celiums Memory CI — implements ADR-018 §"Pipeline structure".
+#
+# NOTE (pre-public-release TODO): per ADR-018 §"Pinned actions", every
+# `uses:` MUST reference a SHA, not a tag. Tags are used here for
+# readability during initial development. Before public-repo flip, run
+# `scripts/pin-github-actions.sh` to swap all references to commit SHAs.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# One run per PR; cancel stale runs on new pushes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Default least-privilege; jobs grant only what they need.
+permissions:
+  contents: read
+
+jobs:
+  # ── Lint + format ────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: eslint
+        run: pnpm -r lint --if-present
+      - name: helm lint (chart)
+        run: |
+          # Register chart deps' repos so `helm dependency build` can
+          # resolve the bitnami + qdrant subcharts. Without this step
+          # the build fails with: "no repository definition for ...".
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo add qdrant https://qdrant.github.io/qdrant-helm
+          helm repo update
+          helm dependency build ./charts/celiums-memory
+          helm lint ./charts/celiums-memory
+
+  # ── Typecheck ────────────────────────────────────────────────────
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: tsc --noEmit (packages with declared script)
+        # Use `pnpm -r typecheck` so only packages that explicitly opt-in
+        # via "typecheck": "tsc --noEmit" run. Avoids pulling in
+        # pre-existing typecheck noise from upstream-fork adapters
+        # (adapter-langchain, adapter-llamaindex, dashboard, ...) that
+        # aren't in scope for the core security stack v1 launch.
+        run: pnpm -r typecheck
+
+  # ── Unit + integration tests ────────────────────────────────────
+  test:
+    name: Tests (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22']
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: celiums_memory_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      qdrant:
+        # Pin to the same version validated by the smoke tests (matches
+        # docker-compose.yml). `:latest` triggered intermittent init
+        # failures on GHA runners — likely registry rate-limit / image
+        # rebuild race. Pinning kills both.
+        image: qdrant/qdrant:v1.14.0
+        # Map the HTTP REST port (6333), not gRPC (6334). The
+        # `@qdrant/js-client-rest` library + the smoke tests both speak
+        # HTTP, and the previous ports/env mismatch (6334:6334 with
+        # QDRANT_URL=http://...:6334) sent HTTP at a gRPC listener.
+        ports: ['6333:6333']
+        options: >-
+          --health-cmd "bash -c 'cat < /dev/tcp/localhost/6333' || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 15s
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Run @celiums/memory tests
+        run: pnpm --filter @celiums/memory test
+        env:
+          DATABASE_URL: postgres://postgres:ci@localhost:5432/celiums_memory_ci
+          CELIUMS_API_KEY_PEPPER: ci-pepper-32-characters-or-more-padding
+          QDRANT_URL: http://localhost:6333
+
+  # ── Build ────────────────────────────────────────────────────────
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @celiums/memory build
+      - name: helm package (dry)
+        run: |
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo add qdrant https://qdrant.github.io/qdrant-helm
+          helm repo update
+          helm dependency build ./charts/celiums-memory
+          helm package ./charts/celiums-memory -d /tmp/charts/
+
+  # ── Secret scan (gitleaks) ──────────────────────────────────────
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # gitleaks-action posts the scan summary as a PR comment, which
+      # requires write access. Without this, the action crashes with
+      # "Resource not accessible by integration" on dependabot PRs.
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+
+  # ── Filesystem vulnerability scan (Trivy) ───────────────────────
+  trivy-fs:
+    name: Trivy (filesystem)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      # codeql-action/upload-sarif calls GET /actions/workflow-runs
+      # for telemetry; without `actions: read` it errors and fails the
+      # step even though the SARIF upload itself succeeded.
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy filesystem scan (table)
+        # Pin to a known-good release. `@master` recently failed with
+        # `format: sarif` + `exit-code: 1` even when the run had 0
+        # findings (action bug), while the same flags with `format: table`
+        # behaved correctly. Tag pin + table-only step removes the
+        # variance.
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          # Exclude out-of-scope fork directories. mars-ui is the
+          # LibreChat fork (npm workspace, separate install pipeline,
+          # not yet integrated to the security stack — see
+          # pnpm-workspace.yaml). Re-included once the fork-with-plugin
+          # vs rewrite decision is made.
+          skip-dirs: 'packages/mars-ui,LongMemEval'
+          exit-code: '1'
+      - name: Trivy filesystem scan (SARIF for code-scanning)
+        if: success() || failure()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-fs.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          skip-dirs: 'packages/mars-ui,LongMemEval'
+          exit-code: '0'
+      - name: Upload Trivy SARIF
+        if: always()
+        # The scan itself is the gate; SARIF upload is a nice-to-have
+        # for code-scanning UI. Don't fail the job if the integration
+        # token can't reach the workflow-runs endpoint (intermittent
+        # GH API issue).
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-fs.sarif
+
+  # ── Dependency review (PRs only) ────────────────────────────────
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependency review (tolerated until GHAS is enabled)
+        # The action requires the GitHub Dependency Graph + Advanced
+        # Security (GHAS), which is a paid add-on for private repos.
+        # While GHAS isn't enabled on this repo, the action errors with
+        # "Dependency review is not supported on this repository".
+        # `continue-on-error: true` on the STEP keeps the job green so
+        # the check doesn't appear as failed in PR status. Re-enable
+        # as a hard gate once GHAS is purchased (pre-launch checklist).
+        continue-on-error: true
+        uses: actions/dependency-review-action@v4
+        with:
+          # License allowlist per dependencies-rationale.md banned classes.
+          allow-licenses: Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD, CC0-1.0, Unlicense, Python-2.0
+          fail-on-severity: high
+          comment-summary-in-pr: always

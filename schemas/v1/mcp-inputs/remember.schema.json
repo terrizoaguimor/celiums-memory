@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://celiums.ai/schemas/v1/mcp-inputs/remember.schema.json",
+  "title": "remember.input",
+  "description": "Input schema for the MCP `remember` tool. Strict mode. Content bounded at 64KB to prevent the journal from being abused as bulk storage; agents that need to persist large artefacts should use write_export or the file store, not memory.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["content"],
+  "properties": {
+    "content": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 65536,
+      "description": "The fact, decision, preference, or context to persist."
+    },
+    "projectId": {
+      "$ref": "https://celiums.ai/schemas/v1/common/project-id.schema.json"
+    },
+    "tags": {
+      "type": "array",
+      "maxItems": 32,
+      "items": { "$ref": "https://celiums.ai/schemas/v1/common/string-tag.schema.json" }
+    },
+    "importance": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "memoryType": {
+      "type": "string",
+      "enum": ["semantic", "procedural", "episodic"]
+    },
+    "userId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "agentId": {
+      "$ref": "https://celiums.ai/schemas/v1/common/agent-id.schema.json"
+    }
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "name": "@celiums/memory-claude-code",
+  "version": "2.0.0",
+  "description": "Local-first persistent memory for Claude Code. Each user gets their own SQLite brain in ~/.celiums/memory.db. 5 hooks + 6 MCP tools + 9 Cognitive Reflexes. Zero servers, zero accounts, zero data leakage.",
+  "keywords": [
+    "claude-code",
+    "claude",
+    "mcp",
+    "memory",
+    "ai-memory",
+    "emotional-ai",
+    "persistent-memory",
+    "plugin",
+    "hooks"
+  ],
+  "homepage": "https://celiums.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/terrizoaguimor/celiums-memory.git",
+    "directory": "packages/plugin-claude-code"
+  },
+  "license": "Apache-2.0",
+  "author": {
+    "name": "Celiums Solutions LLC",
+    "email": "hello@celiums.ai",
+    "url": "https://celiums.ai"
+  },
+  "type": "module",
+  "bin": {
+    "memory-claude-code": "./bin/install.js",
+    "celiums-memory-install": "./bin/install.js",
+    "celiums-memory-bridge": "./src/bridge.mjs"
+  },
+  "files": [
+    "src",
+    "bin",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "install-hooks": "node ./bin/install.js",
+    "bridge": "node ./src/bridge.mjs"
+  },
+  "dependencies": {
+    "@celiums/memory": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.25.76"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^12.10.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
