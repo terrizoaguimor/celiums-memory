@@ -1,0 +1,8 @@
+# Normalise line endings to LF in the repository regardless of platform.
+# Without this, a Windows clone with core.autocrlf=true checks out CRLF and
+# every formatter/linter run reports the whole tree as modified.
+* text=auto eol=lf
+
+# Collapsed in GitHub review and excluded from language statistics, but still
+# diffable locally — a lockfile change is a supply-chain change worth reading.
+pnpm-lock.yaml linguist-generated=true
