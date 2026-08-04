@@ -15,7 +15,7 @@ const DIMENSION: u16 = 256;
 
 fn session(dir: &tempfile::TempDir) -> Session {
     let engine = MemoryEngine::open(dir.path(), DIMENSION, RecallConfig::default()).expect("open");
-    Session::new(engine, DIMENSION)
+    Session::new(engine, DIMENSION, dir.path().to_path_buf())
 }
 
 fn initialized_session(dir: &tempfile::TempDir) -> Session {
@@ -74,7 +74,7 @@ fn full_remember_recall_round_trip_over_mcp() {
             "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}
         }))
         .expect("tools list");
-    assert_eq!(tools["result"]["tools"].as_array().map(Vec::len), Some(6));
+    assert_eq!(tools["result"]["tools"].as_array().map(Vec::len), Some(11));
 
     let remembered = call(
         &mut session,
@@ -217,6 +217,75 @@ fn tool_errors_are_reported_not_crashed() {
         }))
         .expect("response");
     assert_eq!(unknown["error"]["code"], -32602);
+}
+
+#[test]
+fn phase2_tools_work_over_mcp() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut session = initialized_session(&dir);
+
+    // Day 1 belief + snapshot.
+    call(
+        &mut session,
+        "remember",
+        json!({ "content": "Mario Gutierrez decided the architecture is TypeScript with Postgres" }),
+    );
+    let snap = call(&mut session, "snapshot_now", json!({}));
+    assert_eq!(snap["isError"], false);
+    let sequence = snap["structuredContent"]["checkpoint_sequence"]
+        .as_u64()
+        .expect("sequence");
+
+    // Day 2 reversal.
+    call(
+        &mut session,
+        "remember",
+        json!({ "content": "Mario Gutierrez decided to abandon Postgres for rust on Hyphae" }),
+    );
+
+    // Entity graph sees both memories bound to the person.
+    let lookup = call(
+        &mut session,
+        "entity_lookup",
+        json!({ "name": "Mario Gutierrez", "entity_kind": "person" }),
+    );
+    assert_eq!(
+        lookup["structuredContent"]["memories"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+
+    // Time-travel to day 1: only the old belief.
+    let past = call(
+        &mut session,
+        "recall_at",
+        json!({ "query": "architecture decision", "checkpoint_sequence": sequence }),
+    );
+    assert_eq!(past["isError"], false);
+    let results = past["structuredContent"]["results"]
+        .as_array()
+        .expect("results");
+    assert!(!results.is_empty());
+    assert!(
+        results.iter().all(|r| !r["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("abandon")),
+        "day 1 must not know the day-2 reversal"
+    );
+
+    // Consolidation over MCP.
+    let consolidated = call(
+        &mut session,
+        "consolidate",
+        json!({ "text": "user: We settled on Hyphae snapshots for point-in-time recall going forward" }),
+    );
+    assert_eq!(consolidated["structuredContent"]["created"], 1);
+
+    // Lifecycle runs (nothing to archive this young).
+    let lifecycle = call(&mut session, "run_lifecycle", json!({}));
+    assert_eq!(lifecycle["isError"], false);
 }
 
 #[test]

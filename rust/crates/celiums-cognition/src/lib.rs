@@ -13,6 +13,7 @@
 //! this crate's scoring on top of the Hyphae data engine.
 
 pub mod affect;
+pub mod entities;
 pub mod importance;
 pub mod journal;
 pub mod limbic;
@@ -23,6 +24,7 @@ pub use affect::{
     Pad, classify_memory_type, compute_arousal, compute_dominance, compute_valence, extract_pad,
     resonance,
 };
+pub use entities::{EntityKind, ExtractedEntity, extract_entities};
 pub use importance::{ImportanceSignals, classify_importance, content_boost, score_importance};
 pub use journal::{JournalEntryType, SupersessionRelation, is_valid_agent_id};
 pub use limbic::{LimbicConfig, MemoryInfluence, average_memory_pad, emotion_label};
@@ -64,6 +66,41 @@ impl MemoryType {
             "semantic" => Some(Self::Semantic),
             "procedural" => Some(Self::Procedural),
             "emotional" => Some(Self::Emotional),
+            _ => None,
+        }
+    }
+}
+
+/// Lifecycle state of a memory, mirroring the `memory_state` enum of
+/// the TypeScript engine's schema.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MemoryState {
+    /// Freshly stored, not yet consolidated.
+    #[default]
+    Active,
+    /// Merged or confirmed by consolidation.
+    Consolidated,
+    /// Importance decayed below the archive threshold; excluded from
+    /// recall until reactivated.
+    Archived,
+}
+
+impl MemoryState {
+    /// Canonical lowercase name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Consolidated => "consolidated",
+            Self::Archived => "archived",
+        }
+    }
+
+    /// Parses the canonical lowercase name.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "active" => Some(Self::Active),
+            "consolidated" => Some(Self::Consolidated),
+            "archived" => Some(Self::Archived),
             _ => None,
         }
     }
@@ -128,6 +165,18 @@ mod tests {
         assert_eq!(Scope::default(), Scope::Project);
         for scope in [Scope::Session, Scope::Project, Scope::Global] {
             assert_eq!(Scope::parse(scope.as_str()), Some(scope));
+        }
+    }
+
+    #[test]
+    fn memory_state_round_trips_and_defaults_to_active() {
+        assert_eq!(MemoryState::default(), MemoryState::Active);
+        for state in [
+            MemoryState::Active,
+            MemoryState::Consolidated,
+            MemoryState::Archived,
+        ] {
+            assert_eq!(MemoryState::parse(state.as_str()), Some(state));
         }
     }
 }

@@ -20,9 +20,10 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use celiums_cognition::{
-    ChannelScores, JournalEntryType, LimbicConfig, MemoryInfluence, Pad, RecallWeights, Scope,
-    SupersessionRelation, classify_importance, classify_memory_type, emotional_weight, extract_pad,
-    is_valid_agent_id, limbic, recall, resonance, retention, retrievability,
+    ChannelScores, JournalEntryType, LimbicConfig, MemoryInfluence, MemoryState, Pad,
+    RecallWeights, Scope, SupersessionRelation, classify_importance, classify_memory_type,
+    emotional_weight, extract_entities, extract_pad, is_valid_agent_id, limbic, recall, resonance,
+    retention, retrievability,
 };
 use hyphae_core::{Q15Vector, VectorSpaceDefinition, VectorSpaceName, VectorValueError};
 use hyphae_engine::{EngineError as HyphaeError, HyphaeEngine};
@@ -36,6 +37,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::affect_state::{AFFECT_STATE_KEY, AffectState};
+use crate::entity_index::{EntityRecord, entity_key, entity_prefix};
 use crate::journal::{
     BrokenLink, BrokenReason, ChainReport, JournalEntry, MAX_VALENCE_REASON_CHARS, Supersession,
     agent_prefix, chain_hash, entry_key, supersession_prefix,
@@ -55,6 +57,26 @@ const CANDIDATE_SCORE_NANOS: i64 = 200_000_000;
 const CANDIDATE_FACTOR: usize = 2;
 /// How many top results are reactivated per recall (recall.ts:271).
 const REACTIVATION_TOP: usize = 10;
+/// Cosine similarity above which two memories are duplicates
+/// (consolidate.ts:52 `deduplicationThreshold: 0.92`), in nanos.
+const DEDUP_SCORE_NANOS: i64 = 920_000_000;
+/// Duplicate candidates fetched per line (consolidate.ts:104).
+const DEDUP_CANDIDATES: usize = 3;
+/// Minimum importance for a line to become a memory
+/// (consolidate.ts:53).
+const MIN_CONSOLIDATION_IMPORTANCE: f64 = 0.2;
+/// Lines shorter than this are noise (consolidate.ts:83).
+const MIN_CONSOLIDATION_LINE_CHARS: usize = 20;
+/// Cap of lines per consolidation pass (consolidate.ts:54).
+const MAX_LINES_PER_CONSOLIDATION: usize = 50;
+/// Strength granted to a memory confirmed by consolidation
+/// (consolidate.ts:113).
+const CONSOLIDATION_STRENGTH: f64 = 1.2;
+/// Lifecycle floor: importance never decays below this
+/// (lifecycle.ts:74).
+const MIN_IMPORTANCE: f64 = 0.01;
+/// Lifecycle pagination batch (getForLifecycle batchSize).
+const LIFECYCLE_BATCH: usize = 200;
 
 /// Failure while operating the memory engine.
 #[derive(Debug, Error)]
@@ -86,6 +108,12 @@ pub enum MemoryEngineError {
     InvalidAgentId {
         /// Rejected candidate (truncated by the caller if huge).
         agent_id: String,
+    },
+    /// A snapshot could not be verified, loaded or interpreted.
+    #[error("snapshot failure: {detail}")]
+    Snapshot {
+        /// What failed.
+        detail: String,
     },
     /// A referenced journal entry does not exist for this agent.
     #[error("journal entry `{entry_id}` not found for agent `{agent_id}`")]
@@ -190,6 +218,26 @@ pub struct RecallResponse {
     pub lexical_abstention: Option<BranchAbstention>,
     /// Semantic branch abstention, when it produced nothing.
     pub semantic_abstention: Option<BranchAbstention>,
+}
+
+/// Outcome of one consolidation pass.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ConsolidationReport {
+    /// New memories created.
+    pub created: u64,
+    /// Lines merged into existing duplicates.
+    pub merged: u64,
+    /// Lines below the noise or importance floor.
+    pub skipped: u64,
+}
+
+/// Outcome of one lifecycle pass.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LifecycleReport {
+    /// Memories whose importance decayed.
+    pub decayed: u64,
+    /// Memories archived (importance below the threshold).
+    pub archived: u64,
 }
 
 /// A request to write one journal entry.
@@ -330,8 +378,11 @@ impl MemoryEngine {
             strength: 1.0,
             retrieval_count: 0,
             memory_type: classify_memory_type(&request.content),
+            state: MemoryState::Active,
             scope: request.scope,
             tags: request.tags,
+            entities: extract_entities(&request.content),
+            consolidation_count: 0,
             created_at_ms: request.now_ms,
             last_retrieved_at_ms: request.now_ms,
             content: request.content,
@@ -341,11 +392,68 @@ impl MemoryEngine {
             .put_record(Uuid::now_v7(), &memory.to_record())?;
         self.hyphae
             .put_vectors(Uuid::now_v7(), &memory_space(), &[(memory.key(), vector)])?;
+        self.index_entities(&memory)?;
 
         // The stimulus moves the engine's own emotional state — the
         // amygdala pass of the TS pipeline (limbic.updateState on input).
         self.update_affect(memory.pad, &[], request.now_ms)?;
         Ok(memory)
+    }
+
+    /// Memories bound to one entity, newest binding last — the reverse
+    /// edge of the memory graph. Name matching is case-insensitive.
+    ///
+    /// # Errors
+    ///
+    /// Fails on storage or decoding failure.
+    pub fn entity_memories(
+        &self,
+        kind: celiums_cognition::EntityKind,
+        name: &str,
+    ) -> Result<Vec<Memory>, MemoryEngineError> {
+        let Some(record) = self.hyphae.get_record(&entity_key(kind, name))? else {
+            return Ok(Vec::new());
+        };
+        let entity = EntityRecord::from_record(&record)?;
+        entity
+            .memory_ids
+            .iter()
+            .map(|id| self.load_memory(id.as_bytes()))
+            .collect()
+    }
+
+    /// All indexed entities, ordered by kind then name.
+    ///
+    /// # Errors
+    ///
+    /// Fails on storage or decoding failure.
+    pub fn entities(&self) -> Result<Vec<EntityRecord>, MemoryEngineError> {
+        self.scan_prefix(&entity_prefix())?
+            .iter()
+            .map(|record| EntityRecord::from_record(record).map_err(MemoryEngineError::from))
+            .collect()
+    }
+
+    fn index_entities(&mut self, memory: &Memory) -> Result<(), MemoryEngineError> {
+        for extracted in &memory.entities {
+            let key = entity_key(extracted.kind, &extracted.name);
+            let mut entity = match self.hyphae.get_record(&key)? {
+                Some(record) => EntityRecord::from_record(&record)?,
+                None => EntityRecord {
+                    name: extracted.name.to_lowercase(),
+                    kind: extracted.kind,
+                    salience: extracted.salience,
+                    memory_ids: Vec::new(),
+                },
+            };
+            if !entity.memory_ids.contains(&memory.id) {
+                entity.memory_ids.push(memory.id.clone());
+            }
+            entity.salience = entity.salience.max(extracted.salience);
+            self.hyphae
+                .put_record(Uuid::now_v7(), &entity.to_record())?;
+        }
+        Ok(())
     }
 
     /// Recalls memories for a query: hybrid candidate retrieval,
@@ -381,6 +489,9 @@ impl MemoryEngine {
         let mut scored = Vec::with_capacity(candidates.len());
         for (key, (semantic, text_match)) in candidates {
             let memory = self.load_memory(&key)?;
+            if memory.state == MemoryState::Archived {
+                continue;
+            }
             let channels = ChannelScores {
                 semantic,
                 text_match,
@@ -433,6 +544,21 @@ impl MemoryEngine {
             results: scored,
             lexical_abstention,
             semantic_abstention,
+        })
+    }
+
+    /// Creates (or reuses) a verified snapshot of the current
+    /// checkpoint — one durable time-travel point. Snapshots
+    /// accumulate per checkpoint and survive compaction.
+    ///
+    /// # Errors
+    ///
+    /// Fails on storage failure.
+    pub fn snapshot(&self) -> Result<crate::timetravel::SnapshotPoint, MemoryEngineError> {
+        let info = self.hyphae.snapshot()?;
+        Ok(crate::timetravel::SnapshotPoint {
+            path: info.path,
+            checkpoint_sequence: info.checkpoint_sequence,
         })
     }
 
@@ -547,6 +673,177 @@ impl MemoryEngine {
                     id: String::from_utf8_lossy(key).into_owned(),
                 })?;
         Ok(Memory::from_record(&record)?)
+    }
+
+    /// Consolidates a block of conversation text into memories
+    /// (consolidate.ts:74-172).
+    ///
+    /// Lines above the noise floor are classified; each is either
+    /// merged into a semantically-duplicate existing memory (cosine ≥
+    /// 0.92) or stored as a new consolidated memory. Nothing is ever
+    /// deleted.
+    ///
+    /// Two TS bugs are fixed deliberately (documented in the README):
+    /// the merge takes `max(existing.importance, new_importance)` —
+    /// the original used the *similarity score* — and
+    /// `consolidation_count` increments instead of being set to 1.
+    ///
+    /// # Errors
+    ///
+    /// Fails on retrieval or storage failure.
+    pub fn consolidate(
+        &mut self,
+        conversation_text: &str,
+        now_ms: i64,
+    ) -> Result<ConsolidationReport, MemoryEngineError> {
+        let mut report = ConsolidationReport::default();
+        let mut lines = Vec::new();
+        for line in conversation_text.lines().map(str::trim) {
+            if line.is_empty() {
+                continue;
+            }
+            if line.chars().count() <= MIN_CONSOLIDATION_LINE_CHARS {
+                report.skipped += 1;
+            } else if lines.len() < MAX_LINES_PER_CONSOLIDATION {
+                lines.push(line);
+            }
+        }
+
+        for line in lines {
+            let content = strip_speaker_prefix(line);
+            let (importance, _signals) = classify_importance(content);
+            if importance < MIN_CONSOLIDATION_IMPORTANCE {
+                report.skipped += 1;
+                continue;
+            }
+
+            let embedding =
+                crate::embed::deterministic_embed(content, usize::from(self.dimension) as u16);
+            if embedding.iter().all(|component| *component == 0.0) {
+                report.skipped += 1;
+                continue;
+            }
+            let vector = quantize(&embedding, self.dimension)?;
+            let duplicate = self.find_duplicate(vector.clone())?;
+
+            match duplicate {
+                Some(existing_key) => {
+                    let mut existing = self.load_memory(&existing_key)?;
+                    existing.importance = existing.importance.max(importance);
+                    existing.strength = CONSOLIDATION_STRENGTH;
+                    existing.consolidation_count = existing.consolidation_count.saturating_add(1);
+                    existing.state = MemoryState::Consolidated;
+                    existing.last_retrieved_at_ms = now_ms;
+                    self.hyphae
+                        .put_record(Uuid::now_v7(), &existing.to_record())?;
+                    report.merged += 1;
+                }
+                None => {
+                    let memory = self.remember(RememberRequest {
+                        content: content.to_owned(),
+                        embedding,
+                        tags: Vec::new(),
+                        scope: Scope::Project,
+                        importance: Some(importance),
+                        now_ms,
+                    })?;
+                    // Consolidation-born memories start consolidated.
+                    let mut consolidated = memory;
+                    consolidated.state = MemoryState::Consolidated;
+                    consolidated.consolidation_count = 1;
+                    self.hyphae
+                        .put_record(Uuid::now_v7(), &consolidated.to_record())?;
+                    report.created += 1;
+                }
+            }
+        }
+        Ok(report)
+    }
+
+    /// Applies lifecycle decay to every non-archived memory
+    /// (lifecycle.ts:57-107): `importance *= 0.95^days_idle`, floored
+    /// at 0.01, archived below 0.05.
+    ///
+    /// The TS engine declared this as a daily cron that never actually
+    /// ran (method-name mismatch, dead code); here it is a real,
+    /// callable maintenance operation.
+    ///
+    /// # Errors
+    ///
+    /// Fails on storage or decoding failure.
+    pub fn run_lifecycle(&mut self, now_ms: i64) -> Result<LifecycleReport, MemoryEngineError> {
+        let mut report = LifecycleReport::default();
+        let memories = self.all_memories()?;
+        for mut memory in memories {
+            if memory.state == MemoryState::Archived {
+                continue;
+            }
+            let days_idle = days_between(memory.last_retrieved_at_ms, now_ms);
+            let decayed =
+                retention::lifecycle_decay(memory.importance, days_idle).max(MIN_IMPORTANCE);
+            let changed = (decayed - memory.importance).abs() > 1e-9;
+            memory.importance = decayed;
+            if decayed < retention::ARCHIVE_THRESHOLD {
+                memory.state = MemoryState::Archived;
+                report.archived += 1;
+            } else if changed {
+                report.decayed += 1;
+            } else {
+                continue;
+            }
+            self.hyphae
+                .put_record(Uuid::now_v7(), &memory.to_record())?;
+        }
+        Ok(report)
+    }
+
+    fn find_duplicate(&self, vector: Q15Vector) -> Result<Option<Vec<u8>>, MemoryEngineError> {
+        let outcome = self.hyphae.retrieve_exact(
+            &ExactRetrievalRequest {
+                vector_space: memory_space(),
+                query: vector,
+                limit: DEDUP_CANDIDATES,
+                minimum_score_nanos: DEDUP_SCORE_NANOS,
+                minimum_margin_nanos: 0,
+            },
+            &ExactRetrievalLimits::default(),
+        )?;
+        Ok(match outcome {
+            ExactRetrievalOutcome::Matches { matches, .. } => {
+                matches.into_iter().next().map(|matched| matched.key)
+            }
+            ExactRetrievalOutcome::Abstained(_) => None,
+        })
+    }
+
+    fn all_memories(&self) -> Result<Vec<Memory>, MemoryEngineError> {
+        use hyphae_query::{CompareOperator, ExecutionLimits, Filter, Query, Value};
+        let mut memories = Vec::new();
+        let mut cursor = None;
+        loop {
+            let result = self.hyphae.query(
+                &Query {
+                    filter: Filter::Compare {
+                        path: FieldPath::field("kind"),
+                        operator: CompareOperator::Equal,
+                        value: Value::String(crate::memory::MEMORY_KIND.to_owned()),
+                    },
+                    sort: Vec::new(),
+                    cursor,
+                    limit: LIFECYCLE_BATCH,
+                    aggregation: None,
+                },
+                &ExecutionLimits::default(),
+            )?;
+            for record in &result.rows {
+                memories.push(Memory::from_record(record)?);
+            }
+            match result.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        Ok(memories)
     }
 
     /// Writes one journal entry, chained to the agent's previous entry.
@@ -866,12 +1163,24 @@ impl MemoryEngine {
             entry.memory.importance = outcome.importance;
             entry.memory.strength = outcome.strength;
             entry.memory.retrieval_count = outcome.retrieval_count;
+            entry.memory.state = MemoryState::Active;
             entry.memory.last_retrieved_at_ms = now_ms;
             self.hyphae
                 .put_record(Uuid::now_v7(), &entry.memory.to_record())?;
         }
         Ok(())
     }
+}
+
+/// Strips a leading `user:` / `assistant:` speaker prefix
+/// (consolidate.ts:127).
+fn strip_speaker_prefix(line: &str) -> &str {
+    for prefix in ["user:", "assistant:", "User:", "Assistant:"] {
+        if let Some(stripped) = line.strip_prefix(prefix) {
+            return stripped.trim();
+        }
+    }
+    line
 }
 
 fn validated_agent_id(candidate: &str) -> Result<String, MemoryEngineError> {
@@ -885,11 +1194,11 @@ fn validated_agent_id(candidate: &str) -> Result<String, MemoryEngineError> {
     }
 }
 
-fn memory_space() -> VectorSpaceName {
+pub(crate) fn memory_space() -> VectorSpaceName {
     VectorSpaceName::new(MEMORY_SPACE).unwrap_or_else(|_| unreachable!("static valid name"))
 }
 
-fn content_index() -> VectorSpaceName {
+pub(crate) fn content_index() -> VectorSpaceName {
     VectorSpaceName::new(CONTENT_INDEX).unwrap_or_else(|_| unreachable!("static valid name"))
 }
 

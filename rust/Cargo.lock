@@ -86,6 +86,7 @@ dependencies = [
  "hyphae-engine",
  "hyphae-query",
  "hyphae-retrieval",
+ "hyphae-storage",
  "tempfile",
  "thiserror",
  "uuid",

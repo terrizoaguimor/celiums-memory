@@ -15,12 +15,13 @@
 
 use std::io::{self, BufRead, Write};
 
-use celiums_cognition::{JournalEntryType, Scope};
+use celiums_cognition::{EntityKind, JournalEntryType, Scope};
 use celiums_memory_engine::{
-    BranchAbstention, JournalRecallRequest, JournalWriteRequest, MemoryEngine, RecallRequest,
-    RememberRequest, ScoredMemory, deterministic_embed,
+    BranchAbstention, JournalRecallRequest, JournalWriteRequest, MemoryEngine, RecallConfig,
+    RecallRequest, RememberRequest, ScoredMemory, deterministic_embed, recall_at, snapshot_points,
 };
 use serde_json::{Value, json};
+use std::path::PathBuf;
 
 /// MCP protocol revision, matching the Hyphae adapter.
 const MCP_PROTOCOL: &str = "2025-11-25";
@@ -33,16 +34,19 @@ const DEFAULT_RECALL_LIMIT: usize = 10;
 pub struct Session {
     engine: MemoryEngine,
     dimension: u16,
+    data_dir: PathBuf,
     initialize_seen: bool,
     initialized: bool,
 }
 
 impl Session {
-    /// Creates a session that owns `engine`.
-    pub fn new(engine: MemoryEngine, dimension: u16) -> Self {
+    /// Creates a session that owns `engine`. `data_dir` locates the
+    /// snapshot directory for time-travel tools.
+    pub fn new(engine: MemoryEngine, dimension: u16, data_dir: PathBuf) -> Self {
         Self {
             engine,
             dimension,
+            data_dir,
             initialize_seen: false,
             initialized: false,
         }
@@ -163,6 +167,11 @@ impl Session {
             "journal_recall" => self.tool_journal_recall(&arguments),
             "journal_verify_chain" => self.tool_journal_verify(&arguments),
             "memory_stats" => self.tool_stats(),
+            "entity_lookup" => self.tool_entity_lookup(&arguments),
+            "consolidate" => self.tool_consolidate(&arguments),
+            "snapshot_now" => self.tool_snapshot_now(),
+            "recall_at" => self.tool_recall_at(&arguments),
+            "run_lifecycle" => self.tool_run_lifecycle(),
             _ => return rpc_error(id, -32602, "Unknown tool"),
         };
         match result {
@@ -322,6 +331,105 @@ impl Session {
         }))
     }
 
+    fn tool_entity_lookup(&mut self, arguments: &Value) -> Result<Value, String> {
+        match arguments.get("name").and_then(Value::as_str) {
+            Some(name) => {
+                let kind = arguments
+                    .get("entity_kind")
+                    .and_then(Value::as_str)
+                    .and_then(EntityKind::parse)
+                    .ok_or("entity_kind must be one of person|technology|project")?;
+                let memories = self
+                    .engine
+                    .entity_memories(kind, name)
+                    .map_err(|error| error.to_string())?;
+                Ok(json!({
+                    "memories": memories.iter().map(|memory| json!({
+                        "id": memory.id,
+                        "content": memory.content,
+                        "importance": memory.importance,
+                    })).collect::<Vec<_>>(),
+                }))
+            }
+            None => {
+                let entities = self.engine.entities().map_err(|error| error.to_string())?;
+                Ok(json!({
+                    "entities": entities.iter().map(|entity| json!({
+                        "name": entity.name,
+                        "entity_kind": entity.kind.as_str(),
+                        "salience": entity.salience,
+                        "memory_count": entity.memory_ids.len(),
+                    })).collect::<Vec<_>>(),
+                }))
+            }
+        }
+    }
+
+    fn tool_consolidate(&mut self, arguments: &Value) -> Result<Value, String> {
+        let report = self
+            .engine
+            .consolidate(&required_string(arguments, "text")?, now_ms())
+            .map_err(|error| error.to_string())?;
+        Ok(json!({
+            "created": report.created,
+            "merged": report.merged,
+            "skipped": report.skipped,
+        }))
+    }
+
+    fn tool_snapshot_now(&mut self) -> Result<Value, String> {
+        let point = self.engine.snapshot().map_err(|error| error.to_string())?;
+        Ok(json!({
+            "checkpoint_sequence": point.checkpoint_sequence,
+            "path": point.path.display().to_string(),
+        }))
+    }
+
+    fn tool_recall_at(&mut self, arguments: &Value) -> Result<Value, String> {
+        let query = required_string(arguments, "query")?;
+        let embedding = self.embedding_from(arguments, &query)?;
+        let points = snapshot_points(&self.data_dir).map_err(|error| error.to_string())?;
+        let point = match arguments.get("checkpoint_sequence").and_then(Value::as_u64) {
+            Some(sequence) => points
+                .into_iter()
+                .find(|point| point.checkpoint_sequence == sequence)
+                .ok_or_else(|| format!("no snapshot with checkpoint_sequence {sequence}"))?,
+            None => points
+                .into_iter()
+                .next_back()
+                .ok_or("no snapshots exist yet; call snapshot_now first")?,
+        };
+        let response = recall_at(
+            &point.path,
+            &RecallConfig::default(),
+            &RecallRequest {
+                query_text: query,
+                embedding,
+                limit: arguments
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .map_or(DEFAULT_RECALL_LIMIT, |value| value.max(1) as usize),
+                current_state: None,
+                now_ms: now_ms(),
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(json!({
+            "checkpoint_sequence": point.checkpoint_sequence,
+            "results": response.results.iter().map(scored_json).collect::<Vec<_>>(),
+            "semantic_abstention": response.semantic_abstention.map(abstention_str),
+            "lexical_abstention": response.lexical_abstention.map(abstention_str),
+        }))
+    }
+
+    fn tool_run_lifecycle(&mut self) -> Result<Value, String> {
+        let report = self
+            .engine
+            .run_lifecycle(now_ms())
+            .map_err(|error| error.to_string())?;
+        Ok(json!({ "decayed": report.decayed, "archived": report.archived }))
+    }
+
     /// The caller's embedding when provided, the deterministic offline
     /// embedder otherwise.
     fn embedding_from(&self, arguments: &Value, text: &str) -> Result<Vec<f32>, String> {
@@ -456,6 +564,55 @@ fn tool_definitions() -> Vec<Value> {
             &json!({ "type": "object", "properties": {}, "additionalProperties": false }),
             true,
         ),
+        tool(
+            "entity_lookup",
+            "List indexed entities, or the memories bound to one entity (the memory graph).",
+            &json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "entity_kind": { "type": "string", "enum": ["person","technology","project"] }
+                }
+            }),
+            true,
+        ),
+        tool(
+            "consolidate",
+            "Distil conversation text into memories: new when novel, merged when duplicate (cosine >= 0.92).",
+            &json!({
+                "type": "object",
+                "properties": { "text": { "type": "string" } },
+                "required": ["text"]
+            }),
+            false,
+        ),
+        tool(
+            "snapshot_now",
+            "Create a verified time-travel point of the current state.",
+            &json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            false,
+        ),
+        tool(
+            "recall_at",
+            "Recall from a past snapshot: what the agent knew then. Read-only, cryptographically verified.",
+            &json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "checkpoint_sequence": { "type": "integer" },
+                    "embedding": { "type": "array", "items": { "type": "number" } },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+                },
+                "required": ["query"]
+            }),
+            true,
+        ),
+        tool(
+            "run_lifecycle",
+            "Apply lifecycle decay: idle memories lose importance; below 0.05 they archive.",
+            &json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            false,
+        ),
     ]
 }
 
@@ -568,7 +725,7 @@ mod tests {
     #[test]
     fn tool_definitions_are_valid_objects() {
         let tools = tool_definitions();
-        assert_eq!(tools.len(), 6);
+        assert_eq!(tools.len(), 11);
         assert!(tools.iter().all(|tool| tool["inputSchema"].is_object()));
         assert!(tools.iter().all(|tool| tool["name"].is_string()));
     }

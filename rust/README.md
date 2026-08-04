@@ -130,6 +130,37 @@ binary. An MCP client config is one line:
 { "command": "celiums-memory", "args": ["mcp"] }
 ```
 
+Phase 2 (this tree): the retrieval moat —
+
+- **Entity graph** — extraction (people / technologies / URLs, port of
+  `extractEntities`) on every `remember`, plus the reverse index
+  (`entity/<kind>/<name>` records): a queryable bipartite memory graph
+  with zero graph-database infrastructure. `entity_lookup` over MCP.
+- **Consolidation** — `consolidate` distils conversation text: lines
+  above the noise/importance floor either merge into a semantic
+  duplicate (exact cosine ≥ 0.92) or become new consolidated memories.
+  Nothing is ever deleted. Two TS bugs fixed deliberately: the merge
+  takes `max(existing.importance, new)` (the original compared against
+  the *similarity score*) and `consolidation_count` increments (the
+  original hard-set it to 1).
+- **Lifecycle** — `run_lifecycle` applies `importance *= 0.95^days`
+  (floor 0.01) and archives below 0.05; archived memories leave recall
+  until reactivated. The TS engine declared this as a daily cron that
+  never actually ran (method-name mismatch); here it is real.
+- **Time-travel recall** — `snapshot_now` creates a verified
+  checkpoint (`snapshot-{seq}.hysnap`, CRC32C + BLAKE3, accumulated
+  per checkpoint, survives compaction); `recall_at` runs the full
+  hybrid + cognitive pipeline over a past snapshot, read-only (no
+  reactivation, no affect drift). "What did the agent believe last
+  Tuesday — and prove it" is a capability no LLM-pipeline memory
+  product can copy without rebuilding the substrate.
+- **Benchmark** — `cargo run --release -p celiums-memory-engine
+  --example benchmark`: paraphrase probes against a noisy corpus.
+  Current numbers (offline embedder, 216 memories): top-1 100%,
+  top-5 100%, recall p50 ≈ 10 ms. The public LongMemEval/LoCoMo run
+  (TS `packages/memory-bench` harness → MCP → this engine) is the
+  next gate.
+
 Next phases:
 
 1. Ethics Layer A (deterministic lexicon write-gate; `enforcementBlocked`
@@ -137,8 +168,7 @@ Next phases:
 2. Circadian clock (pure `A(t)` cosine model + 12 factors) feeding
    arousal into the SAR filter, plus reward/interoception completing
    `updateStateFull`.
-3. Entity extraction + consolidation + time-travel recall over Hyphae
-   snapshots (the LongMemEval/LoCoMo competitive phase).
+3. LongMemEval/LoCoMo public run vs mem0/Zep (the competitive gate).
 4. Server binary (axum, loopback-first like `hyphae-server`) replacing
    the Node `quickstart.ts` HTTP surface; result proofs exposed.
 5. `journal_arc` / introspection (LLM-optional, BYO provider).

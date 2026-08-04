@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use celiums_cognition::{MemoryType, Pad, Scope};
+use celiums_cognition::{EntityKind, ExtractedEntity, MemoryState, MemoryType, Pad, Scope};
 use hyphae_query::{Record, Value};
 use thiserror::Error;
 
@@ -34,10 +34,16 @@ pub struct Memory {
     pub retrieval_count: u32,
     /// Memory classification.
     pub memory_type: MemoryType,
+    /// Lifecycle state; archived memories are excluded from recall.
+    pub state: MemoryState,
     /// Visibility scope.
     pub scope: Scope,
     /// Free-form tags.
     pub tags: Vec<String>,
+    /// Entities the memory binds to (hippocampal binding).
+    pub entities: Vec<ExtractedEntity>,
+    /// Times consolidation merged another observation into this one.
+    pub consolidation_count: u32,
     /// Creation time, Unix milliseconds.
     pub created_at_ms: i64,
     /// Last recall time, Unix milliseconds.
@@ -87,12 +93,38 @@ impl Memory {
             Value::String(self.memory_type.as_str().to_owned()),
         );
         fields.insert(
+            "state".to_owned(),
+            Value::String(self.state.as_str().to_owned()),
+        );
+        fields.insert(
             "scope".to_owned(),
             Value::String(self.scope.as_str().to_owned()),
         );
         fields.insert(
             "tags".to_owned(),
             Value::Array(self.tags.iter().cloned().map(Value::String).collect()),
+        );
+        fields.insert(
+            "entities".to_owned(),
+            Value::Array(
+                self.entities
+                    .iter()
+                    .map(|entity| {
+                        Value::Object(BTreeMap::from([
+                            ("name".to_owned(), Value::String(entity.name.clone())),
+                            (
+                                "entity_kind".to_owned(),
+                                Value::String(entity.kind.as_str().to_owned()),
+                            ),
+                            ("salience".to_owned(), nanos_value(entity.salience)),
+                        ]))
+                    })
+                    .collect(),
+            ),
+        );
+        fields.insert(
+            "consolidation_count".to_owned(),
+            Value::Integer(i64::from(self.consolidation_count)),
         );
         fields.insert(
             "created_at_ms".to_owned(),
@@ -136,13 +168,43 @@ impl Memory {
                     field: "memory_type",
                 },
             )?,
+            state: MemoryState::parse(&string_field(fields, "state")?)
+                .ok_or(MemoryDecodeError::Field { field: "state" })?,
             scope: Scope::parse(&string_field(fields, "scope")?)
                 .ok_or(MemoryDecodeError::Field { field: "scope" })?,
             tags: tags_field(fields)?,
+            entities: entities_field(fields)?,
+            consolidation_count: integer_field(fields, "consolidation_count")?
+                .try_into()
+                .map_err(|_| MemoryDecodeError::Field {
+                    field: "consolidation_count",
+                })?,
             created_at_ms: integer_field(fields, "created_at_ms")?,
             last_retrieved_at_ms: integer_field(fields, "last_retrieved_at_ms")?,
         })
     }
+}
+
+fn entities_field(
+    fields: &BTreeMap<String, Value>,
+) -> Result<Vec<ExtractedEntity>, MemoryDecodeError> {
+    let Some(Value::Array(values)) = fields.get("entities") else {
+        return Err(MemoryDecodeError::Field { field: "entities" });
+    };
+    values
+        .iter()
+        .map(|value| {
+            let Value::Object(entity) = value else {
+                return Err(MemoryDecodeError::Field { field: "entities" });
+            };
+            Ok(ExtractedEntity {
+                name: string_field(entity, "name")?,
+                kind: EntityKind::parse(&string_field(entity, "entity_kind")?)
+                    .ok_or(MemoryDecodeError::Field { field: "entities" })?,
+                salience: nanos_field(entity, "salience")?,
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn nanos_value(value: f64) -> Value {
@@ -210,8 +272,15 @@ mod tests {
             strength: 1.0,
             retrieval_count: 3,
             memory_type: MemoryType::Episodic,
+            state: MemoryState::Active,
             scope: Scope::Project,
             tags: vec!["rust".to_owned(), "decision".to_owned()],
+            entities: vec![ExtractedEntity {
+                name: "rust".to_owned(),
+                kind: EntityKind::Technology,
+                salience: 0.5,
+            }],
+            consolidation_count: 1,
             created_at_ms: 1_770_000_000_000,
             last_retrieved_at_ms: 1_770_100_000_000,
         }

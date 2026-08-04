@@ -71,7 +71,7 @@ fn run() -> Result<(), String> {
     let engine = MemoryEngine::open(&data_dir, dimension, RecallConfig::default())
         .map_err(|error| format!("cannot open data directory {}: {error}", data_dir.display()))?;
 
-    let mut session = mcp::Session::new(engine, dimension);
+    let mut session = mcp::Session::new(engine, dimension, data_dir);
     let mut input = BufReader::new(io::stdin().lock());
     let mut output = BufWriter::new(io::stdout().lock());
     session

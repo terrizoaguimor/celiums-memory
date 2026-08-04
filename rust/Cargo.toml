@@ -26,6 +26,7 @@ hyphae-core = "=0.2.1"
 hyphae-engine = "=0.2.1"
 hyphae-query = "=0.2.1"
 hyphae-retrieval = "=0.2.1"
+hyphae-storage = "=0.2.1"
 celiums-memory-engine = { path = "crates/celiums-memory-engine" }
 # Same digest family as the Hyphae log; used for the journal chain.
 blake3 = "1"
