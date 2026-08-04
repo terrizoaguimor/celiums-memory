@@ -20,8 +20,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use celiums_cognition::{
-    ChannelScores, Pad, RecallWeights, Scope, classify_importance, classify_memory_type,
-    emotional_weight, extract_pad, recall, resonance, retention, retrievability,
+    ChannelScores, LimbicConfig, MemoryInfluence, Pad, RecallWeights, Scope, classify_importance,
+    classify_memory_type, emotional_weight, extract_pad, limbic, recall, resonance, retention,
+    retrievability,
 };
 use hyphae_core::{Q15Vector, VectorSpaceDefinition, VectorSpaceName, VectorValueError};
 use hyphae_engine::{EngineError as HyphaeError, HyphaeEngine};
@@ -34,6 +35,7 @@ use hyphae_retrieval::{
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::affect_state::{AFFECT_STATE_KEY, AffectState};
 use crate::memory::{Memory, MemoryDecodeError};
 use crate::quantize::{QuantizeError, quantize};
 
@@ -126,9 +128,10 @@ pub struct RecallRequest {
     pub embedding: Vec<f32>,
     /// Maximum results wanted.
     pub limit: usize,
-    /// The agent's current PAD state; `None` scores resonance
-    /// neutrally at 0.5 and assumes optimal arousal, exactly like the
-    /// TypeScript engine without a limbic engine.
+    /// Explicit PAD state override. `None` uses the engine's own
+    /// durable limbic state (decayed to `now_ms`), which is the normal
+    /// mode; an override supports per-request states, e.g. one state
+    /// per conversation.
     pub current_state: Option<Pad>,
     /// Current time, Unix milliseconds. Explicit for determinism.
     pub now_ms: i64,
@@ -173,10 +176,17 @@ pub struct RecallResponse {
 type BranchCandidates = (Vec<(Vec<u8>, f64)>, Option<BranchAbstention>);
 
 /// Durable cognitive memory engine over Hyphae.
+///
+/// The engine carries its own limbic (PAD) state, persisted in the
+/// same durable store as the memories: no cache service holds it, and
+/// `&mut self` serialises updates — the role the Valkey distributed
+/// mutex played in the TypeScript engine.
 pub struct MemoryEngine {
     hyphae: HyphaeEngine,
     dimension: u16,
     config: RecallConfig,
+    limbic_config: LimbicConfig,
+    affect: AffectState,
 }
 
 impl MemoryEngine {
@@ -210,11 +220,35 @@ impl MemoryEngine {
         )
         .map_err(HyphaeError::from)?;
         hyphae.define_lexical_index(Uuid::now_v7(), index)?;
+
+        let limbic_config = LimbicConfig::default();
+        let affect = match hyphae.get_record(AFFECT_STATE_KEY)? {
+            Some(record) => AffectState::from_record(&record)?,
+            None => AffectState {
+                pad: limbic_config.homeostatic,
+                updated_at_ms: 0,
+            },
+        };
         Ok(Self {
             hyphae,
             dimension,
             config,
+            limbic_config,
+            affect,
         })
+    }
+
+    /// Current limbic (PAD) state after homeostatic decay to `now_ms`.
+    ///
+    /// Fresh-on-read: the stored snapshot is decayed by the elapsed
+    /// time on every read, so long-idle engines report a state near
+    /// baseline instead of a stale spike.
+    pub fn affect_state(&self, now_ms: i64) -> Pad {
+        limbic::decay(
+            self.affect.pad,
+            &self.limbic_config,
+            minutes_between(self.affect.updated_at_ms, now_ms),
+        )
     }
 
     /// Stores one memory: classifies importance, affect and type from
@@ -248,6 +282,10 @@ impl MemoryEngine {
             .put_record(Uuid::now_v7(), &memory.to_record())?;
         self.hyphae
             .put_vectors(Uuid::now_v7(), &memory_space(), &[(memory.key(), vector)])?;
+
+        // The stimulus moves the engine's own emotional state — the
+        // amygdala pass of the TS pipeline (limbic.updateState on input).
+        self.update_affect(memory.pad, &[], request.now_ms)?;
         Ok(memory)
     }
 
@@ -277,9 +315,9 @@ impl MemoryEngine {
             candidates.entry(key).or_insert((0.0, 0.0)).1 = lexical;
         }
 
-        let current_arousal = request
+        let current_state = request
             .current_state
-            .map_or_else(recall::neutral_arousal, |state| state.arousal);
+            .unwrap_or_else(|| self.affect_state(request.now_ms));
 
         let mut scored = Vec::with_capacity(candidates.len());
         for (key, (semantic, text_match)) in candidates {
@@ -293,11 +331,9 @@ impl MemoryEngine {
                     memory.strength,
                 ),
                 emotional: emotional_weight(memory.pad.pleasure, memory.pad.arousal),
-                resonance: request
-                    .current_state
-                    .map_or(0.5, |state| resonance(state, memory.pad)),
+                resonance: resonance(current_state, memory.pad),
             };
-            let final_score = recall::score(&self.config.weights, &channels, current_arousal);
+            let final_score = recall::score(&self.config.weights, &channels, current_state.arousal);
             scored.push(ScoredMemory {
                 memory,
                 channels,
@@ -319,6 +355,21 @@ impl MemoryEngine {
             self.reactivate_top(&mut scored, request.now_ms)?;
         }
 
+        // Hippocampal feedback: recalled memories pull the engine's
+        // emotional state (the γ term of the limbic update). The input
+        // term is zero here; `remember` covers the stimulus side.
+        if request.current_state.is_none() && !scored.is_empty() {
+            let influences: Vec<MemoryInfluence> = scored
+                .iter()
+                .take(REACTIVATION_TOP)
+                .map(|entry| MemoryInfluence {
+                    pad: entry.memory.pad,
+                    weight: entry.memory.importance,
+                })
+                .collect();
+            self.update_affect(Pad::default(), &influences, request.now_ms)?;
+        }
+
         Ok(RecallResponse {
             results: scored,
             lexical_abstention,
@@ -326,16 +377,20 @@ impl MemoryEngine {
         })
     }
 
-    /// Total stored memories, straight from a durable scan page count.
+    /// Total stored memories (internal state records excluded).
     ///
     /// # Errors
     ///
     /// Fails when the underlying query fails.
     pub fn count(&self) -> Result<u64, MemoryEngineError> {
-        use hyphae_query::{ExecutionLimits, Filter, Query};
+        use hyphae_query::{CompareOperator, ExecutionLimits, Filter, Query, Value};
         let result = self.hyphae.query(
             &Query {
-                filter: Filter::MatchAll,
+                filter: Filter::Compare {
+                    path: FieldPath::field("kind"),
+                    operator: CompareOperator::Equal,
+                    value: Value::String(crate::memory::MEMORY_KIND.to_owned()),
+                },
                 sort: Vec::new(),
                 cursor: None,
                 limit: 1,
@@ -435,6 +490,25 @@ impl MemoryEngine {
         Ok(Memory::from_record(&record)?)
     }
 
+    /// Applies one limbic update (decayed to `now_ms` first) and
+    /// persists the new state durably.
+    fn update_affect(
+        &mut self,
+        input: Pad,
+        recalled: &[MemoryInfluence],
+        now_ms: i64,
+    ) -> Result<(), MemoryEngineError> {
+        let decayed = self.affect_state(now_ms);
+        let next = limbic::update(decayed, &self.limbic_config, input, recalled);
+        self.affect = AffectState {
+            pad: next,
+            updated_at_ms: now_ms,
+        };
+        self.hyphae
+            .put_record(Uuid::now_v7(), &self.affect.to_record())?;
+        Ok(())
+    }
+
     fn reactivate_top(
         &mut self,
         scored: &mut [ScoredMemory],
@@ -470,4 +544,11 @@ fn days_between(earlier_ms: i64, later_ms: i64) -> f64 {
     #[allow(clippy::cast_precision_loss)]
     let elapsed = (later_ms.saturating_sub(earlier_ms)) as f64;
     f64::max(0.0, elapsed / MS_PER_DAY)
+}
+
+fn minutes_between(earlier_ms: i64, later_ms: i64) -> f64 {
+    const MS_PER_MINUTE: f64 = 1000.0 * 60.0;
+    #[allow(clippy::cast_precision_loss)]
+    let elapsed = (later_ms.saturating_sub(earlier_ms)) as f64;
+    f64::max(0.0, elapsed / MS_PER_MINUTE)
 }

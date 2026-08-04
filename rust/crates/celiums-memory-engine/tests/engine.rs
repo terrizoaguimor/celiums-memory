@@ -224,6 +224,77 @@ fn memories_survive_reopen() {
 }
 
 #[test]
+fn affect_state_shifts_with_stimuli_and_survives_reopen() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let baseline;
+    let after_remember;
+    {
+        let mut engine =
+            MemoryEngine::open(dir.path(), DIMENSION, RecallConfig::default()).expect("open");
+        baseline = engine.affect_state(NOW_MS);
+
+        // High-arousal stimulus: profanity (0.3) + "furious" (0.3) +
+        // exclamations (0.3) + CAPS (0.1) → raw 1.0 → PAD arousal +1.
+        remember(
+            &mut engine,
+            "wtf!! I hate this, I'm furious — the deploy FAILED again and everything is BROKEN!!",
+            embed(0.0, 0.0, 1.0, 0.0),
+            NOW_MS,
+        );
+        after_remember = engine.affect_state(NOW_MS);
+        assert!(
+            after_remember.pleasure < baseline.pleasure,
+            "an angry stimulus must lower pleasure: {} -> {}",
+            baseline.pleasure,
+            after_remember.pleasure
+        );
+        assert!(after_remember.arousal > baseline.arousal);
+    }
+
+    // The state is durable: a reopened engine remembers how it felt.
+    let engine =
+        MemoryEngine::open(dir.path(), DIMENSION, RecallConfig::default()).expect("reopen");
+    let reloaded = engine.affect_state(NOW_MS);
+    assert!((reloaded.pleasure - after_remember.pleasure).abs() < 1e-9);
+
+    // And it decays toward baseline over idle time (half-life 30 min).
+    let hours_later = engine.affect_state(NOW_MS + 6 * 60 * 60 * 1000);
+    assert!(hours_later.pleasure > reloaded.pleasure);
+    assert!(
+        (hours_later.pleasure - 0.1).abs() < 0.01,
+        "near homeostatic"
+    );
+}
+
+#[test]
+fn internal_state_records_never_leak_into_recall_or_count() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut engine =
+        MemoryEngine::open(dir.path(), DIMENSION, RecallConfig::default()).expect("open");
+
+    // Trigger an affect-state write with no memories stored yet.
+    remember(
+        &mut engine,
+        "I love this breakthrough!! amazing!!",
+        embed(1.0, 0.0, 0.0, 0.0),
+        NOW_MS,
+    );
+
+    // count() sees only the memory, not the limbic state record.
+    assert_eq!(engine.count().expect("count"), 1);
+
+    // A recall that matches everything still returns only memories.
+    let response = engine
+        .recall(recall_request(
+            "love amazing breakthrough",
+            embed(1.0, 0.0, 0.0, 0.0),
+        ))
+        .expect("recall");
+    assert_eq!(response.results.len(), 1);
+    assert!(response.results[0].memory.content.contains("breakthrough"));
+}
+
+#[test]
 fn lexical_branch_rescues_exact_wording_with_weak_embeddings() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut engine =

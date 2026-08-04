@@ -7,20 +7,41 @@ The Rust rewrite of Celiums Memory, built **on top of
 [Hyphae](https://github.com/celiumsai/hyphae)** (`hyphae-engine =0.2.1`,
 Apache-2.0) instead of the Postgres + Qdrant + Valkey triple-store.
 
-## Why Hyphae underneath
+## Zero external services
 
-The TypeScript engine runs three external services. Hyphae replaces all
-three with one embedded, dependency-free Rust engine and adds properties
-the old stack never had:
+This is the core architectural rule of the port: **the engine embeds
+everything**. No PostgreSQL, no Valkey/Redis, no Qdrant/OpenSearch, no
+sidecar of any kind — one process, one data directory. Every service
+the TypeScript engine depended on maps to an embedded replacement:
+
+| Was (TS engine)                         | Now (Rust port)                                              |
+| --------------------------------------- | ------------------------------------------------------------ |
+| Postgres 17 (durability, documents)     | Hyphae BLAKE3 hash-chained append-only log + redb index, verified recovery |
+| Qdrant (vector search, HNSW approx.)    | Exact Q15 cosine retrieval, deterministic, bit-identical      |
+| pg_trgm (full-text)                     | BM25F lexical retrieval with per-term explanations            |
+| Valkey (limbic state + distributed lock)| Affect state is a durable record in the same store; `&mut self` is the mutex |
+| Valkey (cache)                          | not needed — reads are local                                  |
+| pgvector (journal/ethics vectors)       | same Hyphae vector spaces (later phases)                      |
+
+And properties the old stack never had:
 
 | Concern            | TypeScript engine                  | Rust port (Hyphae)                                    |
 | ------------------ | ---------------------------------- | ----------------------------------------------------- |
-| Durability         | Postgres                           | BLAKE3 hash-chained append-only log, verified recovery |
-| Semantic search    | Qdrant (HNSW, approximate)         | Exact Q15 cosine, deterministic, bit-identical         |
-| Full-text search   | pg_trgm                            | BM25F with per-term explanations                       |
 | Empty results      | silent `[]`                        | **typed abstention** (`NoCandidates` / `BelowThreshold` / `Ambiguous`) |
 | Verifiability      | none                               | offline cryptographic result proofs (available)        |
 | Dimension mismatch | silent degradation (the 2026 bug)  | loud failure at quantisation and space definition      |
+
+The only external thing a caller brings is the **embedding vector**
+(bge-m3 on Workers AI in production, any OpenAI-compatible endpoint or
+a local model elsewhere) — the same no-provider stance Hyphae takes.
+
+Deployment note: this embedded core is the engine for every target —
+a native binary on a droplet, the MCP stdio adapter, and (when the
+storage backend lands on `wasm32`) the Cloudflare Durable Object
+runtime that Celiums Network uses. The old `celiums-memory-cloudflare`
+repo's ADR-001 (Hyperdrive → managed Postgres, Vectorize, KV) is
+superseded by this design: those services solved problems the embedded
+engine no longer has.
 
 ## Crates
 
@@ -29,6 +50,10 @@ the old stack never had:
     length bonus, foundational/validation content boost).
   - `affect` — PAD extraction (valence / arousal / dominance),
     memory-type classification, limbic resonance.
+  - `limbic` — the continuous emotional state: `S(t+1) = α·S_h +
+    (1-α)·[S(t) + β·E(input) + γ·E(recalled)]`, β+γ stability
+    normalisation, cross-dimensional amplification, 30-minute
+    half-life homeostatic decay, Mehrabian emotion labels.
   - `retention` — Ebbinghaus curve, spaced-repetition reactivation
     (headroom variant — the canonical one), lifecycle decay.
   - `recall` — the six-channel scoring formula with the SAR
@@ -38,10 +63,15 @@ the old stack never had:
     with the dimension guard.
   - `memory` — the memory document codec (cognitive scalars stored as
     integer nanos — Hyphae documents have no floats by design).
+  - `affect_state` — the engine's own PAD state as a durable record
+    (`__celiums/limbic_state`), fresh-on-read decay, invisible to
+    recall by construction (no content field, no vector).
   - `engine` — `remember` / `recall`: hybrid retrieval (exact cosine +
     BM25F union, mirroring the TS Qdrant + pg_trgm pipeline),
-    cognitive re-ranking, spaced-repetition reactivation, preserved
-    branch abstentions.
+    cognitive re-ranking driven by the engine's own limbic state
+    (stimuli move it on `remember`; recalled memories feed back on
+    `recall`), spaced-repetition reactivation, preserved branch
+    abstentions.
 
 ## Build
 
@@ -57,8 +87,9 @@ cargo clippy --workspace --all-targets
 
 Phase 0 (this tree): cognitive core + durable engine, at parity with
 the TS recall formula (`recall.ts`), importance classifier
-(`importance.ts`), PAD/limbic resonance (`limbic.ts`), retention
-(`store-memory.ts` reactivate, `lifecycle.ts` decay).
+(`importance.ts`), limbic engine (`limbic.ts` core update, resonance,
+decay, emotion labels), retention (`store-memory.ts` reactivate,
+`lifecycle.ts` decay).
 
 Deliberate parity decisions:
 
@@ -69,6 +100,11 @@ Deliberate parity decisions:
   callers bring bge-m3 (1024-dim) or any OpenAI-compatible endpoint.
 - `linked_memory_ids` graph cascade is **not** ported — the TS recall
   never read it; the real "cascade" is SAR + resonance, which is here.
+- The Valkey distributed mutex is **not** ported — `&mut self`
+  serialises limbic updates; the borrow checker is the lock.
+- Dopamine/reward (RPE), interoception and PFC regulation are later
+  phases; the limbic core formula runs without them (they are additive
+  terms in `updateStateFull`).
 
 Next phases:
 
@@ -78,7 +114,8 @@ Next phases:
 2. Ethics Layer A (deterministic lexicon write-gate; `enforcementBlocked`
    contract preserved verbatim).
 3. Circadian clock (pure `A(t)` cosine model + 12 factors) feeding
-   arousal into the SAR filter.
+   arousal into the SAR filter, plus reward/interoception completing
+   `updateStateFull`.
 4. MCP stdio adapter (pattern: `hyphae-cli/src/mcp.rs`) exposing
    `remember` / `recall` / `journal_*` tools.
 5. Server binary (axum, loopback-first like `hyphae-server`) replacing

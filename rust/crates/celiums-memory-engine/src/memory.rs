@@ -58,6 +58,10 @@ pub enum MemoryDecodeError {
     Key,
 }
 
+/// Discriminator value for memory records; the affect-state record
+/// carries `kind = "affect_state"` instead.
+pub(crate) const MEMORY_KIND: &str = "memory";
+
 impl Memory {
     /// Binary record key for this memory.
     pub fn key(&self) -> Vec<u8> {
@@ -67,6 +71,7 @@ impl Memory {
     /// Encodes this memory as a canonical Hyphae record.
     pub fn to_record(&self) -> Record {
         let mut fields = BTreeMap::new();
+        fields.insert("kind".to_owned(), Value::String(MEMORY_KIND.to_owned()));
         fields.insert("content".to_owned(), Value::String(self.content.clone()));
         fields.insert("importance".to_owned(), nanos_value(self.importance));
         fields.insert("valence".to_owned(), nanos_value(self.pad.pleasure));
@@ -140,14 +145,14 @@ impl Memory {
     }
 }
 
-fn nanos_value(value: f64) -> Value {
+pub(crate) fn nanos_value(value: f64) -> Value {
     // Cognitive scalars live in [-1, 1] (or small positives for
     // strength), so the scaled magnitude is far below i64::MAX.
     #[allow(clippy::cast_possible_truncation)]
     Value::Integer((value * NANOS).round() as i64)
 }
 
-fn nanos_field(
+pub(crate) fn nanos_field(
     fields: &BTreeMap<String, Value>,
     field: &'static str,
 ) -> Result<f64, MemoryDecodeError> {
@@ -155,7 +160,7 @@ fn nanos_field(
     integer_field(fields, field).map(|nanos| nanos as f64 / NANOS)
 }
 
-fn integer_field(
+pub(crate) fn integer_field(
     fields: &BTreeMap<String, Value>,
     field: &'static str,
 ) -> Result<i64, MemoryDecodeError> {

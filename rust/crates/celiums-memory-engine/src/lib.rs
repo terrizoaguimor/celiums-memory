@@ -13,10 +13,12 @@
 //! Embeddings are caller-provided floats; this crate quantises them to
 //! Hyphae's canonical Q15 domain and enforces the dimension guard.
 
+mod affect_state;
 mod engine;
 mod memory;
 mod quantize;
 
+pub use affect_state::AffectState;
 pub use engine::{
     BranchAbstention, MemoryEngine, MemoryEngineError, RecallConfig, RecallRequest, RecallResponse,
     RememberRequest, ScoredMemory,
