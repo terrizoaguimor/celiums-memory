@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Celiums Solutions LLC
+
+[package]
+name = "celiums-memory-engine"
+description = "Celiums Memory over the Hyphae data engine: durable remember/recall with hybrid retrieval and cognitive re-ranking."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+celiums-cognition = { workspace = true }
+hyphae-core = { workspace = true }
+hyphae-engine = { workspace = true }
+hyphae-query = { workspace = true }
+hyphae-retrieval = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

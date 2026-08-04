@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Celiums Solutions LLC
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/celiums-cognition",
+    "crates/celiums-memory-engine",
+]
+
+[workspace.package]
+version = "3.0.0-alpha.0"
+edition = "2024"
+rust-version = "1.89.0"
+license = "Apache-2.0"
+repository = "https://github.com/terrizoaguimor/celiums-memory"
+authors = ["Celiums Solutions LLC"]
+
+[workspace.dependencies]
+celiums-cognition = { path = "crates/celiums-cognition" }
+# Hyphae is consumed as a published dependency, never vendored: the Hyphae
+# repo explicitly keeps cognition out of its tree, and this repo keeps
+# storage internals out of ours. Pinned exact: the 0.x contract can move.
+hyphae-core = "=0.2.1"
+hyphae-engine = "=0.2.1"
+hyphae-query = "=0.2.1"
+hyphae-retrieval = "=0.2.1"
+regex = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["v7"] }
+tempfile = "3"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

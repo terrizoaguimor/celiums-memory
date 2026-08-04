@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Celiums Solutions LLC
+
+[package]
+name = "celiums-cognition"
+description = "Pure cognitive core of Celiums Memory: importance, affect (PAD), Ebbinghaus retention, and recall scoring. No I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+regex = { workspace = true }
+
+[lints]
+workspace = true

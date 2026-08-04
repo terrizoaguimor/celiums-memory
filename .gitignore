@@ -35,6 +35,10 @@ pnpm-debug.log*
 # Turbo
 .turbo/
 
+# Rust
+rust/target/
+Cargo.lock.orig
+
 # Test
 __snapshots__/
 
