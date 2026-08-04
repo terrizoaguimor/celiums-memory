@@ -12,6 +12,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+blake3 = { workspace = true }
 celiums-cognition = { workspace = true }
 hyphae-core = { workspace = true }
 hyphae-engine = { workspace = true }

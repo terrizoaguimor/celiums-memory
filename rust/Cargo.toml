@@ -5,6 +5,7 @@
 resolver = "2"
 members = [
     "crates/celiums-cognition",
+    "crates/celiums-memory-cli",
     "crates/celiums-memory-engine",
 ]
 
@@ -25,7 +26,11 @@ hyphae-core = "=0.2.1"
 hyphae-engine = "=0.2.1"
 hyphae-query = "=0.2.1"
 hyphae-retrieval = "=0.2.1"
+celiums-memory-engine = { path = "crates/celiums-memory-engine" }
+# Same digest family as the Hyphae log; used for the journal chain.
+blake3 = "1"
 regex = "1"
+serde_json = "1"
 thiserror = "2"
 uuid = { version = "1", features = ["v7"] }
 tempfile = "3"

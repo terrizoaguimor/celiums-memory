@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Celiums Solutions LLC
+
+[package]
+name = "celiums-memory-cli"
+description = "Celiums Memory single binary: MCP stdio server over the embedded engine. Zero external services."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "celiums-memory"
+path = "src/main.rs"
+
+[dependencies]
+celiums-cognition = { workspace = true }
+celiums-memory-engine = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

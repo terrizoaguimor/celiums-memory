@@ -67,9 +67,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "celiums-memory-cli"
+version = "3.0.0-alpha.0"
+dependencies = [
+ "celiums-cognition",
+ "celiums-memory-engine",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "celiums-memory-engine"
 version = "3.0.0-alpha.0"
 dependencies = [
+ "blake3",
  "celiums-cognition",
  "hyphae-core",
  "hyphae-engine",

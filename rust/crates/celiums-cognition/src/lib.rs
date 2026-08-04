@@ -14,6 +14,7 @@
 
 pub mod affect;
 pub mod importance;
+pub mod journal;
 pub mod limbic;
 pub mod recall;
 pub mod retention;
@@ -23,6 +24,7 @@ pub use affect::{
     resonance,
 };
 pub use importance::{ImportanceSignals, classify_importance, content_boost, score_importance};
+pub use journal::{JournalEntryType, SupersessionRelation, is_valid_agent_id};
 pub use limbic::{LimbicConfig, MemoryInfluence, average_memory_pad, emotion_label};
 pub use recall::{ChannelScores, RecallWeights, sar_beta, score};
 pub use retention::{

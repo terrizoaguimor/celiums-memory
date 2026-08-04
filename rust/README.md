@@ -66,12 +66,28 @@ engine no longer has.
   - `affect_state` — the engine's own PAD state as a durable record
     (`__celiums/limbic_state`), fresh-on-read decay, invisible to
     recall by construction (no content field, no vector).
+  - `journal` + engine ops — the per-agent, first-person journal:
+    seven entry types with intrinsic importance, `preceded_by` arcs,
+    supersession relations, and a per-agent hash chain
+    (`BLAKE3(id | agent | content | time | prev_hash)`) with full
+    `journal_verify_chain` tamper reports. Isolated from user memory
+    by construction (own key prefix, own text field, no vectors).
+  - `embed` — the deterministic offline embedder (word/bigram hashing,
+    L2-normalised): the engine works with zero providers; callers with
+    a real model (bge-m3, 1024-dim) pass their own vectors.
   - `engine` — `remember` / `recall`: hybrid retrieval (exact cosine +
     BM25F union, mirroring the TS Qdrant + pg_trgm pipeline),
     cognitive re-ranking driven by the engine's own limbic state
     (stimuli move it on `remember`; recalled memories feed back on
     `recall`), spaced-repetition reactivation, preserved branch
     abstentions.
+- **`celiums-memory-cli`** — the single binary:
+  - `celiums-memory mcp [--data <dir>] [--dimension <n>]` — MCP stdio
+    server (JSON-RPC 2.0, protocol `2025-11-25`), six tools:
+    `remember`, `recall`, `journal_write`, `journal_recall`,
+    `journal_verify_chain`, `memory_stats`. The engine is embedded in
+    the process — no HTTP hop. Works out of the box with the offline
+    embedder; accepts caller `embedding` arrays for real models.
 
 ## Build
 
@@ -106,17 +122,23 @@ Deliberate parity decisions:
   phases; the limbic core formula runs without them (they are additive
   terms in `updateStateFull`).
 
+Phase 1 (this tree): journal port (chain semantics identical to the TS
+verifier — BLAKE3 instead of SHA-256 on fresh chains) + the MCP stdio
+binary. An MCP client config is one line:
+
+```json
+{ "command": "celiums-memory", "args": ["mcp"] }
+```
+
 Next phases:
 
-1. Journal (`agent_journal` port) — hash-chain comes free from
-   Hyphae's log; add entry types, valence, `preceded_by` arcs,
-   supersession.
-2. Ethics Layer A (deterministic lexicon write-gate; `enforcementBlocked`
+1. Ethics Layer A (deterministic lexicon write-gate; `enforcementBlocked`
    contract preserved verbatim).
-3. Circadian clock (pure `A(t)` cosine model + 12 factors) feeding
+2. Circadian clock (pure `A(t)` cosine model + 12 factors) feeding
    arousal into the SAR filter, plus reward/interoception completing
    `updateStateFull`.
-4. MCP stdio adapter (pattern: `hyphae-cli/src/mcp.rs`) exposing
-   `remember` / `recall` / `journal_*` tools.
-5. Server binary (axum, loopback-first like `hyphae-server`) replacing
-   the Node `quickstart.ts` HTTP surface.
+3. Entity extraction + consolidation + time-travel recall over Hyphae
+   snapshots (the LongMemEval/LoCoMo competitive phase).
+4. Server binary (axum, loopback-first like `hyphae-server`) replacing
+   the Node `quickstart.ts` HTTP surface; result proofs exposed.
+5. `journal_arc` / introspection (LLM-optional, BYO provider).

@@ -20,9 +20,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use celiums_cognition::{
-    ChannelScores, LimbicConfig, MemoryInfluence, Pad, RecallWeights, Scope, classify_importance,
-    classify_memory_type, emotional_weight, extract_pad, limbic, recall, resonance, retention,
-    retrievability,
+    ChannelScores, JournalEntryType, LimbicConfig, MemoryInfluence, Pad, RecallWeights, Scope,
+    SupersessionRelation, classify_importance, classify_memory_type, emotional_weight, extract_pad,
+    is_valid_agent_id, limbic, recall, resonance, retention, retrievability,
 };
 use hyphae_core::{Q15Vector, VectorSpaceDefinition, VectorSpaceName, VectorValueError};
 use hyphae_engine::{EngineError as HyphaeError, HyphaeEngine};
@@ -36,6 +36,10 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::affect_state::{AFFECT_STATE_KEY, AffectState};
+use crate::journal::{
+    BrokenLink, BrokenReason, ChainReport, JournalEntry, MAX_VALENCE_REASON_CHARS, Supersession,
+    agent_prefix, chain_hash, entry_key, supersession_prefix,
+};
 use crate::memory::{Memory, MemoryDecodeError};
 use crate::quantize::{QuantizeError, quantize};
 
@@ -73,6 +77,23 @@ pub enum MemoryEngineError {
     MissingCandidate {
         /// Offending memory id.
         id: String,
+    },
+    /// The agent id violates the P0 §3.1 journal-isolation contract.
+    #[error(
+        "invalid agent_id `{agent_id}` — must match [A-Za-z0-9_:.\\-]{{1,128}}; \
+         refusing to write into a shared bucket"
+    )]
+    InvalidAgentId {
+        /// Rejected candidate (truncated by the caller if huge).
+        agent_id: String,
+    },
+    /// A referenced journal entry does not exist for this agent.
+    #[error("journal entry `{entry_id}` not found for agent `{agent_id}`")]
+    JournalEntryNotFound {
+        /// Owning agent.
+        agent_id: String,
+        /// Missing entry.
+        entry_id: String,
     },
 }
 
@@ -169,6 +190,44 @@ pub struct RecallResponse {
     pub lexical_abstention: Option<BranchAbstention>,
     /// Semantic branch abstention, when it produced nothing.
     pub semantic_abstention: Option<BranchAbstention>,
+}
+
+/// A request to write one journal entry.
+#[derive(Clone, Debug)]
+pub struct JournalWriteRequest {
+    /// Owning agent (P0 §3.1: mandatory, validated, never defaulted).
+    pub agent_id: String,
+    /// Entry taxonomy.
+    pub entry_type: JournalEntryType,
+    /// First-person entry text.
+    pub content: String,
+    /// Causal predecessors (entry ids of this agent).
+    pub preceded_by: Vec<String>,
+    /// Honest valence in `[-1, 1]`.
+    pub valence: Option<f64>,
+    /// Short justification for the valence (clamped to 500 chars).
+    pub valence_reason: Option<String>,
+    /// Free-form tags.
+    pub tags: Vec<String>,
+    /// Stable per-conversation grouping key.
+    pub conversation_id: Option<String>,
+    /// Write time, Unix milliseconds. Explicit for determinism.
+    pub now_ms: i64,
+}
+
+/// A journal recall query (lexical over one agent's entries).
+#[derive(Clone, Debug)]
+pub struct JournalRecallRequest {
+    /// Owning agent.
+    pub agent_id: String,
+    /// Query text; empty returns the most recent entries.
+    pub query: String,
+    /// Filter to one entry type.
+    pub entry_type: Option<JournalEntryType>,
+    /// Maximum entries returned.
+    pub limit: usize,
+    /// Whether superseded entries are included (TS default: excluded).
+    pub include_superseded: bool,
 }
 
 /// Candidate keys with their branch scores, plus the branch's
@@ -490,6 +549,290 @@ impl MemoryEngine {
         Ok(Memory::from_record(&record)?)
     }
 
+    /// Writes one journal entry, chained to the agent's previous entry.
+    ///
+    /// The chain hash covers `(id | agent_id | content | written_at |
+    /// prev_hash)` — identical semantics to the TS journal, so
+    /// [`Self::journal_verify_chain`] detects insertion, deletion and
+    /// content tampering per entry.
+    ///
+    /// # Errors
+    ///
+    /// Fails on an invalid agent id (refused, never bucketed), a
+    /// `preceded_by` reference to a nonexistent entry, or storage
+    /// failure.
+    pub fn journal_write(
+        &mut self,
+        request: JournalWriteRequest,
+    ) -> Result<JournalEntry, MemoryEngineError> {
+        let agent_id = validated_agent_id(&request.agent_id)?;
+        for predecessor in &request.preceded_by {
+            if self
+                .hyphae
+                .get_record(&entry_key(&agent_id, predecessor))?
+                .is_none()
+            {
+                return Err(MemoryEngineError::JournalEntryNotFound {
+                    agent_id,
+                    entry_id: predecessor.clone(),
+                });
+            }
+        }
+
+        let prev_hash = self
+            .last_journal_entry(&agent_id)?
+            .map(|entry| entry.hash.clone());
+        let id = Uuid::now_v7().to_string();
+        let hash = chain_hash(
+            &id,
+            &agent_id,
+            &request.content,
+            request.now_ms,
+            prev_hash.as_deref(),
+        );
+        let entry = JournalEntry {
+            id,
+            agent_id,
+            entry_type: request.entry_type,
+            content: request.content,
+            preceded_by: request.preceded_by,
+            valence: request.valence.map(|value| value.clamp(-1.0, 1.0)),
+            valence_reason: request.valence_reason.map(|reason| {
+                reason
+                    .chars()
+                    .take(MAX_VALENCE_REASON_CHARS)
+                    .collect::<String>()
+            }),
+            importance: request.entry_type.importance(),
+            tags: request.tags,
+            conversation_id: request.conversation_id,
+            written_at_ms: request.now_ms,
+            prev_hash,
+            hash,
+        };
+        self.hyphae.put_record(Uuid::now_v7(), &entry.to_record())?;
+        Ok(entry)
+    }
+
+    /// Recalls one agent's journal entries, most recent first,
+    /// filtered by type and (by default) excluding superseded entries.
+    ///
+    /// Retrieval is lexical (token overlap on the entry text) — the
+    /// journal deliberately has no embedding requirement, so it works
+    /// fully offline. An empty query returns the most recent entries.
+    ///
+    /// # Errors
+    ///
+    /// Fails on an invalid agent id or storage failure.
+    pub fn journal_recall(
+        &self,
+        request: &JournalRecallRequest,
+    ) -> Result<Vec<JournalEntry>, MemoryEngineError> {
+        let agent_id = validated_agent_id(&request.agent_id)?;
+        let mut entries = self.agent_journal_entries(&agent_id)?;
+
+        if let Some(entry_type) = request.entry_type {
+            entries.retain(|entry| entry.entry_type == entry_type);
+        }
+        if !request.include_superseded {
+            let superseded = self.superseded_entry_ids(&agent_id)?;
+            entries.retain(|entry| !superseded.contains(&entry.id));
+        }
+
+        // Newest first — the chain order reversed.
+        entries.reverse();
+
+        let query_tokens: Vec<String> = request
+            .query
+            .split_whitespace()
+            .map(|token| token.to_lowercase())
+            .collect();
+        if !query_tokens.is_empty() {
+            let mut scored: Vec<(usize, JournalEntry)> = entries
+                .into_iter()
+                .map(|entry| {
+                    let haystack = entry.content.to_lowercase();
+                    let hits = query_tokens
+                        .iter()
+                        .filter(|token| haystack.contains(*token))
+                        .count();
+                    (hits, entry)
+                })
+                .filter(|(hits, _)| *hits > 0)
+                .collect();
+            // Stable: ties keep recency order from the reverse above.
+            scored.sort_by_key(|(hits, _)| std::cmp::Reverse(*hits));
+            entries = scored.into_iter().map(|(_, entry)| entry).collect();
+        }
+
+        entries.truncate(request.limit.max(1));
+        Ok(entries)
+    }
+
+    /// Records that `new_entry_id` supersedes `original_entry_id` for
+    /// this agent. Superseded entries are excluded from recall by
+    /// default; the entries themselves are never mutated (the chain
+    /// stays intact).
+    ///
+    /// # Errors
+    ///
+    /// Fails when either entry does not exist for the agent.
+    pub fn journal_supersede(
+        &mut self,
+        agent_id: &str,
+        original_entry_id: &str,
+        new_entry_id: &str,
+        relation: SupersessionRelation,
+        now_ms: i64,
+    ) -> Result<Supersession, MemoryEngineError> {
+        let agent_id = validated_agent_id(agent_id)?;
+        for entry_id in [original_entry_id, new_entry_id] {
+            if self
+                .hyphae
+                .get_record(&entry_key(&agent_id, entry_id))?
+                .is_none()
+            {
+                return Err(MemoryEngineError::JournalEntryNotFound {
+                    agent_id,
+                    entry_id: entry_id.to_owned(),
+                });
+            }
+        }
+        let link = Supersession {
+            id: Uuid::now_v7().to_string(),
+            agent_id,
+            original_entry_id: original_entry_id.to_owned(),
+            new_entry_id: new_entry_id.to_owned(),
+            relation,
+            written_at_ms: now_ms,
+        };
+        self.hyphae.put_record(Uuid::now_v7(), &link.to_record())?;
+        Ok(link)
+    }
+
+    /// Walks one agent's chain, recomputes every hash from scratch and
+    /// reports broken links (journal-tools.ts:244-279 semantics: a
+    /// `prev_hash` mismatch means insertion/deletion; a hash mismatch
+    /// means content or timestamp tampering).
+    ///
+    /// # Errors
+    ///
+    /// Fails on an invalid agent id or storage failure.
+    pub fn journal_verify_chain(&self, agent_id: &str) -> Result<ChainReport, MemoryEngineError> {
+        let agent_id = validated_agent_id(agent_id)?;
+        let entries = self.agent_journal_entries(&agent_id)?;
+
+        let mut broken = Vec::new();
+        let mut expected_prev: Option<String> = None;
+        for entry in &entries {
+            let computed = chain_hash(
+                &entry.id,
+                &entry.agent_id,
+                &entry.content,
+                entry.written_at_ms,
+                expected_prev.as_deref(),
+            );
+            if entry.prev_hash != expected_prev {
+                broken.push(BrokenLink {
+                    entry_id: entry.id.clone(),
+                    reason: BrokenReason::PrevHashMismatch,
+                });
+            } else if entry.hash != computed {
+                broken.push(BrokenLink {
+                    entry_id: entry.id.clone(),
+                    reason: BrokenReason::ContentTampered,
+                });
+            }
+            // Continue from the stored hash so cascades are visible
+            // from the first break onward, like the TS verifier.
+            expected_prev = Some(entry.hash.clone());
+        }
+        Ok(ChainReport {
+            agent_id,
+            total: entries.len() as u64,
+            valid: broken.is_empty(),
+            broken,
+        })
+    }
+
+    /// One agent's entries in chain order (binary key order — UUIDv7
+    /// ids sort chronologically).
+    fn agent_journal_entries(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<JournalEntry>, MemoryEngineError> {
+        let records = self.scan_prefix(&agent_prefix(agent_id))?;
+        records
+            .iter()
+            .map(|record| JournalEntry::from_record(record).map_err(MemoryEngineError::from))
+            .collect()
+    }
+
+    /// Entry ids of this agent that some link marks as superseded or
+    /// recanted (nuanced/reaffirmed keep the original visible).
+    fn superseded_entry_ids(
+        &self,
+        agent_id: &str,
+    ) -> Result<std::collections::BTreeSet<String>, MemoryEngineError> {
+        let records = self.scan_prefix(&supersession_prefix(agent_id))?;
+        let mut ids = std::collections::BTreeSet::new();
+        for record in &records {
+            let link = Supersession::from_record(record)?;
+            if matches!(
+                link.relation,
+                SupersessionRelation::Superseded | SupersessionRelation::Recanted
+            ) {
+                ids.insert(link.original_entry_id);
+            }
+        }
+        Ok(ids)
+    }
+
+    fn last_journal_entry(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<JournalEntry>, MemoryEngineError> {
+        Ok(self.agent_journal_entries(agent_id)?.pop())
+    }
+
+    /// All records whose binary key starts with `prefix`, in key order.
+    fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<hyphae_query::Record>, MemoryEngineError> {
+        use hyphae_query::{ExecutionLimits, Filter, Query};
+        // The record key is not a document field, so the prefix range
+        // is walked by paging rows in binary-key order. Keys sharing a
+        // prefix are contiguous in that order: the first key that is
+        // greater than the prefix without carrying it marks the end of
+        // the range.
+        let mut records = Vec::new();
+        let mut cursor = None;
+        loop {
+            let result = self.hyphae.query(
+                &Query {
+                    filter: Filter::MatchAll,
+                    sort: Vec::new(),
+                    cursor,
+                    limit: 1_000,
+                    aggregation: None,
+                },
+                &ExecutionLimits::default(),
+            )?;
+            let mut passed_range = false;
+            for record in result.rows {
+                if record.key.starts_with(prefix) {
+                    records.push(record);
+                } else if record.key.as_slice() > prefix {
+                    passed_range = true;
+                    break;
+                }
+            }
+            match result.next_cursor {
+                Some(next) if !passed_range => cursor = Some(next),
+                _ => break,
+            }
+        }
+        Ok(records)
+    }
+
     /// Applies one limbic update (decayed to `now_ms` first) and
     /// persists the new state durably.
     fn update_affect(
@@ -528,6 +871,17 @@ impl MemoryEngine {
                 .put_record(Uuid::now_v7(), &entry.memory.to_record())?;
         }
         Ok(())
+    }
+}
+
+fn validated_agent_id(candidate: &str) -> Result<String, MemoryEngineError> {
+    let trimmed = candidate.trim();
+    if is_valid_agent_id(trimmed) {
+        Ok(trimmed.to_owned())
+    } else {
+        Err(MemoryEngineError::InvalidAgentId {
+            agent_id: trimmed.chars().take(64).collect(),
+        })
     }
 }
 
