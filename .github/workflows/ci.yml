@@ -41,7 +41,11 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: eslint
-        run: pnpm -r lint --if-present
+        # Route through turbo (the root script), not `pnpm -r`. Every task in
+        # turbo.json declares `dependsOn: ["^build"]`, and `pnpm -r` bypasses
+        # that graph entirely — packages then compile against dependencies
+        # whose dist/ does not exist yet.
+        run: pnpm lint
       - name: helm lint (chart)
         run: |
           # Register chart deps' repos so `helm dependency build` can
@@ -68,12 +72,12 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: tsc --noEmit (packages with declared script)
-        # Use `pnpm -r typecheck` so only packages that explicitly opt-in
-        # via "typecheck": "tsc --noEmit" run. Avoids pulling in
-        # pre-existing typecheck noise from upstream-fork adapters
-        # (adapter-langchain, adapter-llamaindex, dashboard, ...) that
-        # aren't in scope for the core security stack v1 launch.
-        run: pnpm -r typecheck
+        # Route through turbo so `dependsOn: ["^build"]` builds each package's
+        # dependencies first. `pnpm -r typecheck` skipped that and failed on
+        # every cross-package import ("Cannot find module '@celiums/memory-types'").
+        # Turbo still runs the task only where a package declares it, so the
+        # opt-in property the previous command was chosen for is preserved.
+        run: pnpm typecheck
 
   # ── Unit + integration tests ────────────────────────────────────
   test:
@@ -123,7 +127,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Run @celiums/memory tests
-        run: pnpm --filter @celiums/memory test
+        # Turbo builds the dependency packages first; `pnpm --filter <pkg>`
+        # runs the one package in isolation and cannot resolve its workspace
+        # imports. @celiums/memory is the only package declaring `test`.
+        run: pnpm test
         env:
           DATABASE_URL: postgres://postgres:ci@localhost:5432/celiums_memory_ci
           CELIUMS_API_KEY_PEPPER: ci-pepper-32-characters-or-more-padding
@@ -143,7 +150,9 @@ jobs:
           node-version: '22'
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @celiums/memory build
+      # Turbo resolves the build order across the workspace; filtering to the
+      # single package leaves its workspace dependencies unbuilt.
+      - run: pnpm build
       - name: helm package (dry)
         run: |
           helm repo add bitnami https://charts.bitnami.com/bitnami
