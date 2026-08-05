@@ -20,14 +20,14 @@ evidence and why the next action follows.
 
 | Field | Value |
 |---|---|
-| Active phase | Phase 4 - Temporal claims and contradictions |
-| Active item | P4.5 - Phase close and temporal gates |
+| Active phase | Phase 5 - Embedded context graph |
+| Active item | P5.1 - Canonical entities and aliases |
 | Branch | `dev` |
-| Baseline commit | `aaa29ae` |
+| Baseline commit | `734c122` |
 | Canonical implementation | `rust/` |
 | Storage substrate | Hyphae `=0.2.1` |
 | Production direction | Cloudflare, one Durable Object per tenant |
-| Next phase after gate | Phase 5 - Embedded context graph |
+| Next phase after gate | Phase 6 - Hierarchical consolidation |
 
 ## Phase 0 checklist
 
@@ -149,6 +149,7 @@ stable and an isolated immutable server exists.
 | 2026-08-05 | P4.3 bitemporal queries | passed | 4 tests: latest omits retired, historical proof, unresolved conflict preservation, transaction-time cutoff; clippy green |
 | 2026-08-05 | P4.4 temporal tools | passed | 4 tests: EN/ES relative time, explicit uncertainty/basis, event sequence, semantic claim diff; clippy green |
 | 2026-08-05 | P4.5 phase gate | passed | knowledge update omits retired current claim; historical query preserves prior claim/evidence; half-open boundary verified; full workspace green |
+| 2026-08-05 | Phase 4 GitHub CI | passed | run `31048701559`; MSRV/stable Rust, Node tests, lint, typecheck, build, Trivy and secret scan green |
 
 ## Phase 3 checklist
 
@@ -168,7 +169,17 @@ stable and an isolated immutable server exists.
 | P4.2 | Validity and contradiction model | closed | `5fd7182`; CI `31047740288` green; journal `019fd3c6193f772dbda7d53c3a771f94` |
 | P4.3 | Temporal queries | closed | `00b4dae`; CI `31048037491` green; journal `019fd3c9b0d47d91bbdf5d5bea40e366` |
 | P4.4 | Relative time and semantic diff | closed | `87e892f`; CI `31048375610` green; journal `019fd3ce088472b4a79a35a29ff6fe5e` |
-| P4.5 | Phase close | verified locally | 19 Phase 4 integration/gate tests; current omits invalidated; history preserves proof; full fmt/clippy/test green; journal `019fd3d2580777a4927d6a2c25c55af1` |
+| P4.5 | Phase close | closed | `734c122`; 19 Phase 4 tests; CI `31048701559` green; journal `019fd3d2580777a4927d6a2c25c55af1` |
+
+## Phase 5 checklist
+
+| ID | Work item | Status | Evidence / exit condition |
+|---|---|---|---|
+| P5.1 | Canonical entities and aliases | active | merge/split and ontology preserve provenance |
+| P5.2 | Temporal typed relations | pending | every edge has validity and evidence |
+| P5.3 | Bounded graph traversal | pending | traversal is scoped and cost-bounded |
+| P5.4 | Graph-assisted recall | pending | measured quality improves without leakage |
+| P5.5 | Phase close | pending | dedup/multi-hop gates and integrity checks green |
 
 ## Update protocol
 
