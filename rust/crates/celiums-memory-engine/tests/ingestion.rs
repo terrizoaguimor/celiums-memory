@@ -74,14 +74,14 @@ fn event_retry_has_stable_ids_provenance_and_one_ledger_entry() {
         assert_eq!(latest.memory_id, first.memory_id);
         assert_eq!(latest.status, first.status);
         assert_eq!(
-            engine.ingestion_entries().expect("entries"),
+            engine.ingestion_entries(&latest.scope()).expect("entries"),
             vec![latest.clone()]
         );
     }
 
     let engine = open(&dir);
     let entry = engine
-        .get_ingestion(&first.event_id)
+        .get_ingestion(&first.event_id, &first.scope())
         .expect("lookup")
         .expect("entry");
     assert_eq!(entry, latest);
@@ -126,7 +126,7 @@ fn reused_source_event_id_with_changed_payload_is_a_durable_conflict() {
         Err(celiums_memory_engine::MemoryEngineError::IngestionConflict { .. })
     ));
     let entry = engine
-        .get_ingestion(&first.event_id)
+        .get_ingestion(&first.event_id, &first.scope())
         .expect("lookup")
         .expect("entry");
     assert_eq!(entry.status, IngestionStatus::Materialized);
@@ -163,7 +163,7 @@ fn rejected_event_is_accounted_for_without_becoming_memory() {
     let engine = open(&dir);
     assert_eq!(
         engine
-            .get_ingestion(&entry.event_id)
+            .get_ingestion(&entry.event_id, &entry.scope())
             .expect("lookup")
             .expect("entry")
             .status,
@@ -195,7 +195,33 @@ fn missing_embedding_preserves_raw_event_and_resumes_materialization() {
     assert!(materialized.memory_id.is_some());
     assert_eq!(engine.count().expect("memory count"), 1);
     assert_eq!(
-        engine.ingestion_entries().expect("entries"),
+        engine
+            .ingestion_entries(&materialized.scope())
+            .expect("entries"),
         vec![materialized]
+    );
+}
+
+#[test]
+fn ingestion_ledger_enforces_user_scope() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut engine = open(&dir);
+    let entry = engine
+        .ingest_event(request("prompt-44", "Scoped ledger record"))
+        .expect("ingestion");
+    let mut foreign_scope = entry.scope();
+    foreign_scope.user_id = UserId::new("other-user").expect("user");
+
+    assert!(
+        engine
+            .get_ingestion(&entry.event_id, &foreign_scope)
+            .expect("lookup")
+            .is_none()
+    );
+    assert!(
+        engine
+            .ingestion_entries(&foreign_scope)
+            .expect("list")
+            .is_empty()
     );
 }

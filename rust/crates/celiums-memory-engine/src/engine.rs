@@ -877,7 +877,7 @@ impl MemoryEngine {
         event_id: EventId,
         request_hash: String,
     ) -> Result<IngestionEntry, MemoryEngineError> {
-        if let Some(mut entry) = self.get_ingestion(&event_id)? {
+        if let Some(mut entry) = self.get_ingestion_unscoped(&event_id)? {
             entry.attempt_count = entry.attempt_count.saturating_add(1);
             entry.last_attempted_at_ms = request.ingested_at_ms;
             if entry.request_hash != request_hash {
@@ -926,6 +926,38 @@ impl MemoryEngine {
     pub fn get_ingestion(
         &self,
         event_id: &EventId,
+        scope: &RecallScope,
+    ) -> Result<Option<IngestionEntry>, MemoryEngineError> {
+        self.require_tenant(&scope.tenant_id)?;
+        Ok(self
+            .get_ingestion_unscoped(event_id)?
+            .filter(|entry| ingestion_visible_to(entry, scope)))
+    }
+
+    /// Lists visible ingestion entries in deterministic event-ID order.
+    ///
+    /// # Errors
+    ///
+    /// Fails on query or durable decode failure.
+    pub fn ingestion_entries(
+        &self,
+        scope: &RecallScope,
+    ) -> Result<Vec<IngestionEntry>, MemoryEngineError> {
+        self.require_tenant(&scope.tenant_id)?;
+        let entries = self
+            .scan_prefix(IngestionEntry::prefix())?
+            .iter()
+            .map(|record| IngestionEntry::from_record(record).map_err(Into::into))
+            .collect::<Result<Vec<_>, MemoryEngineError>>()?;
+        Ok(entries
+            .into_iter()
+            .filter(|entry| ingestion_visible_to(entry, scope))
+            .collect())
+    }
+
+    fn get_ingestion_unscoped(
+        &self,
+        event_id: &EventId,
     ) -> Result<Option<IngestionEntry>, MemoryEngineError> {
         self.hyphae
             .get_record(&IngestionEntry::durable_key(event_id))?
@@ -933,18 +965,6 @@ impl MemoryEngine {
             .map(IngestionEntry::from_record)
             .transpose()
             .map_err(Into::into)
-    }
-
-    /// Lists all durable ingestion entries in deterministic event-ID order.
-    ///
-    /// # Errors
-    ///
-    /// Fails on query or durable decode failure.
-    pub fn ingestion_entries(&self) -> Result<Vec<IngestionEntry>, MemoryEngineError> {
-        self.scan_prefix(IngestionEntry::prefix())?
-            .iter()
-            .map(|record| IngestionEntry::from_record(record).map_err(Into::into))
-            .collect()
     }
 
     fn persist_ingestion(&mut self, entry: &IngestionEntry) -> Result<(), MemoryEngineError> {
@@ -2434,6 +2454,10 @@ pub(crate) fn memory_visible_to(memory: &Memory, scope: &RecallScope) -> bool {
                 && memory.identity.session_id == scope.session_id
         }
     }
+}
+
+fn ingestion_visible_to(entry: &IngestionEntry, scope: &RecallScope) -> bool {
+    entry.identity.tenant_id == scope.tenant_id && entry.identity.user_id == scope.user_id
 }
 
 pub(crate) fn disclose_memory(

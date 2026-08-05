@@ -137,7 +137,7 @@ stable and an isolated immutable server exists.
 | 2026-08-05 | Phase 1 GitHub CI | Rust passed | MSRV 1.89 and stable fmt/clippy/test green; legacy Trivy found federation Hono CVE |
 | 2026-08-05 | P2 full local gates | passed | 136 cognition, 53 engine unit, 7 governance, 16 engine, MCP/journal/phase suites; fmt/clippy green |
 | 2026-08-05 | Phase 2 GitHub CI | passed | MSRV/stable Rust, Node tests, lint, typecheck, build, Trivy and secret scan green |
-| 2026-08-05 | P3.1 event ingestion contract | passed | 4 ingestion tests; 136 cognition, 54 engine unit and all integration/doc suites; workspace fmt/clippy green |
+| 2026-08-05 | P3.1 event ingestion contract | passed | 5 ingestion tests incl. ledger authorization; 136 cognition, 54 engine unit and all integration/doc suites; workspace fmt/clippy green |
 
 ## Phase 3 checklist
 
