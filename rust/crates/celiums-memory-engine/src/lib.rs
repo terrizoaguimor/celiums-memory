@@ -24,6 +24,7 @@ mod governance_audit;
 mod governance_state;
 mod idempotency;
 mod identity;
+mod ingestion;
 mod journal;
 mod memory;
 mod quantize;
@@ -35,9 +36,10 @@ pub use embed::deterministic_embed;
 pub use embedding_space::{EmbeddingNormalization, EmbeddingSpaceIdentity, InvalidEmbeddingSpace};
 pub use engine::{
     ActionDecision, BatchRememberOutcome, BranchAbstention, CircadianStatus, ConsolidationReport,
-    DeleteMemoryOutcome, JournalRecallRequest, JournalWriteRequest, LifecycleReport,
-    ListMemoriesRequest, MemoryEngine, MemoryEngineError, MemoryPage, MemoryPatch, RecallConfig,
-    RecallRequest, RecallResponse, RememberRequest, ScoredMemory, UpdateMemoryRequest,
+    DeleteMemoryOutcome, IngestEventRequest, JournalRecallRequest, JournalWriteRequest,
+    LifecycleReport, ListMemoriesRequest, MemoryEngine, MemoryEngineError, MemoryPage, MemoryPatch,
+    RecallConfig, RecallRequest, RecallResponse, RememberRequest, ScoredMemory,
+    UpdateMemoryRequest,
 };
 pub use entity_index::EntityRecord;
 pub use filter::{
@@ -52,6 +54,10 @@ pub use idempotency::{IdempotencyDecodeError, IdempotencyKey, InvalidIdempotency
 pub use identity::{
     AgentId, ConversationId, InvalidIdentity, MemoryIdentity, ProjectId, Provenance, RecallScope,
     RememberContext, SessionId, SourceKind, TenantId, UserId,
+};
+pub use ingestion::{
+    EventId, IngestionDecodeError, IngestionEntry, IngestionStatus, InvalidIngestionIdentity,
+    SourceEventId, SourceNamespace, TurnId,
 };
 pub use journal::{BrokenLink, BrokenReason, ChainReport, JournalEntry, Supersession, chain_hash};
 pub use memory::{Memory, MemoryDecodeError};

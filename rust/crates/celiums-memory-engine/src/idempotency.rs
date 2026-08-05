@@ -237,7 +237,14 @@ fn write_provenance(hasher: &mut blake3::Hasher, memory: &Memory) {
         b"source_kind",
         provenance.source_kind.as_str().as_bytes(),
     );
+    write_optional_text(
+        hasher,
+        b"source_namespace",
+        provenance.source_namespace.as_deref(),
+    );
     write_optional_text(hasher, b"source_id", provenance.source_id.as_deref());
+    write_optional_text(hasher, b"event_id", provenance.event_id.as_deref());
+    write_optional_text(hasher, b"turn_id", provenance.turn_id.as_deref());
     write_optional_text(hasher, b"source_uri", provenance.source_uri.as_deref());
     write_optional_text(hasher, b"source_actor", provenance.actor.as_deref());
     write_hash_field(hasher, b"content_hash", provenance.content_hash.as_bytes());

@@ -221,6 +221,20 @@ instructions never enter vector/entity indexes. Deterministic EN/ES poisoning,
 PII and secret detection runs offline. Decisions are recorded in a per-tenant
 BLAKE3 audit chain with append-only feedback and review resolution records.
 
+Roadmap Phase 3 ingestion begins with a durable raw-event boundary:
+
+- `ingest_event` derives stable event and memory IDs from the physical tenant,
+  source namespace and source event ID. A source ID cannot collide across
+  OpenCode, Cursor or another adapter.
+- Every valid event is written to an ingestion ledger before ethics,
+  quantization or memory materialization. The ledger retains the exact raw
+  content, content/request hashes, source and turn provenance, attempt and
+  conflict counts, status, error code and resulting memory ID.
+- Identical retries are duplicate-free across reopen. A received or failed
+  event can resume when an embedding becomes available; changed immutable
+  payloads fail as durable conflicts, and policy rejections remain accounted
+  for without becoming recallable memories.
+
 The ordered platform plan and its mechanical exit gates live in
 [`docs/ROADMAP.md`](../docs/ROADMAP.md); execution evidence and the current
 work anchor live in [`docs/EXECUTION.md`](../docs/EXECUTION.md). Public

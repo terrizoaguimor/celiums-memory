@@ -54,6 +54,10 @@ use crate::idempotency::{
     deterministic_remember_uuid,
 };
 use crate::identity::{RecallScope, RememberContext, TenantId};
+use crate::ingestion::{
+    EventId, IngestionDecodeError, IngestionEntry, IngestionStatus, SourceEventId, SourceNamespace,
+    TurnId,
+};
 use crate::journal::{
     BrokenLink, BrokenReason, ChainReport, JournalEntry, MAX_VALENCE_REASON_CHARS, Supersession,
     agent_prefix, chain_hash, entry_key, supersession_prefix,
@@ -170,6 +174,15 @@ pub enum MemoryEngineError {
     /// A durable idempotency record was malformed.
     #[error(transparent)]
     IdempotencyDecode(#[from] IdempotencyDecodeError),
+    /// A source event identity was reused for another immutable payload.
+    #[error("source event `{event_id}` was already ingested with a different payload")]
+    IngestionConflict {
+        /// Stable engine event ID in conflict.
+        event_id: String,
+    },
+    /// A durable ingestion ledger record was malformed.
+    #[error(transparent)]
+    IngestionDecode(#[from] IngestionDecodeError),
     /// A canonical memory filter was invalid.
     #[error(transparent)]
     Filter(#[from] MemoryFilterError),
@@ -243,6 +256,45 @@ pub struct RememberRequest {
     /// How the content functions: observation, description, or requested action.
     pub content_role: celiums_cognition::ContentRole,
     /// Why the memory is being retained.
+    pub purpose: MemoryPurpose,
+}
+
+/// One raw source event submitted at the durable ingestion boundary.
+#[derive(Clone, Debug)]
+pub struct IngestEventRequest {
+    /// Integration namespace that owns `source_event_id`.
+    pub source_namespace: SourceNamespace,
+    /// Stable event identifier assigned by the source.
+    pub source_event_id: SourceEventId,
+    /// Optional grouping identity shared by events in one turn.
+    pub turn_id: Option<TurnId>,
+    /// Event role or origin class.
+    pub source_kind: crate::SourceKind,
+    /// Optional address of the source event.
+    pub source_uri: Option<String>,
+    /// Optional source actor label.
+    pub actor: Option<String>,
+    /// Physical and logical ownership.
+    pub identity: crate::MemoryIdentity,
+    /// Exact raw text received from the source.
+    pub content: String,
+    /// Source event time, when known.
+    pub event_at_ms: Option<i64>,
+    /// Engine boundary time, explicit for deterministic operation.
+    pub ingested_at_ms: i64,
+    /// Optional embedding; absent events remain durably received.
+    pub embedding: Option<Vec<f32>>,
+    /// Space that produced `embedding`.
+    pub embedding_space: Option<EmbeddingSpaceIdentity>,
+    /// Free-form tags for a materialized memory.
+    pub tags: Vec<String>,
+    /// Visibility scope for a materialized memory.
+    pub scope: Scope,
+    /// Explicit importance override.
+    pub importance: Option<f64>,
+    /// How the content functions under governance.
+    pub content_role: celiums_cognition::ContentRole,
+    /// Why the event is retained or used.
     pub purpose: MemoryPurpose,
 }
 
@@ -736,6 +788,169 @@ impl MemoryEngine {
         } else {
             hours_between(self.circadian.last_interaction_ms, now_ms)
         }
+    }
+
+    /// Durably accounts for one raw source event and materializes it when an
+    /// embedding is available. Identical retries reuse the same event and
+    /// memory IDs; conflicting retries are recorded and rejected.
+    ///
+    /// # Errors
+    ///
+    /// Fails on tenant mismatch, conflicting source identity, malformed
+    /// durable state, or storage/materialization failure.
+    pub fn ingest_event(
+        &mut self,
+        request: IngestEventRequest,
+    ) -> Result<IngestionEntry, MemoryEngineError> {
+        self.require_tenant(&request.identity.tenant_id)?;
+        let event_id = EventId::derive(
+            &self.tenant_id,
+            &request.source_namespace,
+            &request.source_event_id,
+        );
+        let request_hash = canonical_ingest_event_hash(&request);
+        let mut entry = self.prepare_ingestion_entry(&request, event_id, request_hash)?;
+
+        let Some(embedding) = request.embedding else {
+            return Ok(entry);
+        };
+        if !matches!(
+            entry.status,
+            IngestionStatus::Received | IngestionStatus::Failed
+        ) {
+            return Ok(entry);
+        }
+        let mut provenance = crate::Provenance::observed(
+            request.source_kind,
+            &request.content,
+            Some(request.source_event_id.to_string()),
+            request.source_uri,
+            request.actor,
+        );
+        provenance.source_namespace = Some(request.source_namespace.to_string());
+        provenance.event_id = Some(entry.event_id.to_string());
+        provenance.turn_id = request.turn_id.map(|turn_id| turn_id.to_string());
+        let remember = RememberRequest {
+            content: request.content,
+            embedding,
+            tags: request.tags,
+            scope: request.scope,
+            importance: request.importance,
+            now_ms: request.ingested_at_ms,
+            context: Some(RememberContext {
+                identity: request.identity,
+                provenance,
+                event_at_ms: request.event_at_ms,
+                ingested_at_ms: request.ingested_at_ms,
+            }),
+            embedding_space: request.embedding_space,
+            idempotency_key: Some(
+                IdempotencyKey::new(format!("ingestion:{}", entry.event_id))
+                    .expect("event UUID yields a valid idempotency key"),
+            ),
+            content_role: request.content_role,
+            purpose: request.purpose,
+        };
+        match self.remember(remember) {
+            Ok(memory) => {
+                entry.status = IngestionStatus::Materialized;
+                entry.memory_id = Some(memory.id);
+            }
+            Err(MemoryEngineError::EthicsBlocked { .. }) => {
+                entry.status = IngestionStatus::Rejected;
+                entry.error_code = Some("ethics_blocked".to_owned());
+            }
+            Err(error) => {
+                entry.status = IngestionStatus::Failed;
+                entry.error_code = Some(ingestion_error_code(&error).to_owned());
+                self.persist_ingestion(&entry)?;
+                return Err(error);
+            }
+        }
+        self.persist_ingestion(&entry)?;
+        Ok(entry)
+    }
+
+    fn prepare_ingestion_entry(
+        &mut self,
+        request: &IngestEventRequest,
+        event_id: EventId,
+        request_hash: String,
+    ) -> Result<IngestionEntry, MemoryEngineError> {
+        if let Some(mut entry) = self.get_ingestion(&event_id)? {
+            entry.attempt_count = entry.attempt_count.saturating_add(1);
+            entry.last_attempted_at_ms = request.ingested_at_ms;
+            if entry.request_hash != request_hash {
+                entry.conflict_count = entry.conflict_count.saturating_add(1);
+                self.persist_ingestion(&entry)?;
+                return Err(MemoryEngineError::IngestionConflict {
+                    event_id: event_id.to_string(),
+                });
+            }
+            self.persist_ingestion(&entry)?;
+            return Ok(entry);
+        }
+
+        let entry = IngestionEntry {
+            event_id,
+            source_namespace: request.source_namespace.clone(),
+            source_event_id: request.source_event_id.clone(),
+            turn_id: request.turn_id.clone(),
+            identity: request.identity.clone(),
+            source_kind: request.source_kind,
+            source_uri: request.source_uri.clone(),
+            actor: request.actor.clone(),
+            content: request.content.clone(),
+            content_hash: blake3::hash(request.content.as_bytes())
+                .to_hex()
+                .to_string(),
+            request_hash,
+            event_at_ms: request.event_at_ms,
+            first_ingested_at_ms: request.ingested_at_ms,
+            last_attempted_at_ms: request.ingested_at_ms,
+            attempt_count: 1,
+            conflict_count: 0,
+            status: IngestionStatus::Received,
+            memory_id: None,
+            error_code: None,
+        };
+        self.persist_ingestion(&entry)?;
+        Ok(entry)
+    }
+
+    /// Gets one durable ingestion entry by stable event ID.
+    ///
+    /// # Errors
+    ///
+    /// Fails on storage or durable decode failure.
+    pub fn get_ingestion(
+        &self,
+        event_id: &EventId,
+    ) -> Result<Option<IngestionEntry>, MemoryEngineError> {
+        self.hyphae
+            .get_record(&IngestionEntry::durable_key(event_id))?
+            .as_ref()
+            .map(IngestionEntry::from_record)
+            .transpose()
+            .map_err(Into::into)
+    }
+
+    /// Lists all durable ingestion entries in deterministic event-ID order.
+    ///
+    /// # Errors
+    ///
+    /// Fails on query or durable decode failure.
+    pub fn ingestion_entries(&self) -> Result<Vec<IngestionEntry>, MemoryEngineError> {
+        self.scan_prefix(IngestionEntry::prefix())?
+            .iter()
+            .map(|record| IngestionEntry::from_record(record).map_err(Into::into))
+            .collect()
+    }
+
+    fn persist_ingestion(&mut self, entry: &IngestionEntry) -> Result<(), MemoryEngineError> {
+        self.hyphae
+            .put_record(deterministic_ingestion_uuid(entry), &entry.to_record())?;
+        Ok(())
     }
 
     /// Stores one memory: classifies importance, affect and type from
@@ -2260,6 +2475,159 @@ fn source_trust(context: Option<&RememberContext>) -> SourceTrust {
         ) => SourceTrust::External,
         None => SourceTrust::UserProvided,
     }
+}
+
+fn canonical_ingest_event_hash(request: &IngestEventRequest) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"celiums-memory/ingestion-event-request/v1");
+    hash_ingest_source(&mut hasher, request);
+    hash_ingest_identity(&mut hasher, &request.identity);
+    hash_ingest_payload(&mut hasher, request);
+    hasher.finalize().to_hex().to_string()
+}
+
+fn hash_ingest_source(hasher: &mut blake3::Hasher, request: &IngestEventRequest) {
+    write_ingest_hash_field(
+        hasher,
+        b"source_namespace",
+        request.source_namespace.as_str().as_bytes(),
+    );
+    write_ingest_hash_field(
+        hasher,
+        b"source_event_id",
+        request.source_event_id.as_str().as_bytes(),
+    );
+    write_optional_ingest_text(
+        hasher,
+        b"turn_id",
+        request.turn_id.as_ref().map(TurnId::as_str),
+    );
+    write_ingest_hash_field(
+        hasher,
+        b"source_kind",
+        request.source_kind.as_str().as_bytes(),
+    );
+    write_optional_ingest_text(hasher, b"source_uri", request.source_uri.as_deref());
+    write_optional_ingest_text(hasher, b"actor", request.actor.as_deref());
+}
+
+fn hash_ingest_identity(hasher: &mut blake3::Hasher, identity: &crate::MemoryIdentity) {
+    write_ingest_hash_field(hasher, b"tenant_id", identity.tenant_id.as_str().as_bytes());
+    write_ingest_hash_field(hasher, b"user_id", identity.user_id.as_str().as_bytes());
+    write_optional_ingest_text(
+        hasher,
+        b"agent_id",
+        identity.agent_id.as_ref().map(crate::AgentId::as_str),
+    );
+    write_optional_ingest_text(
+        hasher,
+        b"project_id",
+        identity.project_id.as_ref().map(crate::ProjectId::as_str),
+    );
+    write_optional_ingest_text(
+        hasher,
+        b"conversation_id",
+        identity
+            .conversation_id
+            .as_ref()
+            .map(crate::ConversationId::as_str),
+    );
+    write_optional_ingest_text(
+        hasher,
+        b"session_id",
+        identity.session_id.as_ref().map(crate::SessionId::as_str),
+    );
+}
+
+fn hash_ingest_payload(hasher: &mut blake3::Hasher, request: &IngestEventRequest) {
+    write_ingest_hash_field(hasher, b"content", request.content.as_bytes());
+    write_optional_ingest_i64(hasher, b"event_at_ms", request.event_at_ms);
+    write_ingest_hash_field(hasher, b"scope", request.scope.as_str().as_bytes());
+    for tag in &request.tags {
+        write_ingest_hash_field(hasher, b"tag", tag.as_bytes());
+    }
+    write_ingest_hash_field(
+        hasher,
+        b"importance",
+        &request
+            .importance
+            .unwrap_or(f64::NAN)
+            .to_bits()
+            .to_le_bytes(),
+    );
+    write_ingest_hash_field(
+        hasher,
+        b"content_role",
+        content_role_name(request.content_role).as_bytes(),
+    );
+    write_ingest_hash_field(hasher, b"purpose", purpose_name(request.purpose).as_bytes());
+}
+
+fn write_optional_ingest_text(hasher: &mut blake3::Hasher, name: &[u8], value: Option<&str>) {
+    match value {
+        Some(value) => {
+            write_ingest_hash_field(hasher, name, &[1]);
+            write_ingest_hash_field(hasher, name, value.as_bytes());
+        }
+        None => write_ingest_hash_field(hasher, name, &[0]),
+    }
+}
+
+fn write_optional_ingest_i64(hasher: &mut blake3::Hasher, name: &[u8], value: Option<i64>) {
+    match value {
+        Some(value) => {
+            write_ingest_hash_field(hasher, name, &[1]);
+            write_ingest_hash_field(hasher, name, &value.to_le_bytes());
+        }
+        None => write_ingest_hash_field(hasher, name, &[0]),
+    }
+}
+
+fn write_ingest_hash_field(hasher: &mut blake3::Hasher, name: &[u8], value: &[u8]) {
+    hasher.update(&(name.len() as u64).to_le_bytes());
+    hasher.update(name);
+    hasher.update(&(value.len() as u64).to_le_bytes());
+    hasher.update(value);
+}
+
+fn content_role_name(role: celiums_cognition::ContentRole) -> &'static str {
+    match role {
+        celiums_cognition::ContentRole::Observation => "observation",
+        celiums_cognition::ContentRole::Description => "description",
+        celiums_cognition::ContentRole::OperationalRequest => "operational_request",
+    }
+}
+
+fn ingestion_error_code(error: &MemoryEngineError) -> &'static str {
+    match error {
+        MemoryEngineError::Quantize(_) => "invalid_embedding",
+        MemoryEngineError::EmbeddingSpaceMismatch { .. } => "embedding_space_mismatch",
+        MemoryEngineError::TenantMismatch { .. } => "tenant_mismatch",
+        MemoryEngineError::ContentHashMismatch => "content_hash_mismatch",
+        MemoryEngineError::IdempotencyConflict => "idempotency_conflict",
+        _ => "materialization_failed",
+    }
+}
+
+fn deterministic_ingestion_uuid(entry: &IngestionEntry) -> Uuid {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"celiums-memory/ingestion-ledger-write/v1");
+    hasher.update(entry.event_id.as_str().as_bytes());
+    hasher.update(&entry.attempt_count.to_le_bytes());
+    hasher.update(&entry.conflict_count.to_le_bytes());
+    hasher.update(entry.status.as_str().as_bytes());
+    if let Some(memory_id) = &entry.memory_id {
+        hasher.update(memory_id.as_bytes());
+    }
+    if let Some(error_code) = &entry.error_code {
+        hasher.update(error_code.as_bytes());
+    }
+    let digest = hasher.finalize();
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest.as_bytes()[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(bytes)
 }
 
 fn treatment_name(treatment: Treatment) -> &'static str {

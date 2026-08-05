@@ -130,7 +130,14 @@ impl Memory {
             "source_kind".to_owned(),
             Value::String(self.provenance.source_kind.as_str().to_owned()),
         );
+        insert_optional_string(
+            &mut fields,
+            "source_namespace",
+            self.provenance.source_namespace.as_ref(),
+        );
         insert_optional_string(&mut fields, "source_id", self.provenance.source_id.as_ref());
+        insert_optional_string(&mut fields, "event_id", self.provenance.event_id.as_ref());
+        insert_optional_string(&mut fields, "turn_id", self.provenance.turn_id.as_ref());
         insert_optional_string(
             &mut fields,
             "source_uri",
@@ -382,7 +389,10 @@ fn provenance_fields(
         source_kind: SourceKind::parse(&source_kind).ok_or(MemoryDecodeError::Field {
             field: "source_kind",
         })?,
+        source_namespace: optional_string_field(fields, "source_namespace")?,
         source_id: optional_string_field(fields, "source_id")?,
+        event_id: optional_string_field(fields, "event_id")?,
+        turn_id: optional_string_field(fields, "turn_id")?,
         source_uri: optional_string_field(fields, "source_uri")?,
         actor: optional_string_field(fields, "source_actor")?,
         content_hash: string_field(fields, "content_hash")?,
@@ -628,7 +638,10 @@ mod tests {
             "conversation_id",
             "session_id",
             "source_kind",
+            "source_namespace",
             "source_id",
+            "event_id",
+            "turn_id",
             "source_uri",
             "source_actor",
             "content_hash",

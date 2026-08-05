@@ -20,14 +20,14 @@ evidence and why the next action follows.
 
 | Field | Value |
 |---|---|
-| Active phase | Phase 2 - Ethics-native memory governance |
-| Active item | P2.6 - Phase close (commit/push/CI) |
+| Active phase | Phase 3 - Complete ingestion |
+| Active item | P3.1 - Phase close (commit/push/CI) |
 | Branch | `dev` |
-| Baseline commit | `5638ca2` |
+| Baseline commit | `a8c9d6a` |
 | Canonical implementation | `rust/` |
 | Storage substrate | Hyphae `=0.2.1` |
 | Production direction | Cloudflare, one Durable Object per tenant |
-| Next phase after gate | Phase 3 - Complete ingestion |
+| Next phase after gate | Phase 4 - Temporal claims and contradictions |
 
 ## Phase 0 checklist
 
@@ -61,7 +61,7 @@ evidence and why the next action follows.
 | P2.3 | Recall disclosure policy | verified locally | include/redact/summarize/restrict/abstain applied to live/time-travel recall |
 | P2.4 | Poisoning, PII and secret governance | verified locally | EN/ES poisoning quarantine; PII/secrets redacted or withheld |
 | P2.5 | Feedback and audit | verified locally | tenant hash chain; append-only feedback and resolutions |
-| P2.6 | Phase close | verified locally | docs and journal complete; commit/push/CI pending |
+| P2.6 | Phase close | closed | `a8c9d6a`; complete CI green; journaled |
 
 ## Completed foundation
 
@@ -136,6 +136,18 @@ stable and an isolated immutable server exists.
 | 2026-08-05 | Hyphae boundary correction | closed | Hyphae PR #111 closed; no Hyphae change consumed by Celiums Memory |
 | 2026-08-05 | Phase 1 GitHub CI | Rust passed | MSRV 1.89 and stable fmt/clippy/test green; legacy Trivy found federation Hono CVE |
 | 2026-08-05 | P2 full local gates | passed | 136 cognition, 53 engine unit, 7 governance, 16 engine, MCP/journal/phase suites; fmt/clippy green |
+| 2026-08-05 | Phase 2 GitHub CI | passed | MSRV/stable Rust, Node tests, lint, typecheck, build, Trivy and secret scan green |
+| 2026-08-05 | P3.1 event ingestion contract | passed | 4 ingestion tests; 136 cognition, 54 engine unit and all integration/doc suites; workspace fmt/clippy green |
+
+## Phase 3 checklist
+
+| ID | Work item | Status | Evidence / exit condition |
+|---|---|---|---|
+| P3.1 | Event and turn ingestion contract | verified locally | raw event, deterministic event/memory IDs, turn provenance, retries/conflicts/rejections ledgered; journal `019fd3391d4070138899cb175733649d` |
+| P3.2 | Conversation and batch ingestion | pending | resumable jobs and per-item outcomes |
+| P3.3 | Capture adapters | pending | OpenCode/Codex, Claude Code, Cursor, MCP, webhook |
+| P3.4 | Provider enrichment boundary | pending | raw events survive provider failure and resume safely |
+| P3.5 | Phase close | pending | all attempted events accounted for; batch throughput gate |
 
 ## Update protocol
 

@@ -169,8 +169,14 @@ impl SourceKind {
 pub struct Provenance {
     /// Origin class.
     pub source_kind: SourceKind,
+    /// Integration namespace that owns `source_id`, when event-ingested.
+    pub source_namespace: Option<String>,
     /// Stable upstream event or message identifier.
     pub source_id: Option<String>,
+    /// Stable engine event identifier, when event-ingested.
+    pub event_id: Option<String>,
+    /// Optional grouping identity shared by source events in one turn.
+    pub turn_id: Option<String>,
     /// Source URI, when the observation came from an addressable resource.
     pub source_uri: Option<String>,
     /// Actor or speaker label supplied by the integration.
@@ -190,7 +196,10 @@ impl Provenance {
     ) -> Self {
         Self {
             source_kind,
+            source_namespace: None,
             source_id,
+            event_id: None,
+            turn_id: None,
             source_uri,
             actor,
             content_hash: blake3::hash(content.as_bytes()).to_hex().to_string(),
