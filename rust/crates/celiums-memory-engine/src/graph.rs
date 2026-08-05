@@ -24,6 +24,8 @@ const RELATION_TYPE_KIND: &str = "relation_type";
 const RELATION_TYPE_PREFIX: &str = "__celiums/graph/ontology/relation_type/";
 const RELATION_KIND: &str = "entity_relation";
 const RELATION_PREFIX: &str = "__celiums/graph/relation/";
+const MEMORY_BINDING_KIND: &str = "graph_memory_binding";
+const MEMORY_BINDING_PREFIX: &str = "__celiums/graph/memory_binding/";
 const MAX_TEXT_BYTES: usize = 4_096;
 const NANOS: f64 = 1_000_000_000.0;
 
@@ -680,6 +682,74 @@ pub struct GraphTraversalResult {
     pub truncated: bool,
     /// First budget that truncated traversal.
     pub truncation_reason: Option<GraphTruncationReason>,
+}
+
+/// Durable scoped association between a canonical entity and memory.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GraphMemoryBinding {
+    /// Owning scope.
+    pub scope: RecallScope,
+    /// Bound entity.
+    pub entity_id: EntityId,
+    /// Bound memory ID.
+    pub memory_id: String,
+    /// Transaction time.
+    pub recorded_at_ms: i64,
+}
+
+impl GraphMemoryBinding {
+    pub(crate) fn new(
+        scope: RecallScope,
+        entity_id: EntityId,
+        memory_id: String,
+        recorded_at_ms: i64,
+    ) -> Self {
+        Self {
+            scope,
+            entity_id,
+            memory_id,
+            recorded_at_ms,
+        }
+    }
+
+    pub(crate) fn prefix() -> &'static [u8] {
+        MEMORY_BINDING_PREFIX.as_bytes()
+    }
+
+    pub(crate) fn to_record(&self) -> Record {
+        let mut hasher = blake3::Hasher::new();
+        hash_scope(&mut hasher, &self.scope);
+        hash_field(
+            &mut hasher,
+            b"entity_id",
+            self.entity_id.as_str().as_bytes(),
+        );
+        hash_field(&mut hasher, b"memory_id", self.memory_id.as_bytes());
+        let mut fields = scope_fields(&self.scope);
+        fields.extend(BTreeMap::from([
+            ("kind".to_owned(), string(MEMORY_BINDING_KIND)),
+            ("entity_id".to_owned(), string(self.entity_id.as_str())),
+            ("memory_id".to_owned(), string(&self.memory_id)),
+            (
+                "recorded_at_ms".to_owned(),
+                Value::Integer(self.recorded_at_ms),
+            ),
+        ]));
+        Record::new(
+            format!("{MEMORY_BINDING_PREFIX}{}", hasher.finalize().to_hex()).into_bytes(),
+            Value::Object(fields),
+        )
+    }
+
+    pub(crate) fn from_record(record: &Record) -> Result<Self, GraphDecodeError> {
+        let fields = object(record, Self::prefix(), MEMORY_BINDING_KIND)?;
+        Ok(Self {
+            scope: scope_from_fields(fields)?,
+            entity_id: EntityId::parse(text(fields, "entity_id")?)?,
+            memory_id: text(fields, "memory_id")?,
+            recorded_at_ms: integer(fields, "recorded_at_ms")?,
+        })
+    }
 }
 
 impl EntityRelation {

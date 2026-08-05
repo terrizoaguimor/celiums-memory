@@ -137,7 +137,9 @@ pub fn recall_at(
 
     let mut scored = Vec::with_capacity(candidates.len());
     for (key, (semantic, text_match)) in candidates {
-        let memory = snapshot_memory(&contents, &key)?;
+        let Some(memory) = snapshot_memory(&contents, &key)? else {
+            continue;
+        };
         if memory.state == MemoryState::Archived || !memory_visible_to(&memory, &scope) {
             continue;
         }
@@ -301,7 +303,10 @@ fn lexical_candidates(
     })
 }
 
-fn snapshot_memory(contents: &SnapshotContents, key: &[u8]) -> Result<Memory, MemoryEngineError> {
+fn snapshot_memory(
+    contents: &SnapshotContents,
+    key: &[u8],
+) -> Result<Option<Memory>, MemoryEngineError> {
     let entry = contents
         .entries
         .iter()
@@ -311,7 +316,18 @@ fn snapshot_memory(contents: &SnapshotContents, key: &[u8]) -> Result<Memory, Me
         })?;
     let value =
         hyphae_engine::decode_document(&entry.value).map_err(hyphae_engine::EngineError::from)?;
-    Ok(Memory::from_record(&Record::new(entry.key.clone(), value))?)
+    let record = Record::new(entry.key.clone(), value);
+    let hyphae_query::Value::Object(fields) = &record.value else {
+        return Ok(Some(Memory::from_record(&record)?));
+    };
+    if fields.get("kind")
+        != Some(&hyphae_query::Value::String(
+            crate::memory::MEMORY_KIND.to_owned(),
+        ))
+    {
+        return Ok(None);
+    }
+    Ok(Some(Memory::from_record(&record)?))
 }
 
 fn days_between(earlier_ms: i64, later_ms: i64) -> f64 {

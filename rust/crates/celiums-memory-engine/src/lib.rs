@@ -46,10 +46,11 @@ pub use embed::deterministic_embed;
 pub use embedding_space::{EmbeddingNormalization, EmbeddingSpaceIdentity, InvalidEmbeddingSpace};
 pub use engine::{
     ActionDecision, BatchRememberOutcome, BranchAbstention, CircadianStatus, ConsolidationReport,
-    DeleteMemoryOutcome, EnrichEventRequest, IngestBatchRequest, IngestConversationRequest,
-    IngestEventRequest, JournalRecallRequest, JournalWriteRequest, LifecycleReport,
-    ListMemoriesRequest, MemoryEngine, MemoryEngineError, MemoryPage, MemoryPatch, RecallConfig,
-    RecallRequest, RecallResponse, RememberRequest, ScoredMemory, UpdateMemoryRequest,
+    DeleteMemoryOutcome, EnrichEventRequest, GraphRecallRequest, GraphRecallResponse,
+    GraphScoredMemory, IngestBatchRequest, IngestConversationRequest, IngestEventRequest,
+    JournalRecallRequest, JournalWriteRequest, LifecycleReport, ListMemoriesRequest, MemoryEngine,
+    MemoryEngineError, MemoryPage, MemoryPatch, RecallConfig, RecallRequest, RecallResponse,
+    RememberRequest, ScoredMemory, UpdateMemoryRequest,
 };
 pub use entity_index::EntityRecord;
 pub use filter::{
@@ -64,9 +65,9 @@ pub use graph::{
     CanonicalEntity, CreateEntityRelationRequest, CreateEntityRequest, DefineEntityTypeRequest,
     DefineRelationTypeRequest, EntityAlias, EntityAliasRequest, EntityId, EntityLineage,
     EntityLineageRequest, EntityLineageType, EntityRelation, EntityRelationId, EntityResolution,
-    EntityTypeDefinition, GraphDecodeError, GraphEvidenceInput, GraphTraversalRequest,
-    GraphTraversalResult, GraphTruncationReason, InvalidGraph, RelationDirection,
-    RelationTypeDefinition, TraversedEdge, normalize_label,
+    EntityTypeDefinition, GraphDecodeError, GraphEvidenceInput, GraphMemoryBinding,
+    GraphTraversalRequest, GraphTraversalResult, GraphTruncationReason, InvalidGraph,
+    RelationDirection, RelationTypeDefinition, TraversedEdge, normalize_label,
 };
 pub use idempotency::{IdempotencyDecodeError, IdempotencyKey, InvalidIdempotencyKey};
 pub use identity::{

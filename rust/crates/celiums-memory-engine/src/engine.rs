@@ -58,10 +58,10 @@ use crate::graph::{
     CanonicalEntity, CreateEntityRelationRequest, CreateEntityRequest, DefineEntityTypeRequest,
     DefineRelationTypeRequest, EntityAlias, EntityAliasRequest, EntityId, EntityLineage,
     EntityLineageRequest, EntityLineageType, EntityRelation, EntityResolution,
-    EntityTypeDefinition, GraphDecodeError, GraphTraversalRequest, GraphTraversalResult,
-    GraphTruncationReason, InvalidGraph, RelationDirection, RelationTypeDefinition, TraversedEdge,
-    built_in_entity_type, normalize_label, scope_visible as graph_scope_visible, validate_interval,
-    validate_text as validate_graph_text,
+    EntityTypeDefinition, GraphDecodeError, GraphMemoryBinding, GraphTraversalRequest,
+    GraphTraversalResult, GraphTruncationReason, InvalidGraph, RelationDirection,
+    RelationTypeDefinition, TraversedEdge, built_in_entity_type, normalize_label,
+    scope_visible as graph_scope_visible, validate_interval, validate_text as validate_graph_text,
 };
 use crate::idempotency::{
     IdempotencyDecodeError, IdempotencyKey, RememberIdempotencyRecord, canonical_remember_hash,
@@ -518,6 +518,51 @@ pub struct RecallResponse {
     pub lexical_abstention: Option<BranchAbstention>,
     /// Semantic branch abstention, when it produced nothing.
     pub semantic_abstention: Option<BranchAbstention>,
+}
+
+/// Recall request augmented with bounded graph candidate generation.
+#[derive(Clone, Debug)]
+pub struct GraphRecallRequest {
+    /// Standard hybrid recall request.
+    pub recall: RecallRequest,
+    /// Graph depth budget.
+    pub max_depth: usize,
+    /// Graph edge budget.
+    pub max_edges: usize,
+    /// Graph entity budget.
+    pub max_entities: usize,
+    /// Graph-derived memory candidate budget.
+    pub max_memories: usize,
+}
+
+/// One graph-assisted recalled memory with path evidence.
+#[derive(Clone, Debug)]
+pub struct GraphScoredMemory {
+    /// Recalled memory.
+    pub memory: Memory,
+    /// Standard cognitive channels.
+    pub channels: ChannelScores,
+    /// Final score with a transparent graph candidate floor.
+    pub final_score: f64,
+    /// Policy-safe content.
+    pub disclosed_content: Option<String>,
+    /// Disclosure decision.
+    pub disclosure: celiums_cognition::DisclosureClass,
+    /// Entity IDs explaining graph retrieval; empty for direct candidates.
+    pub graph_path: Vec<EntityId>,
+}
+
+/// Complete graph-assisted recall response.
+#[derive(Clone, Debug)]
+pub struct GraphRecallResponse {
+    /// Ranked results.
+    pub results: Vec<GraphScoredMemory>,
+    /// Whether graph generation truncated.
+    pub graph_truncated: bool,
+    /// Graph truncation reason.
+    pub graph_truncation_reason: Option<GraphTruncationReason>,
+    /// Visible edges inspected.
+    pub graph_inspected_edges: usize,
 }
 
 /// Scoped request to list durable memories without reactivation.
@@ -2185,6 +2230,214 @@ impl MemoryEngine {
         })
     }
 
+    /// Binds a visible memory to one visible canonical entity.
+    pub fn bind_memory_entity(
+        &mut self,
+        memory_id: &str,
+        entity_id: &EntityId,
+        scope: &RecallScope,
+    ) -> Result<GraphMemoryBinding, MemoryEngineError> {
+        let memory = self.get_memory(memory_id, scope)?.ok_or_else(|| {
+            MemoryEngineError::MissingCandidate {
+                id: memory_id.to_owned(),
+            }
+        })?;
+        if self.get_entity(entity_id, scope)?.is_none() {
+            return Err(MemoryEngineError::GraphEntityNotFound {
+                entity_id: entity_id.to_string(),
+            });
+        }
+        let binding = GraphMemoryBinding::new(
+            scope.clone(),
+            entity_id.clone(),
+            memory.id,
+            memory.ingested_at_ms,
+        );
+        self.hyphae
+            .put_record(Uuid::now_v7(), &binding.to_record())?;
+        Ok(binding)
+    }
+
+    /// Runs standard recall plus bounded graph candidate generation.
+    pub fn recall_with_graph(
+        &mut self,
+        request: GraphRecallRequest,
+    ) -> Result<GraphRecallResponse, MemoryEngineError> {
+        let scope = request
+            .recall
+            .scope
+            .clone()
+            .unwrap_or_else(RecallScope::local);
+        let direct = self.recall(request.recall.clone())?;
+        let mut paths: BTreeMap<String, Vec<EntityId>> = BTreeMap::new();
+        let mut seeds =
+            self.graph_query_seeds(&scope, &request.recall.query_text, request.recall.now_ms)?;
+        for scored in &direct.results {
+            seeds.extend(self.bound_entity_ids(&scored.memory.id, &scope)?);
+        }
+        seeds.sort();
+        seeds.dedup();
+        let traversal = if seeds.is_empty() {
+            GraphTraversalResult {
+                entities: Vec::new(),
+                edges: Vec::new(),
+                inspected_edges: 0,
+                truncated: false,
+                truncation_reason: None,
+            }
+        } else {
+            self.traverse_graph(GraphTraversalRequest {
+                scope: scope.clone(),
+                seeds: seeds.clone(),
+                relation_types: Vec::new(),
+                valid_at_ms: request.recall.now_ms,
+                known_at_ms: request.recall.now_ms,
+                max_depth: request.max_depth,
+                max_edges: request.max_edges,
+                max_entities: request.max_entities,
+            })?
+        };
+        for entity_id in traversal.entities.iter().take(request.max_entities) {
+            for binding in self.memory_bindings(entity_id, &scope)? {
+                paths
+                    .entry(binding.memory_id)
+                    .or_insert_with(|| graph_path(&seeds, entity_id, &traversal));
+                if paths.len() >= request.max_memories {
+                    break;
+                }
+            }
+        }
+
+        let mut results: BTreeMap<String, GraphScoredMemory> = direct
+            .results
+            .into_iter()
+            .map(|scored| {
+                (
+                    scored.memory.id.clone(),
+                    GraphScoredMemory {
+                        memory: scored.memory,
+                        channels: scored.channels,
+                        final_score: scored.final_score,
+                        disclosed_content: scored.disclosed_content,
+                        disclosure: scored.disclosure,
+                        graph_path: Vec::new(),
+                    },
+                )
+            })
+            .collect();
+        for (memory_id, path) in paths {
+            if results.contains_key(&memory_id) {
+                continue;
+            }
+            let Some(memory) = self.get_memory(&memory_id, &scope)? else {
+                continue;
+            };
+            if memory.state == MemoryState::Archived {
+                continue;
+            }
+            let channels = graph_candidate_channels(&memory, request.recall.now_ms);
+            let current_state = request
+                .recall
+                .current_state
+                .unwrap_or_else(|| self.affect_state(request.recall.now_ms));
+            let cognitive = recall::score(&self.config.weights, &channels, current_state.arousal);
+            let final_score = cognitive.max(self.config.score_threshold);
+            let (disclosure, disclosed_content) = disclose_memory(
+                &memory,
+                request.recall.disclosure_authority,
+                request.recall.disclosure_purpose,
+            );
+            if disclosure == celiums_cognition::DisclosureClass::Abstain {
+                continue;
+            }
+            results.insert(
+                memory_id,
+                GraphScoredMemory {
+                    memory,
+                    channels,
+                    final_score,
+                    disclosed_content,
+                    disclosure,
+                    graph_path: path,
+                },
+            );
+        }
+        let mut results: Vec<GraphScoredMemory> = results.into_values().collect();
+        results.sort_by(|left, right| {
+            right
+                .final_score
+                .partial_cmp(&left.final_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.memory.id.cmp(&right.memory.id))
+        });
+        results.truncate(request.recall.limit.max(1));
+        Ok(GraphRecallResponse {
+            results,
+            graph_truncated: traversal.truncated,
+            graph_truncation_reason: traversal.truncation_reason,
+            graph_inspected_edges: traversal.inspected_edges,
+        })
+    }
+
+    fn graph_query_seeds(
+        &self,
+        scope: &RecallScope,
+        query: &str,
+        now_ms: i64,
+    ) -> Result<Vec<EntityId>, MemoryEngineError> {
+        let aliases = self
+            .scan_prefix(EntityAlias::prefix())?
+            .iter()
+            .map(EntityAlias::from_record)
+            .collect::<Result<Vec<_>, _>>()?;
+        let query = normalize_label(query);
+        let mut seeds = Vec::new();
+        for (alias, owner, _) in aliases {
+            if graph_scope_visible(&owner, scope)
+                && alias.valid_at(now_ms, now_ms)
+                && query.contains(&alias.normalized_alias)
+            {
+                seeds.push(alias.entity_id);
+            }
+        }
+        Ok(seeds)
+    }
+
+    fn memory_bindings(
+        &self,
+        entity_id: &EntityId,
+        scope: &RecallScope,
+    ) -> Result<Vec<GraphMemoryBinding>, MemoryEngineError> {
+        let bindings = self
+            .scan_prefix(GraphMemoryBinding::prefix())?
+            .iter()
+            .map(GraphMemoryBinding::from_record)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(bindings
+            .into_iter()
+            .filter(|binding| binding.entity_id == *entity_id)
+            .filter(|binding| graph_scope_visible(&binding.scope, scope))
+            .collect())
+    }
+
+    fn bound_entity_ids(
+        &self,
+        memory_id: &str,
+        scope: &RecallScope,
+    ) -> Result<Vec<EntityId>, MemoryEngineError> {
+        let bindings = self
+            .scan_prefix(GraphMemoryBinding::prefix())?
+            .iter()
+            .map(GraphMemoryBinding::from_record)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(bindings
+            .into_iter()
+            .filter(|binding| binding.memory_id == memory_id)
+            .filter(|binding| graph_scope_visible(&binding.scope, scope))
+            .map(|binding| binding.entity_id)
+            .collect())
+    }
+
     /// Creates a stable canonical entity and its exact canonical-label alias.
     pub fn create_entity(
         &mut self,
@@ -2551,7 +2804,9 @@ impl MemoryEngine {
 
         let mut scored = Vec::with_capacity(candidates.len());
         for (key, (semantic, text_match)) in candidates {
-            let memory = self.load_memory(&key)?;
+            let Some(memory) = self.load_recall_candidate(&key)? else {
+                continue;
+            };
             if memory.state == MemoryState::Archived || !memory_visible_to(&memory, &scope) {
                 continue;
             }
@@ -3083,6 +3338,26 @@ impl MemoryEngine {
                     id: String::from_utf8_lossy(key).into_owned(),
                 })?;
         Ok(Memory::from_record(&record)?)
+    }
+
+    fn load_recall_candidate(&self, key: &[u8]) -> Result<Option<Memory>, MemoryEngineError> {
+        let record =
+            self.hyphae
+                .get_record(key)?
+                .ok_or_else(|| MemoryEngineError::MissingCandidate {
+                    id: String::from_utf8_lossy(key).into_owned(),
+                })?;
+        let hyphae_query::Value::Object(fields) = &record.value else {
+            return Ok(Some(Memory::from_record(&record)?));
+        };
+        if fields.get("kind")
+            != Some(&hyphae_query::Value::String(
+                crate::memory::MEMORY_KIND.to_owned(),
+            ))
+        {
+            return Ok(None);
+        }
+        Ok(Some(Memory::from_record(&record)?))
     }
 
     /// Consolidates a block of conversation text into memories
@@ -3756,6 +4031,52 @@ fn resolution(mut entity_ids: Vec<EntityId>) -> EntityResolution {
         0 => EntityResolution::NotFound,
         1 => EntityResolution::Resolved(entity_ids.remove(0)),
         _ => EntityResolution::Ambiguous(entity_ids),
+    }
+}
+
+fn graph_path(
+    seeds: &[EntityId],
+    target: &EntityId,
+    traversal: &GraphTraversalResult,
+) -> Vec<EntityId> {
+    if seeds.contains(target) {
+        return vec![target.clone()];
+    }
+    let mut parent: BTreeMap<EntityId, EntityId> = BTreeMap::new();
+    for edge in &traversal.edges {
+        parent
+            .entry(edge.relation.target_entity_id.clone())
+            .or_insert_with(|| edge.relation.source_entity_id.clone());
+        if edge.relation.direction == RelationDirection::Undirected {
+            parent
+                .entry(edge.relation.source_entity_id.clone())
+                .or_insert_with(|| edge.relation.target_entity_id.clone());
+        }
+    }
+    let mut path = vec![target.clone()];
+    let mut current = target;
+    while let Some(previous) = parent.get(current) {
+        path.push(previous.clone());
+        if seeds.contains(previous) {
+            break;
+        }
+        current = previous;
+    }
+    path.reverse();
+    path
+}
+
+fn graph_candidate_channels(memory: &Memory, now_ms: i64) -> ChannelScores {
+    ChannelScores {
+        semantic: 0.0,
+        text_match: 0.0,
+        importance: memory.importance,
+        retrievability: retrievability(
+            days_between(memory.last_retrieved_at_ms, now_ms),
+            memory.strength,
+        ),
+        emotional: emotional_weight(memory.pad.pleasure, memory.pad.arousal),
+        resonance: 0.5,
     }
 }
 
