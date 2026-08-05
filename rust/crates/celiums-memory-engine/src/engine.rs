@@ -55,8 +55,8 @@ use crate::idempotency::{
 };
 use crate::identity::{RecallScope, RememberContext, TenantId};
 use crate::ingestion::{
-    EventId, IngestionDecodeError, IngestionEntry, IngestionStatus, SourceEventId, SourceNamespace,
-    TurnId,
+    BatchId, BatchItemOutcome, EventId, IngestionBatch, IngestionDecodeError, IngestionEntry,
+    IngestionStatus, SourceEventId, SourceNamespace, TurnId,
 };
 use crate::journal::{
     BrokenLink, BrokenReason, ChainReport, JournalEntry, MAX_VALENCE_REASON_CHARS, Supersession,
@@ -180,6 +180,24 @@ pub enum MemoryEngineError {
         /// Stable engine event ID in conflict.
         event_id: String,
     },
+    /// A batch ID was reused with different ordered event membership.
+    #[error("ingestion batch `{batch_id}` was already submitted with different events")]
+    IngestionBatchConflict {
+        /// Caller-assigned batch ID in conflict.
+        batch_id: String,
+    },
+    /// A batch is empty or mixes physical/logical owners.
+    #[error("invalid ingestion batch: {detail}")]
+    InvalidIngestionBatch {
+        /// Actionable validation detail.
+        detail: &'static str,
+    },
+    /// One event does not belong to the declared conversation.
+    #[error("ingestion event at index {index} does not match the declared conversation")]
+    ConversationMismatch {
+        /// Invalid input index.
+        index: usize,
+    },
     /// A durable ingestion ledger record was malformed.
     #[error(transparent)]
     IngestionDecode(#[from] IngestionDecodeError),
@@ -296,6 +314,26 @@ pub struct IngestEventRequest {
     pub content_role: celiums_cognition::ContentRole,
     /// Why the event is retained or used.
     pub purpose: MemoryPurpose,
+}
+
+/// One durable, independently accounted ingestion batch.
+#[derive(Clone, Debug)]
+pub struct IngestBatchRequest {
+    /// Stable caller-assigned job ID.
+    pub batch_id: BatchId,
+    /// Ordered events. Membership is immutable across retries.
+    pub events: Vec<IngestEventRequest>,
+    /// Submission time.
+    pub now_ms: i64,
+}
+
+/// Conversation ingestion validates every event before starting the batch.
+#[derive(Clone, Debug)]
+pub struct IngestConversationRequest {
+    /// Conversation shared by every event.
+    pub conversation_id: crate::ConversationId,
+    /// Durable batch request.
+    pub batch: IngestBatchRequest,
 }
 
 /// A recall query.
@@ -970,6 +1008,116 @@ impl MemoryEngine {
     fn persist_ingestion(&mut self, entry: &IngestionEntry) -> Result<(), MemoryEngineError> {
         self.hyphae
             .put_record(deterministic_ingestion_uuid(entry), &entry.to_record())?;
+        Ok(())
+    }
+
+    /// Ingests a conversation after validating that every event belongs to it.
+    ///
+    /// # Errors
+    ///
+    /// Fails before writing when any event has a different conversation ID.
+    pub fn ingest_conversation(
+        &mut self,
+        request: IngestConversationRequest,
+    ) -> Result<IngestionBatch, MemoryEngineError> {
+        for (index, event) in request.batch.events.iter().enumerate() {
+            if event.identity.conversation_id.as_ref() != Some(&request.conversation_id) {
+                return Err(MemoryEngineError::ConversationMismatch { index });
+            }
+        }
+        self.ingest_batch(request.batch)
+    }
+
+    /// Processes every event independently and persists a resumable batch job.
+    ///
+    /// # Errors
+    ///
+    /// Fails on empty batches, mixed ownership, changed membership, or storage.
+    /// Individual event materialization failures are returned in `items`.
+    pub fn ingest_batch(
+        &mut self,
+        request: IngestBatchRequest,
+    ) -> Result<IngestionBatch, MemoryEngineError> {
+        let scope = batch_scope(&request.events)?;
+        self.require_tenant(&scope.tenant_id)?;
+        let request_hash = canonical_batch_hash(&request.events);
+        let existing = self.get_ingestion_batch_unscoped(&request.batch_id)?;
+        if existing
+            .as_ref()
+            .is_some_and(|batch| batch.request_hash != request_hash)
+        {
+            return Err(MemoryEngineError::IngestionBatchConflict {
+                batch_id: request.batch_id.to_string(),
+            });
+        }
+
+        let mut items = Vec::with_capacity(request.events.len());
+        for (index, event) in request.events.into_iter().enumerate() {
+            let event_id = EventId::derive(
+                &self.tenant_id,
+                &event.source_namespace,
+                &event.source_event_id,
+            );
+            let entry = match self.ingest_event(event) {
+                Ok(entry) => entry,
+                Err(error) => self.get_ingestion_unscoped(&event_id)?.ok_or(error)?,
+            };
+            let mut outcome = BatchItemOutcome::from(&entry);
+            outcome.index = index;
+            items.push(outcome);
+        }
+
+        let batch = existing.map_or_else(
+            || {
+                IngestionBatch::new(
+                    request.batch_id,
+                    request_hash,
+                    scope,
+                    request.now_ms,
+                    items.clone(),
+                )
+            },
+            |mut batch| {
+                batch.resume(request.now_ms, items.clone());
+                batch
+            },
+        );
+        self.persist_ingestion_batch(&batch)?;
+        Ok(batch)
+    }
+
+    /// Gets one visible durable ingestion batch.
+    ///
+    /// # Errors
+    ///
+    /// Fails on tenant mismatch, storage, or durable decode failure.
+    pub fn get_ingestion_batch(
+        &self,
+        batch_id: &BatchId,
+        scope: &RecallScope,
+    ) -> Result<Option<IngestionBatch>, MemoryEngineError> {
+        self.require_tenant(&scope.tenant_id)?;
+        Ok(self
+            .get_ingestion_batch_unscoped(batch_id)?
+            .filter(|batch| {
+                batch.scope.tenant_id == scope.tenant_id && batch.scope.user_id == scope.user_id
+            }))
+    }
+
+    fn get_ingestion_batch_unscoped(
+        &self,
+        batch_id: &BatchId,
+    ) -> Result<Option<IngestionBatch>, MemoryEngineError> {
+        self.hyphae
+            .get_record(&IngestionBatch::durable_key(&self.tenant_id, batch_id))?
+            .as_ref()
+            .map(IngestionBatch::from_record)
+            .transpose()
+            .map_err(Into::into)
+    }
+
+    fn persist_ingestion_batch(&mut self, batch: &IngestionBatch) -> Result<(), MemoryEngineError> {
+        self.hyphae.put_record(Uuid::now_v7(), &batch.to_record())?;
         Ok(())
     }
 
@@ -2507,6 +2655,47 @@ fn canonical_ingest_event_hash(request: &IngestEventRequest) -> String {
     hash_ingest_source(&mut hasher, request);
     hash_ingest_identity(&mut hasher, &request.identity);
     hash_ingest_payload(&mut hasher, request);
+    hasher.finalize().to_hex().to_string()
+}
+
+fn batch_scope(events: &[IngestEventRequest]) -> Result<RecallScope, MemoryEngineError> {
+    let first = events
+        .first()
+        .ok_or(MemoryEngineError::InvalidIngestionBatch {
+            detail: "at least one event is required",
+        })?;
+    let scope = RecallScope {
+        tenant_id: first.identity.tenant_id.clone(),
+        user_id: first.identity.user_id.clone(),
+        project_id: first.identity.project_id.clone(),
+        conversation_id: first.identity.conversation_id.clone(),
+        session_id: first.identity.session_id.clone(),
+    };
+    if events.iter().any(|event| {
+        event.identity.tenant_id != scope.tenant_id || event.identity.user_id != scope.user_id
+    }) {
+        return Err(MemoryEngineError::InvalidIngestionBatch {
+            detail: "all events must share tenant and user",
+        });
+    }
+    Ok(scope)
+}
+
+fn canonical_batch_hash(events: &[IngestEventRequest]) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"celiums-memory/ingestion-batch/v1");
+    for event in events {
+        write_ingest_hash_field(
+            &mut hasher,
+            b"source_namespace",
+            event.source_namespace.as_str().as_bytes(),
+        );
+        write_ingest_hash_field(
+            &mut hasher,
+            b"source_event_id",
+            event.source_event_id.as_str().as_bytes(),
+        );
+    }
     hasher.finalize().to_hex().to_string()
 }
 

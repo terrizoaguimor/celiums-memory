@@ -36,10 +36,10 @@ pub use embed::deterministic_embed;
 pub use embedding_space::{EmbeddingNormalization, EmbeddingSpaceIdentity, InvalidEmbeddingSpace};
 pub use engine::{
     ActionDecision, BatchRememberOutcome, BranchAbstention, CircadianStatus, ConsolidationReport,
-    DeleteMemoryOutcome, IngestEventRequest, JournalRecallRequest, JournalWriteRequest,
-    LifecycleReport, ListMemoriesRequest, MemoryEngine, MemoryEngineError, MemoryPage, MemoryPatch,
-    RecallConfig, RecallRequest, RecallResponse, RememberRequest, ScoredMemory,
-    UpdateMemoryRequest,
+    DeleteMemoryOutcome, IngestBatchRequest, IngestConversationRequest, IngestEventRequest,
+    JournalRecallRequest, JournalWriteRequest, LifecycleReport, ListMemoriesRequest, MemoryEngine,
+    MemoryEngineError, MemoryPage, MemoryPatch, RecallConfig, RecallRequest, RecallResponse,
+    RememberRequest, ScoredMemory, UpdateMemoryRequest,
 };
 pub use entity_index::EntityRecord;
 pub use filter::{
@@ -56,8 +56,9 @@ pub use identity::{
     RememberContext, SessionId, SourceKind, TenantId, UserId,
 };
 pub use ingestion::{
-    EventId, IngestionDecodeError, IngestionEntry, IngestionStatus, InvalidIngestionIdentity,
-    SourceEventId, SourceNamespace, TurnId,
+    BatchId, BatchItemOutcome, BatchStatus, EventId, IngestionBatch, IngestionDecodeError,
+    IngestionEntry, IngestionStatus, InvalidIngestionIdentity, SourceEventId, SourceNamespace,
+    TurnId,
 };
 pub use journal::{BrokenLink, BrokenReason, ChainReport, JournalEntry, Supersession, chain_hash};
 pub use memory::{Memory, MemoryDecodeError};

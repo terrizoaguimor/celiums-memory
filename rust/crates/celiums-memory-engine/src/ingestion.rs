@@ -18,6 +18,8 @@ const MAX_ID_BYTES: usize = 255;
 const EVENT_ID_DOMAIN: &[u8] = b"celiums-memory/ingestion-event-id/v1";
 const INGESTION_KIND: &str = "ingestion_event";
 const INGESTION_KEY_PREFIX: &str = "__celiums/ingestion/event/";
+const BATCH_KIND: &str = "ingestion_batch";
+const BATCH_KEY_PREFIX: &str = "__celiums/ingestion/batch/";
 
 macro_rules! ingestion_identity {
     ($name:ident, $label:literal) => {
@@ -56,6 +58,7 @@ macro_rules! ingestion_identity {
 ingestion_identity!(SourceNamespace, "source namespace");
 ingestion_identity!(SourceEventId, "source event id");
 ingestion_identity!(TurnId, "turn id");
+ingestion_identity!(BatchId, "batch id");
 
 /// Invalid source, event, or turn identity.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -146,6 +149,200 @@ impl IngestionStatus {
             "failed" => Some(Self::Failed),
             _ => None,
         }
+    }
+
+    /// Whether this event requires no further materialization work.
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Materialized | Self::Rejected)
+    }
+}
+
+/// Aggregate state of one durable ingestion batch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BatchStatus {
+    /// At least one item is received or failed and can be resumed.
+    Pending,
+    /// Every item reached a terminal event state.
+    Completed,
+}
+
+impl BatchStatus {
+    fn from_items(items: &[BatchItemOutcome]) -> Self {
+        if items.iter().all(|item| item.status.is_terminal()) {
+            Self::Completed
+        } else {
+            Self::Pending
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Completed => "completed",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "pending" => Some(Self::Pending),
+            "completed" => Some(Self::Completed),
+            _ => None,
+        }
+    }
+}
+
+/// Durable outcome of one indexed batch item.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchItemOutcome {
+    /// Stable input position.
+    pub index: usize,
+    /// Stable engine event ID.
+    pub event_id: EventId,
+    /// Current event state.
+    pub status: IngestionStatus,
+    /// Resulting memory, when materialized.
+    pub memory_id: Option<String>,
+    /// Stable failure code, when present.
+    pub error_code: Option<String>,
+    /// Authorization scope of this item.
+    pub scope: RecallScope,
+}
+
+impl From<&IngestionEntry> for BatchItemOutcome {
+    fn from(entry: &IngestionEntry) -> Self {
+        Self {
+            index: 0,
+            event_id: entry.event_id.clone(),
+            status: entry.status,
+            memory_id: entry.memory_id.clone(),
+            error_code: entry.error_code.clone(),
+            scope: entry.scope(),
+        }
+    }
+}
+
+/// Durable resumable ingestion job and its latest per-item outcomes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IngestionBatch {
+    /// Caller-assigned stable job ID.
+    pub batch_id: BatchId,
+    /// Hash of immutable ordered event membership.
+    pub request_hash: String,
+    /// Owning scope used for job lookup.
+    pub scope: RecallScope,
+    /// Current aggregate state.
+    pub status: BatchStatus,
+    /// First submission time.
+    pub created_at_ms: i64,
+    /// Most recent submission time.
+    pub updated_at_ms: i64,
+    /// Number of job submissions.
+    pub attempt_count: u64,
+    /// Current outcome for every input index.
+    pub items: Vec<BatchItemOutcome>,
+}
+
+impl IngestionBatch {
+    pub(crate) fn new(
+        batch_id: BatchId,
+        request_hash: String,
+        scope: RecallScope,
+        now_ms: i64,
+        items: Vec<BatchItemOutcome>,
+    ) -> Self {
+        Self {
+            batch_id,
+            request_hash,
+            scope,
+            status: BatchStatus::from_items(&items),
+            created_at_ms: now_ms,
+            updated_at_ms: now_ms,
+            attempt_count: 1,
+            items,
+        }
+    }
+
+    pub(crate) fn resume(&mut self, now_ms: i64, items: Vec<BatchItemOutcome>) {
+        self.updated_at_ms = now_ms;
+        self.attempt_count = self.attempt_count.saturating_add(1);
+        self.status = BatchStatus::from_items(&items);
+        self.items = items;
+    }
+
+    pub(crate) fn durable_key(tenant_id: &TenantId, batch_id: &BatchId) -> Vec<u8> {
+        let mut hasher = blake3::Hasher::new();
+        write_hash_field(&mut hasher, b"tenant_id", tenant_id.as_str().as_bytes());
+        write_hash_field(&mut hasher, b"batch_id", batch_id.as_str().as_bytes());
+        format!("{BATCH_KEY_PREFIX}{}", hasher.finalize().to_hex()).into_bytes()
+    }
+
+    pub(crate) fn to_record(&self) -> Record {
+        Record::new(
+            Self::durable_key(&self.scope.tenant_id, &self.batch_id),
+            Value::Object(BTreeMap::from([
+                ("kind".to_owned(), string(BATCH_KIND)),
+                ("batch_id".to_owned(), string(self.batch_id.as_str())),
+                ("request_hash".to_owned(), string(&self.request_hash)),
+                (
+                    "tenant_id".to_owned(),
+                    string(self.scope.tenant_id.as_str()),
+                ),
+                ("user_id".to_owned(), string(self.scope.user_id.as_str())),
+                ("status".to_owned(), string(self.status.as_str())),
+                (
+                    "created_at_ms".to_owned(),
+                    Value::Integer(self.created_at_ms),
+                ),
+                (
+                    "updated_at_ms".to_owned(),
+                    Value::Integer(self.updated_at_ms),
+                ),
+                (
+                    "attempt_count".to_owned(),
+                    Value::Integer(i64::try_from(self.attempt_count).unwrap_or(i64::MAX)),
+                ),
+                ("scope".to_owned(), scope_value(&self.scope)),
+                (
+                    "items".to_owned(),
+                    Value::Array(self.items.iter().map(batch_item_value).collect()),
+                ),
+            ])),
+        )
+    }
+
+    pub(crate) fn from_record(record: &Record) -> Result<Self, IngestionDecodeError> {
+        if !record.key.starts_with(BATCH_KEY_PREFIX.as_bytes()) {
+            return Err(IngestionDecodeError::Key);
+        }
+        let Value::Object(fields) = &record.value else {
+            return Err(IngestionDecodeError::Field { field: "(root)" });
+        };
+        if text(fields, "kind")? != BATCH_KIND {
+            return Err(IngestionDecodeError::Field { field: "kind" });
+        }
+        let items = match fields.get("items") {
+            Some(Value::Array(values)) => values
+                .iter()
+                .map(batch_item_from_value)
+                .collect::<Result<Vec<_>, _>>()?,
+            _ => return Err(IngestionDecodeError::Field { field: "items" }),
+        };
+        Ok(Self {
+            batch_id: BatchId::new(text(fields, "batch_id")?)
+                .map_err(|_| IngestionDecodeError::Field { field: "batch_id" })?,
+            request_hash: text(fields, "request_hash")?,
+            scope: scope_from_value(
+                fields
+                    .get("scope")
+                    .ok_or(IngestionDecodeError::Field { field: "scope" })?,
+            )?,
+            status: BatchStatus::parse(&text(fields, "status")?)
+                .ok_or(IngestionDecodeError::Field { field: "status" })?,
+            created_at_ms: integer(fields, "created_at_ms")?,
+            updated_at_ms: integer(fields, "updated_at_ms")?,
+            attempt_count: unsigned(fields, "attempt_count")?,
+            items,
+        })
     }
 }
 
@@ -438,6 +635,85 @@ fn optional_identity<T>(
     optional_text(fields, field)?
         .map(|value| constructor(value).map_err(|_| IngestionDecodeError::Field { field }))
         .transpose()
+}
+
+fn scope_value(scope: &RecallScope) -> Value {
+    let mut fields = BTreeMap::from([
+        ("tenant_id".to_owned(), string(scope.tenant_id.as_str())),
+        ("user_id".to_owned(), string(scope.user_id.as_str())),
+    ]);
+    insert_optional(
+        &mut fields,
+        "project_id",
+        scope.project_id.as_ref().map(ProjectId::as_str),
+    );
+    insert_optional(
+        &mut fields,
+        "conversation_id",
+        scope.conversation_id.as_ref().map(ConversationId::as_str),
+    );
+    insert_optional(
+        &mut fields,
+        "session_id",
+        scope.session_id.as_ref().map(SessionId::as_str),
+    );
+    Value::Object(fields)
+}
+
+fn scope_from_value(value: &Value) -> Result<RecallScope, IngestionDecodeError> {
+    let Value::Object(fields) = value else {
+        return Err(IngestionDecodeError::Field { field: "scope" });
+    };
+    Ok(RecallScope {
+        tenant_id: TenantId::new(text(fields, "tenant_id")?)
+            .map_err(|_| IngestionDecodeError::Field { field: "scope" })?,
+        user_id: UserId::new(text(fields, "user_id")?)
+            .map_err(|_| IngestionDecodeError::Field { field: "scope" })?,
+        project_id: optional_identity(fields, "project_id", ProjectId::new)?,
+        conversation_id: optional_identity(fields, "conversation_id", ConversationId::new)?,
+        session_id: optional_identity(fields, "session_id", SessionId::new)?,
+    })
+}
+
+fn batch_item_value(item: &BatchItemOutcome) -> Value {
+    Value::Object(BTreeMap::from([
+        (
+            "index".to_owned(),
+            Value::Integer(i64::try_from(item.index).unwrap_or(i64::MAX)),
+        ),
+        ("event_id".to_owned(), string(item.event_id.as_str())),
+        ("status".to_owned(), string(item.status.as_str())),
+        (
+            "memory_id".to_owned(),
+            item.memory_id.as_deref().map_or(Value::Null, string),
+        ),
+        (
+            "error_code".to_owned(),
+            item.error_code.as_deref().map_or(Value::Null, string),
+        ),
+        ("scope".to_owned(), scope_value(&item.scope)),
+    ]))
+}
+
+fn batch_item_from_value(value: &Value) -> Result<BatchItemOutcome, IngestionDecodeError> {
+    let Value::Object(fields) = value else {
+        return Err(IngestionDecodeError::Field { field: "items" });
+    };
+    Ok(BatchItemOutcome {
+        index: unsigned(fields, "index")?
+            .try_into()
+            .map_err(|_| IngestionDecodeError::Field { field: "index" })?,
+        event_id: EventId::parse(text(fields, "event_id")?)?,
+        status: IngestionStatus::parse(&text(fields, "status")?)
+            .ok_or(IngestionDecodeError::Field { field: "status" })?,
+        memory_id: optional_text(fields, "memory_id")?,
+        error_code: optional_text(fields, "error_code")?,
+        scope: scope_from_value(
+            fields
+                .get("scope")
+                .ok_or(IngestionDecodeError::Field { field: "scope" })?,
+        )?,
+    })
 }
 
 #[cfg(test)]
