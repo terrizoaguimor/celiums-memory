@@ -58,7 +58,8 @@ use crate::graph::{
     CanonicalEntity, CreateEntityRelationRequest, CreateEntityRequest, DefineEntityTypeRequest,
     DefineRelationTypeRequest, EntityAlias, EntityAliasRequest, EntityId, EntityLineage,
     EntityLineageRequest, EntityLineageType, EntityRelation, EntityResolution,
-    EntityTypeDefinition, GraphDecodeError, InvalidGraph, RelationTypeDefinition,
+    EntityTypeDefinition, GraphDecodeError, GraphTraversalRequest, GraphTraversalResult,
+    GraphTruncationReason, InvalidGraph, RelationDirection, RelationTypeDefinition, TraversedEdge,
     built_in_entity_type, normalize_label, scope_visible as graph_scope_visible, validate_interval,
     validate_text as validate_graph_text,
 };
@@ -2080,6 +2081,108 @@ impl MemoryEngine {
             .filter(|relation| graph_scope_visible(&relation.scope, scope))
             .filter(|relation| relation.valid_at(valid_at_ms, known_at_ms))
             .collect())
+    }
+
+    /// Traverses visible temporal graph edges under strict budgets.
+    pub fn traverse_graph(
+        &self,
+        request: GraphTraversalRequest,
+    ) -> Result<GraphTraversalResult, MemoryEngineError> {
+        self.require_tenant(&request.scope.tenant_id)?;
+        let max_depth = request.max_depth.clamp(1, 8);
+        let max_edges = request.max_edges.clamp(1, 1_000);
+        let max_entities = request.max_entities.clamp(1, 1_000);
+        let mut seeds = request.seeds;
+        seeds.sort();
+        seeds.dedup();
+        for seed in &seeds {
+            if self.get_entity(seed, &request.scope)?.is_none() {
+                return Err(MemoryEngineError::GraphEntityNotFound {
+                    entity_id: seed.to_string(),
+                });
+            }
+        }
+        if seeds.len() > max_entities {
+            return Ok(GraphTraversalResult {
+                entities: seeds.into_iter().take(max_entities).collect(),
+                edges: Vec::new(),
+                inspected_edges: 0,
+                truncated: true,
+                truncation_reason: Some(GraphTruncationReason::Entities),
+            });
+        }
+        let mut relations = self
+            .entity_relations_at(&request.scope, request.valid_at_ms, request.known_at_ms)?
+            .into_iter()
+            .filter(|relation| relation.traversable)
+            .filter(|relation| {
+                request.relation_types.is_empty()
+                    || request.relation_types.contains(&relation.relation_type)
+            })
+            .collect::<Vec<_>>();
+        relations.sort_by(|left, right| left.id.cmp(&right.id));
+
+        let mut entities = seeds.clone();
+        let mut visited: std::collections::BTreeSet<EntityId> = seeds.iter().cloned().collect();
+        let mut queue: std::collections::VecDeque<(EntityId, usize)> =
+            seeds.into_iter().map(|id| (id, 0)).collect();
+        let mut edges = Vec::new();
+        let mut inspected_edges = 0;
+        let mut truncation_reason = None;
+
+        while let Some((entity_id, depth)) = queue.pop_front() {
+            for relation in relations.iter().filter(|relation| {
+                relation.source_entity_id == entity_id
+                    || (relation.direction == RelationDirection::Undirected
+                        && relation.target_entity_id == entity_id)
+            }) {
+                inspected_edges += 1;
+                let neighbor = if relation.source_entity_id == entity_id {
+                    &relation.target_entity_id
+                } else {
+                    &relation.source_entity_id
+                };
+                if depth >= max_depth {
+                    if !visited.contains(neighbor) {
+                        truncation_reason.get_or_insert(GraphTruncationReason::Depth);
+                    }
+                    continue;
+                }
+                if edges.len() >= max_edges {
+                    truncation_reason.get_or_insert(GraphTruncationReason::Edges);
+                    break;
+                }
+                if !edges
+                    .iter()
+                    .any(|edge: &TraversedEdge| edge.relation.id == relation.id)
+                {
+                    edges.push(TraversedEdge {
+                        relation: relation.clone(),
+                        depth: depth + 1,
+                    });
+                }
+                if !visited.contains(neighbor) {
+                    if entities.len() >= max_entities {
+                        truncation_reason.get_or_insert(GraphTruncationReason::Entities);
+                        continue;
+                    }
+                    visited.insert(neighbor.clone());
+                    entities.push(neighbor.clone());
+                    queue.push_back((neighbor.clone(), depth + 1));
+                }
+            }
+            if truncation_reason == Some(GraphTruncationReason::Edges) {
+                break;
+            }
+        }
+
+        Ok(GraphTraversalResult {
+            entities,
+            edges,
+            inspected_edges,
+            truncated: truncation_reason.is_some(),
+            truncation_reason,
+        })
     }
 
     /// Creates a stable canonical entity and its exact canonical-label alias.

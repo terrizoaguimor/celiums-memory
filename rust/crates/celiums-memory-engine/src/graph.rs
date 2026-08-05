@@ -626,6 +626,62 @@ pub struct EntityRelation {
     pub evidence_count: u64,
 }
 
+/// Explicit reason a bounded graph traversal stopped early.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GraphTruncationReason {
+    /// A reachable neighbor lay beyond `max_depth`.
+    Depth,
+    /// Expanding another edge would exceed `max_edges`.
+    Edges,
+    /// Enqueueing another entity would exceed `max_entities`.
+    Entities,
+}
+
+/// Deterministic bounded traversal request.
+#[derive(Clone, Debug)]
+pub struct GraphTraversalRequest {
+    /// Authorization boundary.
+    pub scope: RecallScope,
+    /// Starting entity IDs.
+    pub seeds: Vec<EntityId>,
+    /// Empty means all traversable ontology relations.
+    pub relation_types: Vec<String>,
+    /// Valid-time point.
+    pub valid_at_ms: i64,
+    /// Transaction-time cutoff.
+    pub known_at_ms: i64,
+    /// Maximum edge depth from seeds.
+    pub max_depth: usize,
+    /// Maximum traversed edge count.
+    pub max_edges: usize,
+    /// Maximum visited entity count.
+    pub max_entities: usize,
+}
+
+/// One traversed edge and its path depth.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TraversedEdge {
+    /// Edge state.
+    pub relation: EntityRelation,
+    /// Depth reached after following this edge.
+    pub depth: usize,
+}
+
+/// Complete bounded traversal result with cost and truncation evidence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GraphTraversalResult {
+    /// Visited entities in deterministic BFS order.
+    pub entities: Vec<EntityId>,
+    /// Traversed edges in deterministic BFS order.
+    pub edges: Vec<TraversedEdge>,
+    /// Number of visible edges inspected.
+    pub inspected_edges: usize,
+    /// Whether any budget prevented full expansion.
+    pub truncated: bool,
+    /// First budget that truncated traversal.
+    pub truncation_reason: Option<GraphTruncationReason>,
+}
+
 impl EntityRelation {
     pub(crate) fn from_request(
         request: &CreateEntityRelationRequest,

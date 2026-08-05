@@ -64,8 +64,9 @@ pub use graph::{
     CanonicalEntity, CreateEntityRelationRequest, CreateEntityRequest, DefineEntityTypeRequest,
     DefineRelationTypeRequest, EntityAlias, EntityAliasRequest, EntityId, EntityLineage,
     EntityLineageRequest, EntityLineageType, EntityRelation, EntityRelationId, EntityResolution,
-    EntityTypeDefinition, GraphDecodeError, GraphEvidenceInput, InvalidGraph, RelationDirection,
-    RelationTypeDefinition, normalize_label,
+    EntityTypeDefinition, GraphDecodeError, GraphEvidenceInput, GraphTraversalRequest,
+    GraphTraversalResult, GraphTruncationReason, InvalidGraph, RelationDirection,
+    RelationTypeDefinition, TraversedEdge, normalize_label,
 };
 pub use idempotency::{IdempotencyDecodeError, IdempotencyKey, InvalidIdempotencyKey};
 pub use identity::{
