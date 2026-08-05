@@ -16,6 +16,8 @@ const CLAIM_KIND: &str = "claim";
 const CLAIM_PREFIX: &str = "__celiums/claim/";
 const EVIDENCE_KIND: &str = "claim_evidence";
 const EVIDENCE_PREFIX: &str = "__celiums/claim_evidence/";
+const SUPERSESSION_KIND: &str = "claim_supersession";
+const SUPERSESSION_PREFIX: &str = "__celiums/claim_supersession/";
 const CLAIM_ID_DOMAIN: &[u8] = b"celiums-memory/claim-id/v1";
 const MAX_CLAIM_PART_BYTES: usize = 4_096;
 const NANOS: f64 = 1_000_000_000.0;
@@ -293,6 +295,222 @@ pub struct ClaimEvidence {
     pub excerpt: Option<String>,
     /// Link creation transaction time.
     pub recorded_at_ms: i64,
+}
+
+/// How a later claim changes the current interpretation of an earlier one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClaimSupersessionRelation {
+    /// A successor replaces the original claim.
+    Supersedes,
+    /// The original is withdrawn without requiring a successor.
+    Recants,
+    /// A successor narrows the original without retiring it.
+    Qualifies,
+    /// A successor confirms the original without retiring it.
+    Reaffirms,
+}
+
+impl ClaimSupersessionRelation {
+    /// Whether this relation removes the original from current-value queries.
+    pub fn retires_original(self) -> bool {
+        matches!(self, Self::Supersedes | Self::Recants)
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Supersedes => "supersedes",
+            Self::Recants => "recants",
+            Self::Qualifies => "qualifies",
+            Self::Reaffirms => "reaffirms",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "supersedes" => Some(Self::Supersedes),
+            "recants" => Some(Self::Recants),
+            "qualifies" => Some(Self::Qualifies),
+            "reaffirms" => Some(Self::Reaffirms),
+            _ => None,
+        }
+    }
+}
+
+/// Request to append one claim supersession relation.
+#[derive(Clone, Debug)]
+pub struct SupersedeClaimRequest {
+    /// Authorized claim owner.
+    pub scope: RecallScope,
+    /// Claim whose interpretation changes.
+    pub original_claim_id: ClaimId,
+    /// Later claim, absent only for recantation.
+    pub successor_claim_id: Option<ClaimId>,
+    /// Relationship between the claims.
+    pub relation: ClaimSupersessionRelation,
+    /// Valid time when the relation took effect.
+    pub effective_at_ms: i64,
+    /// Transaction time when the engine learned the relation.
+    pub recorded_at_ms: i64,
+    /// Optional human-readable rationale.
+    pub reason: Option<String>,
+}
+
+/// Append-only relation between an original and later claim.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimSupersession {
+    /// Stable link ID.
+    pub id: String,
+    /// Retired or reinterpreted claim.
+    pub original_claim_id: ClaimId,
+    /// Later claim, absent for recantation.
+    pub successor_claim_id: Option<ClaimId>,
+    /// Relation type.
+    pub relation: ClaimSupersessionRelation,
+    /// Valid-time effect.
+    pub effective_at_ms: i64,
+    /// Transaction-time observation.
+    pub recorded_at_ms: i64,
+    /// Optional rationale.
+    pub reason: Option<String>,
+}
+
+impl ClaimSupersession {
+    pub(crate) fn from_request(request: &SupersedeClaimRequest) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"celiums-memory/claim-supersession/v1");
+        hash_field(
+            &mut hasher,
+            b"original_claim_id",
+            request.original_claim_id.as_str().as_bytes(),
+        );
+        hash_optional_text(
+            &mut hasher,
+            b"successor_claim_id",
+            request.successor_claim_id.as_ref().map(ClaimId::as_str),
+        );
+        hash_field(
+            &mut hasher,
+            b"relation",
+            request.relation.as_str().as_bytes(),
+        );
+        hash_field(
+            &mut hasher,
+            b"effective_at_ms",
+            &request.effective_at_ms.to_le_bytes(),
+        );
+        Self {
+            id: uuid_from_hash(hasher.finalize()).to_string(),
+            original_claim_id: request.original_claim_id.clone(),
+            successor_claim_id: request.successor_claim_id.clone(),
+            relation: request.relation,
+            effective_at_ms: request.effective_at_ms,
+            recorded_at_ms: request.recorded_at_ms,
+            reason: request.reason.clone(),
+        }
+    }
+
+    pub(crate) fn prefix() -> &'static [u8] {
+        SUPERSESSION_PREFIX.as_bytes()
+    }
+
+    pub(crate) fn to_record(&self) -> Record {
+        Record::new(
+            format!("{SUPERSESSION_PREFIX}{}", self.id).into_bytes(),
+            Value::Object(BTreeMap::from([
+                ("kind".to_owned(), string(SUPERSESSION_KIND)),
+                ("id".to_owned(), string(&self.id)),
+                (
+                    "original_claim_id".to_owned(),
+                    string(self.original_claim_id.as_str()),
+                ),
+                (
+                    "successor_claim_id".to_owned(),
+                    self.successor_claim_id
+                        .as_ref()
+                        .map(ClaimId::as_str)
+                        .map_or(Value::Null, string),
+                ),
+                ("relation".to_owned(), string(self.relation.as_str())),
+                (
+                    "effective_at_ms".to_owned(),
+                    Value::Integer(self.effective_at_ms),
+                ),
+                (
+                    "recorded_at_ms".to_owned(),
+                    Value::Integer(self.recorded_at_ms),
+                ),
+                (
+                    "reason".to_owned(),
+                    self.reason.as_deref().map_or(Value::Null, string),
+                ),
+            ])),
+        )
+    }
+
+    pub(crate) fn from_record(record: &Record) -> Result<Self, ClaimDecodeError> {
+        if !record.key.starts_with(Self::prefix()) {
+            return Err(ClaimDecodeError::Key);
+        }
+        let Value::Object(fields) = &record.value else {
+            return field_error("(root)");
+        };
+        if text(fields, "kind")? != SUPERSESSION_KIND {
+            return field_error("kind");
+        }
+        Ok(Self {
+            id: text(fields, "id")?,
+            original_claim_id: ClaimId::parse(text(fields, "original_claim_id")?)?,
+            successor_claim_id: nullable_text(fields, "successor_claim_id")?
+                .map(ClaimId::parse)
+                .transpose()?,
+            relation: ClaimSupersessionRelation::parse(&text(fields, "relation")?)
+                .ok_or(ClaimDecodeError::Field { field: "relation" })?,
+            effective_at_ms: integer(fields, "effective_at_ms")?,
+            recorded_at_ms: integer(fields, "recorded_at_ms")?,
+            reason: nullable_text(fields, "reason")?,
+        })
+    }
+}
+
+/// Typed incompatibility between two claims for the same property.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClaimContradictionKind {
+    /// Different values assert validity over at least one shared instant.
+    OverlappingValueConflict,
+}
+
+/// One detected contradiction with both claim IDs and overlap evidence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimContradiction {
+    /// First claim in deterministic ID order.
+    pub left_claim_id: ClaimId,
+    /// Second claim in deterministic ID order.
+    pub right_claim_id: ClaimId,
+    /// Contradiction classification.
+    pub kind: ClaimContradictionKind,
+    /// Inclusive start of the conflicting overlap, when bounded.
+    pub overlap_from_ms: Option<i64>,
+    /// Exclusive end of the conflicting overlap, when bounded.
+    pub overlap_to_ms: Option<i64>,
+}
+
+/// Returns the overlap of two half-open validity intervals.
+pub(crate) fn validity_overlap(left: &Claim, right: &Claim) -> Option<(Option<i64>, Option<i64>)> {
+    let from = match (left.valid_from_ms, right.valid_from_ms) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    };
+    let to = match (left.valid_to_ms, right.valid_to_ms) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    };
+    if matches!((from, to), (Some(from), Some(to)) if from >= to) {
+        None
+    } else {
+        Some((from, to))
+    }
 }
 
 impl ClaimEvidence {

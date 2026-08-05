@@ -21,7 +21,7 @@ evidence and why the next action follows.
 | Field | Value |
 |---|---|
 | Active phase | Phase 4 - Temporal claims and contradictions |
-| Active item | P4.1 - Phase close (commit/push/CI) |
+| Active item | P4.2 - Phase close (commit/push/CI) |
 | Branch | `dev` |
 | Baseline commit | `aaa29ae` |
 | Canonical implementation | `rust/` |
@@ -145,6 +145,7 @@ stable and an isolated immutable server exists.
 | 2026-08-05 | P3.5 release throughput | passed | 100 raw events: sequential 153.632 ms, batch 7.1262 ms, 21.56x faster (gate >=5x) |
 | 2026-08-05 | Phase 3 GitHub CI | passed | run `31045611767`; MSRV/stable Rust, Node tests, lint, typecheck, build, Trivy and secret scan green |
 | 2026-08-05 | P4.1 atomic claims | passed | 4 tests: record separation, deterministic reopen retry, scope/evidence enforcement, excerpt integrity; clippy green |
+| 2026-08-05 | P4.2 validity and contradictions | passed | 5 tests: overlap conflict, sequential change, append-only reopen, property guard, cycle guard; clippy green |
 
 ## Phase 3 checklist
 
@@ -160,8 +161,8 @@ stable and an isolated immutable server exists.
 
 | ID | Work item | Status | Evidence / exit condition |
 |---|---|---|---|
-| P4.1 | Claims separated from raw episodes | verified locally | deterministic atomic claim + evidence records; raw episodes unchanged; evidence scope/excerpts verified; journal `019fd3c18faa790aa63830a0f1a7eb9c` |
-| P4.2 | Validity and contradiction model | pending | validity windows, supersession and typed contradictions |
+| P4.1 | Claims separated from raw episodes | closed | `a24a96b`; CI `31047382692` green; journal `019fd3c18faa790aa63830a0f1a7eb9c` |
+| P4.2 | Validity and contradiction model | verified locally | half-open validity; append-only supersession; typed overlap conflicts; property/cycle guards; journal `019fd3c6193f772dbda7d53c3a771f94` |
 | P4.3 | Temporal queries | pending | latest-known and historical-at-time behavior |
 | P4.4 | Relative time and semantic diff | pending | uncertainty and snapshot diff are explicit |
 | P4.5 | Phase close | pending | temporal suites preserve prior truth and current validity |

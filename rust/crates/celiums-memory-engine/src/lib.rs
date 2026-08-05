@@ -36,8 +36,9 @@ pub use affect_state::AffectState;
 pub use capture::{CaptureAdapter, CaptureEvent};
 pub use circadian_state::CircadianState;
 pub use claim::{
-    Claim, ClaimDecodeError, ClaimEvidence, ClaimEvidenceInput, ClaimEvidenceRelation, ClaimId,
-    CreateClaimRequest, InvalidClaim,
+    Claim, ClaimContradiction, ClaimContradictionKind, ClaimDecodeError, ClaimEvidence,
+    ClaimEvidenceInput, ClaimEvidenceRelation, ClaimId, ClaimSupersession,
+    ClaimSupersessionRelation, CreateClaimRequest, InvalidClaim, SupersedeClaimRequest,
 };
 pub use embed::deterministic_embed;
 pub use embedding_space::{EmbeddingNormalization, EmbeddingSpaceIdentity, InvalidEmbeddingSpace};

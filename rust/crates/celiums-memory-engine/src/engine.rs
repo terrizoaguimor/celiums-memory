@@ -41,7 +41,9 @@ use uuid::Uuid;
 use crate::affect_state::{AFFECT_STATE_KEY, AffectState};
 use crate::circadian_state::{CIRCADIAN_STATE_KEY, CircadianState};
 use crate::claim::{
-    Claim, ClaimDecodeError, ClaimEvidence, ClaimId, CreateClaimRequest, InvalidClaim,
+    Claim, ClaimContradiction, ClaimContradictionKind, ClaimDecodeError, ClaimEvidence, ClaimId,
+    ClaimSupersession, ClaimSupersessionRelation, CreateClaimRequest, InvalidClaim,
+    SupersedeClaimRequest, validity_overlap,
 };
 use crate::embedding_space::{EMBEDDING_SPACE_KEY, EmbeddingSpaceIdentity};
 use crate::entity_index::{EntityRecord, entity_key, entity_prefix};
@@ -233,6 +235,21 @@ pub enum MemoryEngineError {
     ClaimEvidenceExcerptMismatch {
         /// Source event with the mismatched excerpt.
         event_id: String,
+    },
+    /// A supersession attempted to connect different canonical properties.
+    #[error("claim supersession requires the same subject and predicate")]
+    ClaimPropertyMismatch,
+    /// A supersession relation requires a successor but none was supplied.
+    #[error("claim supersession relation requires a successor claim")]
+    ClaimSuccessorRequired,
+    /// A claim supersession would create a cycle.
+    #[error("claim supersession would create a cycle")]
+    ClaimSupersessionCycle,
+    /// A claim referenced by a temporal operation was not visible.
+    #[error("claim `{claim_id}` was not found in the requested scope")]
+    ClaimNotFound {
+        /// Missing claim ID.
+        claim_id: String,
     },
     /// A canonical memory filter was invalid.
     #[error(transparent)]
@@ -1411,6 +1428,146 @@ impl MemoryEngine {
             .iter()
             .map(|record| ClaimEvidence::from_record(record).map_err(Into::into))
             .collect()
+    }
+
+    /// Appends a validated claim supersession relation.
+    ///
+    /// # Errors
+    ///
+    /// Fails on missing claims, property mismatch, invalid successor shape,
+    /// cycles, tenant mismatch, or storage failure.
+    pub fn supersede_claim(
+        &mut self,
+        request: SupersedeClaimRequest,
+    ) -> Result<ClaimSupersession, MemoryEngineError> {
+        self.require_tenant(&request.scope.tenant_id)?;
+        let original = self
+            .get_claim(&request.original_claim_id, &request.scope)?
+            .ok_or_else(|| MemoryEngineError::ClaimNotFound {
+                claim_id: request.original_claim_id.to_string(),
+            })?;
+        let successor = request
+            .successor_claim_id
+            .as_ref()
+            .map(|id| self.get_claim(id, &request.scope))
+            .transpose()?
+            .flatten();
+        if request.relation != ClaimSupersessionRelation::Recants && successor.is_none() {
+            return Err(MemoryEngineError::ClaimSuccessorRequired);
+        }
+        if let Some(successor) = &successor {
+            if original.subject != successor.subject || original.predicate != successor.predicate {
+                return Err(MemoryEngineError::ClaimPropertyMismatch);
+            }
+            if self.claim_reaches(&successor.id, &original.id, &request.scope)? {
+                return Err(MemoryEngineError::ClaimSupersessionCycle);
+            }
+        }
+
+        let link = ClaimSupersession::from_request(&request);
+        let key = format!("__celiums/claim_supersession/{}", link.id).into_bytes();
+        if let Some(record) = self.hyphae.get_record(&key)? {
+            return Ok(ClaimSupersession::from_record(&record)?);
+        }
+        self.hyphae.put_record(
+            deterministic_claim_uuid(&request.original_claim_id, &link.id),
+            &link.to_record(),
+        )?;
+        Ok(link)
+    }
+
+    /// Lists visible append-only claim supersession links.
+    ///
+    /// # Errors
+    ///
+    /// Fails on tenant mismatch, query, claim lookup, or decode failure.
+    pub fn claim_supersessions(
+        &self,
+        scope: &RecallScope,
+    ) -> Result<Vec<ClaimSupersession>, MemoryEngineError> {
+        self.require_tenant(&scope.tenant_id)?;
+        let links = self
+            .scan_prefix(ClaimSupersession::prefix())?
+            .iter()
+            .map(ClaimSupersession::from_record)
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut visible = Vec::new();
+        for link in links {
+            if self.get_claim(&link.original_claim_id, scope)?.is_some() {
+                visible.push(link);
+            }
+        }
+        Ok(visible)
+    }
+
+    /// Detects overlapping, incompatible values for the same visible property.
+    ///
+    /// # Errors
+    ///
+    /// Fails on tenant mismatch, query, or decode failure.
+    pub fn claim_contradictions(
+        &self,
+        scope: &RecallScope,
+    ) -> Result<Vec<ClaimContradiction>, MemoryEngineError> {
+        let claims = self.visible_claims(scope)?;
+        let mut contradictions = Vec::new();
+        for (index, left) in claims.iter().enumerate() {
+            for right in claims.iter().skip(index + 1) {
+                if left.subject == right.subject
+                    && left.predicate == right.predicate
+                    && left.value != right.value
+                    && let Some((overlap_from_ms, overlap_to_ms)) = validity_overlap(left, right)
+                {
+                    contradictions.push(ClaimContradiction {
+                        left_claim_id: left.id.clone(),
+                        right_claim_id: right.id.clone(),
+                        kind: ClaimContradictionKind::OverlappingValueConflict,
+                        overlap_from_ms,
+                        overlap_to_ms,
+                    });
+                }
+            }
+        }
+        Ok(contradictions)
+    }
+
+    fn visible_claims(&self, scope: &RecallScope) -> Result<Vec<Claim>, MemoryEngineError> {
+        self.require_tenant(&scope.tenant_id)?;
+        let claims = self
+            .scan_prefix(Claim::prefix())?
+            .iter()
+            .map(Claim::from_record)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(claims
+            .into_iter()
+            .filter(|claim| claim_visible_to(claim, scope))
+            .collect())
+    }
+
+    fn claim_reaches(
+        &self,
+        start: &ClaimId,
+        target: &ClaimId,
+        scope: &RecallScope,
+    ) -> Result<bool, MemoryEngineError> {
+        let links = self.claim_supersessions(scope)?;
+        let mut pending = vec![start.clone()];
+        let mut visited = std::collections::BTreeSet::new();
+        while let Some(current) = pending.pop() {
+            if &current == target {
+                return Ok(true);
+            }
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            pending.extend(
+                links
+                    .iter()
+                    .filter(|link| link.original_claim_id == current)
+                    .filter_map(|link| link.successor_claim_id.clone()),
+            );
+        }
+        Ok(false)
     }
 
     /// Stores one memory: classifies importance, affect and type from
