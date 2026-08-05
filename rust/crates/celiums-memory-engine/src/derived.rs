@@ -10,6 +10,7 @@ use hyphae_query::{Record, Value};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::TimeBasis;
 use crate::{
     ClaimId, ConversationId, EventId, ProjectId, RecallScope, SessionId, TenantId, TurnId, UserId,
 };
@@ -323,6 +324,34 @@ pub struct ConsolidateTurnRequest {
     pub algorithm_version: String,
     /// Transaction time used only on first creation.
     pub recorded_at_ms: i64,
+}
+
+/// Explicit half-open period with timezone provenance.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PeriodWindow {
+    /// Inclusive period start.
+    pub from_ms: i64,
+    /// Exclusive period end.
+    pub to_ms: i64,
+    /// Timezone/reference basis.
+    pub basis: TimeBasis,
+}
+
+/// Request to summarize lower-level derived artifacts.
+#[derive(Clone, Debug)]
+pub struct ConsolidateSummaryRequest {
+    /// Authorization and hierarchy boundary.
+    pub scope: RecallScope,
+    /// Session, project or period summary kind.
+    pub kind: DerivedKind,
+    /// Stable session/project/period key.
+    pub hierarchy_key: String,
+    /// Algorithm/policy version.
+    pub algorithm_version: String,
+    /// Transaction time.
+    pub recorded_at_ms: i64,
+    /// Required for period summaries, forbidden otherwise.
+    pub period: Option<PeriodWindow>,
 }
 
 /// Invalid derived-memory request.

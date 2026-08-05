@@ -46,8 +46,8 @@ use crate::claim::{
     InvalidClaim, SupersedeClaimRequest, validity_overlap,
 };
 use crate::derived::{
-    ConsolidateTurnRequest, DerivedDecodeError, DerivedId, DerivedKind, DerivedMemory,
-    DerivedSource, InvalidDerived, NewDerivedMemory, source_digest,
+    ConsolidateSummaryRequest, ConsolidateTurnRequest, DerivedDecodeError, DerivedId, DerivedKind,
+    DerivedMemory, DerivedSource, InvalidDerived, NewDerivedMemory, source_digest,
     validate_text as validate_derived_text,
 };
 use crate::embedding_space::{EMBEDDING_SPACE_KEY, EmbeddingSpaceIdentity};
@@ -3656,6 +3656,88 @@ impl MemoryEngine {
             .collect())
     }
 
+    /// Consolidates lower-level active derived artifacts into a hierarchy summary.
+    pub fn consolidate_summary(
+        &mut self,
+        request: ConsolidateSummaryRequest,
+    ) -> Result<DerivedMemory, MemoryEngineError> {
+        self.require_tenant(&request.scope.tenant_id)?;
+        validate_derived_text(&request.hierarchy_key, "hierarchy_key")?;
+        validate_derived_text(&request.algorithm_version, "algorithm_version")?;
+        let period = match (&request.kind, &request.period) {
+            (DerivedKind::PeriodSummary, Some(period)) if period.from_ms < period.to_ms => {
+                Some((period.from_ms, period.to_ms))
+            }
+            (DerivedKind::PeriodSummary, _) => return Err(InvalidDerived::Period.into()),
+            (_, None) => None,
+            (_, Some(_)) => return Err(InvalidDerived::Period.into()),
+        };
+        let source_kind = match request.kind {
+            DerivedKind::SessionSummary => DerivedKind::Episode,
+            DerivedKind::ProjectSummary => DerivedKind::SessionSummary,
+            DerivedKind::PeriodSummary => DerivedKind::SessionSummary,
+            DerivedKind::Episode | DerivedKind::ClaimAggregate => {
+                return Err(InvalidDerived::Text {
+                    field: "derived_kind",
+                }
+                .into());
+            }
+        };
+        let mut sources = self
+            .derived_memories(&request.scope)?
+            .into_iter()
+            .filter(|derived| derived.kind == source_kind)
+            .filter(|derived| derived.status == crate::DerivedStatus::Active)
+            .filter(|derived| {
+                period.is_none_or(|(from, to)| {
+                    derived.recorded_at_ms >= from && derived.recorded_at_ms < to
+                })
+            })
+            .collect::<Vec<_>>();
+        if sources.is_empty() {
+            return Err(MemoryEngineError::ConsolidationSourcesEmpty);
+        }
+        sources.sort_by(|left, right| left.id.cmp(&right.id));
+        let immediate_sources = sources
+            .iter()
+            .map(|source| DerivedSource::Derived(source.id.clone()))
+            .collect::<Vec<_>>();
+        let mut root_event_ids = sources
+            .iter()
+            .flat_map(|source| source.root_event_ids.clone())
+            .collect::<Vec<_>>();
+        root_event_ids.sort();
+        root_event_ids.dedup();
+        let mut root_hashes = Vec::with_capacity(root_event_ids.len());
+        for event_id in &root_event_ids {
+            let event = self
+                .get_ingestion(event_id, &request.scope)?
+                .ok_or_else(|| MemoryEngineError::IngestionEventNotFound {
+                    event_id: event_id.to_string(),
+                })?;
+            root_hashes.push((event_id.clone(), event.content_hash));
+        }
+        let content = structured_summary(&sources);
+        let derived = DerivedMemory::build(NewDerivedMemory {
+            kind: request.kind,
+            scope: request.scope.clone(),
+            hierarchy_key: request.hierarchy_key,
+            content,
+            immediate_sources: immediate_sources.clone(),
+            root_event_ids,
+            source_digest: source_digest(&immediate_sources, &root_hashes),
+            algorithm_version: request.algorithm_version,
+            recorded_at_ms: request.recorded_at_ms,
+            period,
+        });
+        if let Some(existing) = self.get_derived(&derived.id, &request.scope)? {
+            return Ok(existing);
+        }
+        self.hyphae
+            .put_record(Uuid::now_v7(), &derived.to_record())?;
+        Ok(derived)
+    }
+
     /// Consolidates a block of conversation text into memories
     /// (consolidate.ts:74-172).
     ///
@@ -4374,6 +4456,30 @@ fn graph_candidate_channels(memory: &Memory, now_ms: i64) -> ChannelScores {
         emotional: emotional_weight(memory.pad.pleasure, memory.pad.arousal),
         resonance: 0.5,
     }
+}
+
+fn structured_summary(sources: &[DerivedMemory]) -> String {
+    let mut done = Vec::new();
+    let mut open = Vec::new();
+    let mut next = Vec::new();
+    for source in sources {
+        for line in source.content.lines().map(str::trim) {
+            let lower = line.to_lowercase();
+            if lower.contains("open:") || lower.contains("failed") || lower.contains("error") {
+                open.push(line.to_owned());
+            } else if lower.contains("next:") || lower.contains("todo") {
+                next.push(line.to_owned());
+            } else {
+                done.push(line.to_owned());
+            }
+        }
+    }
+    format!(
+        "DONE\n{}\nOPEN\n{}\nNEXT\n{}",
+        done.join("\n"),
+        open.join("\n"),
+        next.join("\n")
+    )
 }
 
 fn recall_scope_visible_to(owner: &RecallScope, requested: &RecallScope) -> bool {
