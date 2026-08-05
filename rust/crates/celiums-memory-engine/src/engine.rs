@@ -39,7 +39,15 @@ use uuid::Uuid;
 
 use crate::affect_state::{AFFECT_STATE_KEY, AffectState};
 use crate::circadian_state::{CIRCADIAN_STATE_KEY, CircadianState};
+use crate::embedding_space::{EMBEDDING_SPACE_KEY, EmbeddingSpaceIdentity};
 use crate::entity_index::{EntityRecord, entity_key, entity_prefix};
+use crate::filter::authorization_filter;
+use crate::filter::{MemoryFilter, MemoryFilterError};
+use crate::idempotency::{
+    IdempotencyDecodeError, IdempotencyKey, RememberIdempotencyRecord, canonical_remember_hash,
+    deterministic_remember_uuid,
+};
+use crate::identity::{RecallScope, RememberContext, TenantId};
 use crate::journal::{
     BrokenLink, BrokenReason, ChainReport, JournalEntry, MAX_VALENCE_REASON_CHARS, Supersession,
     agent_prefix, chain_hash, entry_key, supersession_prefix,
@@ -125,6 +133,51 @@ pub enum MemoryEngineError {
         /// All violations, for audit.
         violations: Vec<EthicsViolation>,
     },
+    /// Provenance claimed a content digest that does not match the write.
+    #[error("provenance content hash does not match remembered content")]
+    ContentHashMismatch,
+    /// A request tried to cross the physical tenant boundary of this engine.
+    #[error("request tenant `{requested}` does not match engine tenant `{engine}`")]
+    TenantMismatch {
+        /// Tenant supplied by the request.
+        requested: String,
+        /// Tenant physically bound to the engine.
+        engine: String,
+    },
+    /// A request used vectors from a different model/revision/space.
+    #[error("embedding space mismatch: expected {expected}, received {received}")]
+    EmbeddingSpaceMismatch {
+        /// Space configured for this engine.
+        expected: String,
+        /// Space claimed by the request.
+        received: String,
+    },
+    /// The idempotency key was already used for a different request.
+    #[error("idempotency key was already used with a different remember request")]
+    IdempotencyConflict,
+    /// The idempotency ledger points to a missing memory.
+    #[error("idempotency record points to missing memory `{id}`")]
+    BrokenIdempotencyReference {
+        /// Missing memory id.
+        id: String,
+    },
+    /// A durable idempotency record was malformed.
+    #[error(transparent)]
+    IdempotencyDecode(#[from] IdempotencyDecodeError),
+    /// A canonical memory filter was invalid.
+    #[error(transparent)]
+    Filter(#[from] MemoryFilterError),
+    /// An optimistic-concurrency revision did not match.
+    #[error("memory revision conflict: expected {expected}, actual {actual}")]
+    RevisionConflict {
+        /// Revision supplied by the caller.
+        expected: u64,
+        /// Current durable revision.
+        actual: u64,
+    },
+    /// A requested patch had no mutable fields.
+    #[error("memory update patch has no changes")]
+    EmptyPatch,
     /// A referenced journal entry does not exist for this agent.
     #[error("journal entry `{entry_id}` not found for agent `{agent_id}`")]
     JournalEntryNotFound {
@@ -175,6 +228,12 @@ pub struct RememberRequest {
     pub importance: Option<f64>,
     /// Current time, Unix milliseconds. Explicit for determinism.
     pub now_ms: i64,
+    /// Identity, provenance and source clocks. Local context is used when absent.
+    pub context: Option<RememberContext>,
+    /// Space that produced `embedding`. Engine default is used when absent.
+    pub embedding_space: Option<EmbeddingSpaceIdentity>,
+    /// Caller key for retry-safe creation.
+    pub idempotency_key: Option<IdempotencyKey>,
 }
 
 /// A recall query.
@@ -194,6 +253,10 @@ pub struct RecallRequest {
     pub current_state: Option<Pad>,
     /// Current time, Unix milliseconds. Explicit for determinism.
     pub now_ms: i64,
+    /// Mandatory identity boundary. Local scope is used when absent.
+    pub scope: Option<RecallScope>,
+    /// Space that produced the query embedding. Engine default is used when absent.
+    pub embedding_space: Option<EmbeddingSpaceIdentity>,
 }
 
 /// One recalled memory with its full score breakdown — glass-box
@@ -228,6 +291,74 @@ pub struct RecallResponse {
     pub lexical_abstention: Option<BranchAbstention>,
     /// Semantic branch abstention, when it produced nothing.
     pub semantic_abstention: Option<BranchAbstention>,
+}
+
+/// Scoped request to list durable memories without reactivation.
+#[derive(Clone, Debug)]
+pub struct ListMemoriesRequest {
+    /// Non-bypassable authorization scope.
+    pub scope: RecallScope,
+    /// Optional canonical caller filter.
+    pub filter: Option<MemoryFilter>,
+    /// Page size, clamped to 1..=200.
+    pub limit: usize,
+}
+
+/// One page of durable memories.
+#[derive(Clone, Debug)]
+pub struct MemoryPage {
+    /// Visible memories ordered newest first.
+    pub memories: Vec<Memory>,
+    /// Total visible matches before page truncation.
+    pub matched: u64,
+}
+
+/// Mutable fields supported by the P1 memory API.
+#[derive(Clone, Debug, Default)]
+pub struct MemoryPatch {
+    /// Replace importance, clamped to `[0, 1]`.
+    pub importance: Option<f64>,
+    /// Replace lifecycle state.
+    pub state: Option<MemoryState>,
+    /// Replace visibility scope, subject to identity invariants.
+    pub scope: Option<Scope>,
+    /// Replace all tags.
+    pub tags: Option<Vec<String>>,
+    /// Replace or clear event time; outer option means field supplied.
+    pub event_at_ms: Option<Option<i64>>,
+}
+
+/// Scoped optimistic update request.
+#[derive(Clone, Debug)]
+pub struct UpdateMemoryRequest {
+    /// Memory ID.
+    pub id: String,
+    /// Non-bypassable authorization scope.
+    pub scope: RecallScope,
+    /// Mutable fields.
+    pub patch: MemoryPatch,
+    /// Required current revision.
+    pub if_revision: u64,
+    /// Update time.
+    pub now_ms: i64,
+}
+
+/// Result of one hard-delete request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeleteMemoryOutcome {
+    /// Memory ID requested.
+    pub id: String,
+    /// Whether a visible memory existed and was removed.
+    pub deleted: bool,
+}
+
+/// One per-item outcome in an independent remember batch.
+#[derive(Debug)]
+pub struct BatchRememberOutcome {
+    /// Input index.
+    pub index: usize,
+    /// Successful memory or typed error text.
+    pub result: Result<Memory, String>,
 }
 
 /// Circadian telemetry: what time the engine thinks it is for the
@@ -318,7 +449,9 @@ type BranchCandidates = (Vec<(Vec<u8>, f64)>, Option<BranchAbstention>);
 /// mutex played in the TypeScript engine.
 pub struct MemoryEngine {
     hyphae: HyphaeEngine,
+    tenant_id: TenantId,
     dimension: u16,
+    embedding_space: EmbeddingSpaceIdentity,
     config: RecallConfig,
     limbic_config: LimbicConfig,
     affect: AffectState,
@@ -345,8 +478,56 @@ impl MemoryEngine {
         dimension: u16,
         config: RecallConfig,
     ) -> Result<Self, MemoryEngineError> {
+        Self::open_for_tenant_with_embedding(
+            path,
+            config,
+            TenantId::new("local").expect("static identity"),
+            EmbeddingSpaceIdentity::deterministic(dimension),
+        )
+    }
+
+    /// Opens a memory engine physically bound to one tenant.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the data directory or stored definitions are invalid.
+    pub fn open_for_tenant(
+        path: impl AsRef<Path>,
+        dimension: u16,
+        config: RecallConfig,
+        tenant_id: TenantId,
+    ) -> Result<Self, MemoryEngineError> {
+        Self::open_for_tenant_with_embedding(
+            path,
+            config,
+            tenant_id,
+            EmbeddingSpaceIdentity::deterministic(dimension),
+        )
+    }
+
+    /// Opens an engine bound to one tenant and one immutable embedding space.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the stored embedding identity differs in any component.
+    pub fn open_for_tenant_with_embedding(
+        path: impl AsRef<Path>,
+        config: RecallConfig,
+        tenant_id: TenantId,
+        embedding_space: EmbeddingSpaceIdentity,
+    ) -> Result<Self, MemoryEngineError> {
+        let dimension = embedding_space.dimension;
         let opened = HyphaeEngine::open(path)?;
         let mut hyphae = opened.engine;
+        match hyphae.get_record(EMBEDDING_SPACE_KEY)? {
+            Some(record) => {
+                let stored = EmbeddingSpaceIdentity::from_record(&record)?;
+                ensure_embedding_space(&stored, &embedding_space)?;
+            }
+            None => {
+                hyphae.put_record(Uuid::now_v7(), &embedding_space.to_record())?;
+            }
+        }
         let space = VectorSpaceDefinition::cosine(memory_space(), dimension)?;
         hyphae.define_vector_space(Uuid::now_v7(), space)?;
         let index = LexicalIndexDefinition::new(
@@ -373,9 +554,12 @@ impl MemoryEngine {
             Some(record) => CircadianState::from_record(&record)?,
             None => CircadianState::new(None),
         };
+        migrate_legacy_memories(&mut hyphae, &tenant_id, &embedding_space)?;
         Ok(Self {
             hyphae,
+            tenant_id,
             dimension,
+            embedding_space,
             config,
             limbic_config,
             affect,
@@ -383,6 +567,16 @@ impl MemoryEngine {
             factor_weights: FactorWeights::default(),
             circadian,
         })
+    }
+
+    /// Tenant physically bound to this engine instance.
+    pub fn tenant_id(&self) -> &TenantId {
+        &self.tenant_id
+    }
+
+    /// Embedding space physically bound to this engine.
+    pub fn embedding_space(&self) -> &EmbeddingSpaceIdentity {
+        &self.embedding_space
     }
 
     /// Sets (or clears) the explicit timezone override, persisting it.
@@ -550,10 +744,34 @@ impl MemoryEngine {
         }
 
         let vector = quantize(&request.embedding, self.dimension)?;
+        let requested_space = request
+            .embedding_space
+            .as_ref()
+            .unwrap_or(&self.embedding_space);
+        ensure_embedding_space(&self.embedding_space, requested_space)?;
+        let context = request
+            .context
+            .unwrap_or_else(|| RememberContext::local(&request.content, request.now_ms));
+        self.require_tenant(&context.identity.tenant_id)?;
+        let expected_hash = blake3::hash(request.content.as_bytes())
+            .to_hex()
+            .to_string();
+        if context.provenance.content_hash != expected_hash {
+            return Err(MemoryEngineError::ContentHashMismatch);
+        }
 
         let (classified_importance, _signals) = classify_importance(&request.content);
+        let memory_id = request.idempotency_key.as_ref().map_or_else(
+            || Uuid::now_v7().to_string(),
+            |key| deterministic_remember_uuid(&self.tenant_id, key).to_string(),
+        );
         let memory = Memory {
-            id: Uuid::now_v7().to_string(),
+            id: memory_id,
+            schema_version: 1,
+            revision: 1,
+            identity: context.identity,
+            provenance: context.provenance,
+            embedding_space: Some(self.embedding_space.clone()),
             importance: request
                 .importance
                 .map_or(classified_importance, |value| value.clamp(0.0, 1.0)),
@@ -567,14 +785,54 @@ impl MemoryEngine {
             entities: extract_entities(&request.content),
             consolidation_count: 0,
             created_at_ms: request.now_ms,
+            updated_at_ms: request.now_ms,
+            event_at_ms: context.event_at_ms,
+            ingested_at_ms: context.ingested_at_ms,
             last_retrieved_at_ms: request.now_ms,
             content: request.content,
         };
+        let request_hash = canonical_remember_hash(&memory, &vector);
 
-        self.hyphae
-            .put_record(Uuid::now_v7(), &memory.to_record())?;
-        self.hyphae
-            .put_vectors(Uuid::now_v7(), &memory_space(), &[(memory.key(), vector)])?;
+        if let Some(key) = &request.idempotency_key {
+            let ledger_key = RememberIdempotencyRecord::durable_key(&self.tenant_id, key);
+            if let Some(record) = self.hyphae.get_record(&ledger_key)? {
+                let existing = RememberIdempotencyRecord::from_record(&record)?;
+                if existing.request_hash != request_hash {
+                    return Err(MemoryEngineError::IdempotencyConflict);
+                }
+                let record = self
+                    .hyphae
+                    .get_record(existing.memory_id.as_bytes())?
+                    .ok_or_else(|| MemoryEngineError::BrokenIdempotencyReference {
+                        id: existing.memory_id.clone(),
+                    })?;
+                // Repair a vector write interrupted after the atomic document commit.
+                self.hyphae.put_vectors(
+                    deterministic_phase_uuid(&self.tenant_id, key, "vector"),
+                    &memory_space(),
+                    &[(existing.memory_id.as_bytes().to_vec(), vector)],
+                )?;
+                return Ok(Memory::from_record(&record)?);
+            }
+        }
+
+        if let Some(key) = &request.idempotency_key {
+            let ledger = RememberIdempotencyRecord::new(memory.id.clone(), request_hash);
+            self.hyphae.put_records(
+                deterministic_phase_uuid(&self.tenant_id, key, "documents"),
+                &[memory.to_record(), ledger.to_record(&self.tenant_id, key)],
+            )?;
+            self.hyphae.put_vectors(
+                deterministic_phase_uuid(&self.tenant_id, key, "vector"),
+                &memory_space(),
+                &[(memory.key(), vector)],
+            )?;
+        } else {
+            self.hyphae
+                .put_record(Uuid::now_v7(), &memory.to_record())?;
+            self.hyphae
+                .put_vectors(Uuid::now_v7(), &memory_space(), &[(memory.key(), vector)])?;
+        }
         self.index_entities(&memory)?;
 
         // The stimulus moves the engine's own emotional state — the
@@ -652,6 +910,40 @@ impl MemoryEngine {
         Ok(())
     }
 
+    fn unindex_entities(&mut self, memory: &Memory) -> Result<(), MemoryEngineError> {
+        for extracted in &memory.entities {
+            let key = entity_key(extracted.kind, &extracted.name);
+            let Some(record) = self.hyphae.get_record(&key)? else {
+                continue;
+            };
+            let mut entity = EntityRecord::from_record(&record)?;
+            entity.memory_ids.retain(|id| id != &memory.id);
+            if entity.memory_ids.is_empty() {
+                self.hyphae.delete_record(Uuid::now_v7(), &key)?;
+                continue;
+            }
+            entity.salience = self.entity_salience(&entity)?;
+            self.hyphae
+                .put_record(Uuid::now_v7(), &entity.to_record())?;
+        }
+        Ok(())
+    }
+
+    fn entity_salience(&self, entity: &EntityRecord) -> Result<f64, MemoryEngineError> {
+        let mut maximum: f64 = 0.0;
+        for id in &entity.memory_ids {
+            let memory = self.load_memory(id.as_bytes())?;
+            for extracted in &memory.entities {
+                if extracted.kind == entity.kind
+                    && extracted.name.eq_ignore_ascii_case(&entity.name)
+                {
+                    maximum = maximum.max(extracted.salience);
+                }
+            }
+        }
+        Ok(maximum)
+    }
+
     /// Recalls memories for a query: hybrid candidate retrieval,
     /// cognitive re-ranking, then spaced-repetition reactivation of the
     /// top results.
@@ -662,6 +954,13 @@ impl MemoryEngine {
     /// whose index disagrees with its log surfaces
     /// [`MemoryEngineError::MissingCandidate`] instead of skipping.
     pub fn recall(&mut self, request: RecallRequest) -> Result<RecallResponse, MemoryEngineError> {
+        let scope = request.scope.clone().unwrap_or_else(RecallScope::local);
+        self.require_tenant(&scope.tenant_id)?;
+        let requested_space = request
+            .embedding_space
+            .as_ref()
+            .unwrap_or(&self.embedding_space);
+        ensure_embedding_space(&self.embedding_space, requested_space)?;
         let query_vector = quantize(&request.embedding, self.dimension)?;
         let candidate_limit = request.limit.max(1).saturating_mul(CANDIDATE_FACTOR);
 
@@ -685,7 +984,7 @@ impl MemoryEngine {
         let mut scored = Vec::with_capacity(candidates.len());
         for (key, (semantic, text_match)) in candidates {
             let memory = self.load_memory(&key)?;
-            if memory.state == MemoryState::Archived {
+            if memory.state == MemoryState::Archived || !memory_visible_to(&memory, &scope) {
                 continue;
             }
             let channels = ChannelScores {
@@ -743,6 +1042,16 @@ impl MemoryEngine {
         })
     }
 
+    fn require_tenant(&self, requested: &TenantId) -> Result<(), MemoryEngineError> {
+        if requested == &self.tenant_id {
+            return Ok(());
+        }
+        Err(MemoryEngineError::TenantMismatch {
+            requested: requested.to_string(),
+            engine: self.tenant_id.to_string(),
+        })
+    }
+
     /// Creates (or reuses) a verified snapshot of the current
     /// checkpoint — one durable time-travel point. Snapshots
     /// accumulate per checkpoint and survive compaction.
@@ -780,6 +1089,181 @@ impl MemoryEngine {
             &ExecutionLimits::default(),
         )?;
         Ok(result.matched_records)
+    }
+
+    /// Counts memories visible inside one authorization scope.
+    ///
+    /// # Errors
+    ///
+    /// Fails on tenant mismatch or query execution failure.
+    pub fn count_visible(&self, scope: &RecallScope) -> Result<u64, MemoryEngineError> {
+        use hyphae_query::{ExecutionLimits, Query};
+        self.require_tenant(&scope.tenant_id)?;
+        let result = self.hyphae.query(
+            &Query {
+                filter: authorization_filter(scope),
+                sort: Vec::new(),
+                cursor: None,
+                limit: 1,
+                aggregation: None,
+            },
+            &ExecutionLimits::default(),
+        )?;
+        Ok(result.matched_records)
+    }
+
+    /// Gets one visible memory by ID without reactivation.
+    ///
+    /// # Errors
+    ///
+    /// Fails on tenant mismatch, storage, or decode failure.
+    pub fn get_memory(
+        &self,
+        id: &str,
+        scope: &RecallScope,
+    ) -> Result<Option<Memory>, MemoryEngineError> {
+        self.require_tenant(&scope.tenant_id)?;
+        let Some(record) = self.hyphae.get_record(id.as_bytes())? else {
+            return Ok(None);
+        };
+        let memory = Memory::from_record(&record)?;
+        Ok(memory_visible_to(&memory, scope).then_some(memory))
+    }
+
+    /// Lists visible memories under one canonical filter.
+    ///
+    /// # Errors
+    ///
+    /// Fails on invalid filter, tenant mismatch, query, or decode failure.
+    pub fn list_memories(
+        &self,
+        request: &ListMemoriesRequest,
+    ) -> Result<MemoryPage, MemoryEngineError> {
+        use hyphae_query::{
+            ExecutionLimits, Filter, NullPlacement, Query, SortDirection, SortField,
+        };
+        self.require_tenant(&request.scope.tenant_id)?;
+        let authorization = authorization_filter(&request.scope);
+        let filter = match &request.filter {
+            Some(filter) => Filter::All(vec![authorization, filter.compile()?]),
+            None => authorization,
+        };
+        let result = self.hyphae.query(
+            &Query {
+                filter,
+                sort: vec![SortField {
+                    path: FieldPath::field("created_at_ms"),
+                    direction: SortDirection::Descending,
+                    nulls: NullPlacement::Last,
+                }],
+                cursor: None,
+                limit: request.limit.clamp(1, 200),
+                aggregation: None,
+            },
+            &ExecutionLimits::default(),
+        )?;
+        let memories = result
+            .rows
+            .iter()
+            .map(Memory::from_record)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(MemoryPage {
+            memories,
+            matched: result.matched_records,
+        })
+    }
+
+    /// Updates mutable metadata using optimistic concurrency.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the memory is invisible, the revision is stale, the patch
+    /// is empty, or storage fails.
+    pub fn update_memory(
+        &mut self,
+        request: UpdateMemoryRequest,
+    ) -> Result<Option<Memory>, MemoryEngineError> {
+        let Some(mut memory) = self.get_memory(&request.id, &request.scope)? else {
+            return Ok(None);
+        };
+        if memory.revision != request.if_revision {
+            return Err(MemoryEngineError::RevisionConflict {
+                expected: request.if_revision,
+                actual: memory.revision,
+            });
+        }
+        if request.patch.importance.is_none()
+            && request.patch.state.is_none()
+            && request.patch.scope.is_none()
+            && request.patch.tags.is_none()
+            && request.patch.event_at_ms.is_none()
+        {
+            return Err(MemoryEngineError::EmptyPatch);
+        }
+        if let Some(value) = request.patch.importance {
+            memory.importance = value.clamp(0.0, 1.0);
+        }
+        if let Some(value) = request.patch.state {
+            memory.state = value;
+        }
+        if let Some(value) = request.patch.scope {
+            validate_scope_identity(value, &memory.identity)?;
+            memory.scope = value;
+        }
+        if let Some(value) = request.patch.tags {
+            memory.tags = value;
+        }
+        if let Some(value) = request.patch.event_at_ms {
+            memory.event_at_ms = value;
+        }
+        memory.revision = memory.revision.saturating_add(1);
+        memory.updated_at_ms = request.now_ms;
+        self.hyphae
+            .put_record(Uuid::now_v7(), &memory.to_record())?;
+        Ok(Some(memory))
+    }
+
+    /// Hard-deletes one visible memory and cleans its reverse entity bindings.
+    ///
+    /// The document and vector APIs are idempotent independently. Entity
+    /// cleanup executes first; any interruption leaves the memory recoverable
+    /// and a retry completes cleanup without exposing cross-scope existence.
+    ///
+    /// # Errors
+    ///
+    /// Fails on tenant mismatch, storage, or decode failure.
+    pub fn delete_memory(
+        &mut self,
+        id: &str,
+        scope: &RecallScope,
+    ) -> Result<DeleteMemoryOutcome, MemoryEngineError> {
+        let Some(memory) = self.get_memory(id, scope)? else {
+            return Ok(DeleteMemoryOutcome {
+                id: id.to_owned(),
+                deleted: false,
+            });
+        };
+        self.unindex_entities(&memory)?;
+        self.hyphae
+            .delete_vectors(Uuid::now_v7(), &memory_space(), &[memory.id.as_bytes()])?;
+        self.hyphae
+            .delete_record(Uuid::now_v7(), memory.id.as_bytes())?;
+        Ok(DeleteMemoryOutcome {
+            id: id.to_owned(),
+            deleted: true,
+        })
+    }
+
+    /// Runs independent remember operations and returns every per-item result.
+    pub fn remember_batch(&mut self, requests: Vec<RememberRequest>) -> Vec<BatchRememberOutcome> {
+        requests
+            .into_iter()
+            .enumerate()
+            .map(|(index, request)| BatchRememberOutcome {
+                index,
+                result: self.remember(request).map_err(|error| error.to_string()),
+            })
+            .collect()
     }
 
     fn semantic_candidates(
@@ -942,6 +1426,9 @@ impl MemoryEngine {
                         scope: Scope::Project,
                         importance: Some(importance),
                         now_ms,
+                        context: None,
+                        embedding_space: None,
+                        idempotency_key: None,
                     })?;
                     // Consolidation-born memories start consolidated.
                     let mut consolidated = memory;
@@ -1384,6 +1871,51 @@ impl MemoryEngine {
     }
 }
 
+fn migrate_legacy_memories(
+    hyphae: &mut HyphaeEngine,
+    tenant_id: &TenantId,
+    embedding_space: &EmbeddingSpaceIdentity,
+) -> Result<(), MemoryEngineError> {
+    use hyphae_query::{CompareOperator, Cursor, ExecutionLimits, Filter, Query, Value};
+    let mut cursor: Option<Cursor> = None;
+    loop {
+        let result = hyphae.query(
+            &Query {
+                filter: Filter::Compare {
+                    path: FieldPath::field("kind"),
+                    operator: CompareOperator::Equal,
+                    value: Value::String(crate::memory::MEMORY_KIND.to_owned()),
+                },
+                sort: Vec::new(),
+                cursor,
+                limit: LIFECYCLE_BATCH,
+                aggregation: None,
+            },
+            &ExecutionLimits::default(),
+        )?;
+        let mut migrated = Vec::new();
+        for record in &result.rows {
+            let mut memory = Memory::from_record(record)?;
+            if memory.schema_version >= 1 && memory.embedding_space.is_some() {
+                continue;
+            }
+            memory.schema_version = 1;
+            memory.identity.tenant_id = tenant_id.clone();
+            memory.embedding_space = Some(embedding_space.clone());
+            memory.updated_at_ms = memory.updated_at_ms.max(memory.created_at_ms);
+            migrated.push(memory.to_record());
+        }
+        if !migrated.is_empty() {
+            hyphae.put_records(Uuid::now_v7(), &migrated)?;
+        }
+        match result.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    Ok(())
+}
+
 /// Strips a leading `user:` / `assistant:` speaker prefix
 /// (consolidate.ts:127).
 fn strip_speaker_prefix(line: &str) -> &str {
@@ -1430,6 +1962,78 @@ fn minutes_between(earlier_ms: i64, later_ms: i64) -> f64 {
 
 fn hours_between(earlier_ms: i64, later_ms: i64) -> f64 {
     minutes_between(earlier_ms, later_ms) / 60.0
+}
+
+pub(crate) fn memory_visible_to(memory: &Memory, scope: &RecallScope) -> bool {
+    if memory.identity.tenant_id != scope.tenant_id || memory.identity.user_id != scope.user_id {
+        return false;
+    }
+    match memory.scope {
+        Scope::Global => true,
+        Scope::Project => memory.identity.project_id == scope.project_id,
+        Scope::Session => {
+            memory.identity.project_id == scope.project_id
+                && memory.identity.session_id == scope.session_id
+        }
+    }
+}
+
+fn validate_scope_identity(
+    scope: Scope,
+    identity: &crate::MemoryIdentity,
+) -> Result<(), MemoryEngineError> {
+    let valid = match scope {
+        Scope::Global => true,
+        Scope::Project => identity.project_id.is_some(),
+        Scope::Session => identity.project_id.is_some() && identity.session_id.is_some(),
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(MemoryEngineError::Decode(MemoryDecodeError::Field {
+            field: "scope_identity",
+        }))
+    }
+}
+
+fn ensure_embedding_space(
+    expected: &EmbeddingSpaceIdentity,
+    received: &EmbeddingSpaceIdentity,
+) -> Result<(), MemoryEngineError> {
+    if expected == received {
+        return Ok(());
+    }
+    Err(MemoryEngineError::EmbeddingSpaceMismatch {
+        expected: embedding_space_label(expected),
+        received: embedding_space_label(received),
+    })
+}
+
+fn embedding_space_label(space: &EmbeddingSpaceIdentity) -> String {
+    format!(
+        "{}/{}/{}:{}:{}",
+        space.provider,
+        space.model,
+        space.revision,
+        space.dimension,
+        space.normalization.as_str()
+    )
+}
+
+fn deterministic_phase_uuid(tenant: &TenantId, key: &IdempotencyKey, phase: &str) -> Uuid {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"celiums-memory/remember-phase/v1");
+    hasher.update(tenant.as_str().as_bytes());
+    hasher.update(&[0]);
+    hasher.update(key.as_str().as_bytes());
+    hasher.update(&[0]);
+    hasher.update(phase.as_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest.as_bytes()[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(bytes)
 }
 
 /// UTC hour-of-day (0-23.99…) of a Unix-milliseconds timestamp.

@@ -108,6 +108,9 @@ fn main() {
                     scope: Scope::Project,
                     importance: None,
                     now_ms: NOW_MS,
+                    context: None,
+                    embedding_space: None,
+                    idempotency_key: None,
                 })
                 .expect("remember");
             stored += 1;
@@ -125,6 +128,9 @@ fn main() {
                 scope: Scope::Project,
                 importance: Some(0.05),
                 now_ms: NOW_MS,
+                context: None,
+                embedding_space: None,
+                idempotency_key: None,
             })
             .expect("remember filler");
         stored += 1;
@@ -144,6 +150,8 @@ fn main() {
                 limit: 5,
                 current_state: None,
                 now_ms: NOW_MS + 1000,
+                scope: None,
+                embedding_space: None,
             })
             .expect("recall");
         latencies_us.push(started.elapsed().as_micros());

@@ -286,6 +286,8 @@ fn journal_entries_never_leak_into_memory_recall_or_count() {
             limit: 10,
             current_state: None,
             now_ms: NOW_MS,
+            scope: None,
+            embedding_space: None,
         })
         .expect("memory recall");
     assert!(response.results.is_empty());

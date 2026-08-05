@@ -28,6 +28,9 @@ fn remember(
         scope: Scope::Project,
         importance: None,
         now_ms: at_ms,
+        context: None,
+        embedding_space: None,
+        idempotency_key: None,
     })
 }
 

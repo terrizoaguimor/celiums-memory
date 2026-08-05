@@ -74,12 +74,28 @@ fn full_remember_recall_round_trip_over_mcp() {
             "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}
         }))
         .expect("tools list");
-    assert_eq!(tools["result"]["tools"].as_array().map(Vec::len), Some(12));
+    assert_eq!(tools["result"]["tools"].as_array().map(Vec::len), Some(17));
 
     let remembered = call(
         &mut session,
         "remember",
-        json!({ "content": "Decidimos portar Celiums Memory a Rust sobre Hyphae" }),
+        json!({
+            "content": "Decidimos portar Celiums Memory a Rust sobre Hyphae",
+            "tenant_id": "local",
+            "user_id": "mario",
+            "agent_id": "agent-sol",
+            "project_id": "celiums-memory",
+            "conversation_id": "conversation-1",
+            "session_id": "session-1",
+            "source_kind": "user",
+            "source_id": "message-1",
+            "source_uri": "mcp://conversation-1/message-1",
+            "actor": "Mario",
+            "event_at_ms": 1_770_000_000_000_i64,
+            "embedding_provider": "celiums",
+            "embedding_model": "deterministic-word-bigram-hash",
+            "embedding_revision": "v1"
+        }),
     );
     assert_eq!(remembered["isError"], false);
     assert!(
@@ -88,11 +104,43 @@ fn full_remember_recall_round_trip_over_mcp() {
             .unwrap_or(0.0)
             > 0.1
     );
+    assert_eq!(
+        remembered["structuredContent"]["identity"]["tenant_id"],
+        "local"
+    );
+    assert_eq!(
+        remembered["structuredContent"]["identity"]["project_id"],
+        "celiums-memory"
+    );
+    assert_eq!(
+        remembered["structuredContent"]["provenance"]["source_id"],
+        "message-1"
+    );
+    assert_eq!(
+        remembered["structuredContent"]["embedding_space"]["model"],
+        "deterministic-word-bigram-hash"
+    );
+    assert_eq!(
+        remembered["structuredContent"]["provenance"]["content_hash"]
+            .as_str()
+            .map(str::len),
+        Some(64)
+    );
 
     let recalled = call(
         &mut session,
         "recall",
-        json!({ "query": "portar Celiums Memory a Rust" }),
+        json!({
+            "query": "portar Celiums Memory a Rust",
+            "tenant_id": "local",
+            "user_id": "mario",
+            "project_id": "celiums-memory",
+            "conversation_id": "conversation-1",
+            "session_id": "session-1",
+            "embedding_provider": "celiums",
+            "embedding_model": "deterministic-word-bigram-hash",
+            "embedding_revision": "v1"
+        }),
     );
     assert_eq!(recalled["isError"], false);
     let results = recalled["structuredContent"]["results"]
@@ -105,6 +153,39 @@ fn full_remember_recall_round_trip_over_mcp() {
             .unwrap_or_default()
             .contains("Rust")
     );
+    assert_eq!(results[0]["identity"]["tenant_id"], "local");
+    assert_eq!(results[0]["provenance"]["source_kind"], "user");
+    assert_eq!(results[0]["event_at_ms"], 1_770_000_000_000_i64);
+    assert_eq!(results[0]["embedding_space"]["revision"], "v1");
+
+    let id = remembered["structuredContent"]["id"].as_str().expect("id");
+    let got = call(
+        &mut session,
+        "memory_get",
+        json!({"id":id,"tenant_id":"local","user_id":"mario","project_id":"celiums-memory"}),
+    );
+    assert_eq!(got["structuredContent"]["memory"]["revision"], 1);
+    let updated = call(
+        &mut session,
+        "memory_update",
+        json!({
+            "id":id,"if_revision":1,"tenant_id":"local","user_id":"mario",
+            "project_id":"celiums-memory","patch":{"importance":0.9,"tags":["updated"]}
+        }),
+    );
+    assert_eq!(updated["structuredContent"]["memory"]["revision"], 2);
+    let listed = call(
+        &mut session,
+        "memory_list",
+        json!({"tenant_id":"local","user_id":"mario","project_id":"celiums-memory"}),
+    );
+    assert_eq!(listed["structuredContent"]["matched"], 1);
+    let deleted = call(
+        &mut session,
+        "memory_delete",
+        json!({"id":id,"tenant_id":"local","user_id":"mario","project_id":"celiums-memory"}),
+    );
+    assert_eq!(deleted["structuredContent"]["deleted"], true);
     assert!(results[0]["channels"]["semantic"].is_number(), "glass box");
 }
 

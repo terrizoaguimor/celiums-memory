@@ -117,7 +117,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ['20', '22']
+        # undici 8 (via @qdrant/js-client-rest) requires Node >=22.19.
+        node: ['22']
     permissions:
       contents: read
     services:

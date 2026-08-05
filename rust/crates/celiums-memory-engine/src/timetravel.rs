@@ -26,10 +26,10 @@ use hyphae_retrieval::{
 };
 use hyphae_storage::{SnapshotContents, SnapshotReadLimits, load_snapshot_with_timeout};
 
-use crate::engine::{RecallConfig, RecallRequest, RecallResponse, ScoredMemory};
+use crate::engine::{RecallConfig, RecallRequest, RecallResponse, ScoredMemory, memory_visible_to};
 use crate::memory::Memory;
 use crate::quantize::quantize;
-use crate::{BranchAbstention, MemoryEngineError};
+use crate::{BranchAbstention, MemoryEngineError, RecallScope};
 
 /// Snapshot load timeout.
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -130,6 +130,7 @@ pub fn recall_at(
     }
 
     let current_state = request.current_state.unwrap_or_default();
+    let scope = request.scope.clone().unwrap_or_else(RecallScope::local);
     let current_arousal = request
         .current_state
         .map_or_else(recall::neutral_arousal, |state| state.arousal);
@@ -137,7 +138,7 @@ pub fn recall_at(
     let mut scored = Vec::with_capacity(candidates.len());
     for (key, (semantic, text_match)) in candidates {
         let memory = snapshot_memory(&contents, &key)?;
-        if memory.state == MemoryState::Archived {
+        if memory.state == MemoryState::Archived || !memory_visible_to(&memory, &scope) {
             continue;
         }
         let channels = ChannelScores {

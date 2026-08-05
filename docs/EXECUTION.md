@@ -20,14 +20,14 @@ evidence and why the next action follows.
 
 | Field | Value |
 |---|---|
-| Active phase | Phase 0 - Canonical baseline |
-| Active item | P0.6 - Phase close (awaiting commit/push) |
+| Active phase | Phase 1 - Canonical identity, provenance and scopes |
+| Active item | P1.7 - Phase close and CI evidence |
 | Branch | `dev` |
-| Baseline commit | `d4eec42` |
+| Baseline commit | `5638ca2` |
 | Canonical implementation | `rust/` |
 | Storage substrate | Hyphae `=0.2.1` |
 | Production direction | Cloudflare, one Durable Object per tenant |
-| Next phase after gate | Phase 1 - Canonical identity, provenance and scopes |
+| Next phase after gate | Phase 2 - Ethics-native memory governance |
 
 ## Phase 0 checklist
 
@@ -38,7 +38,19 @@ evidence and why the next action follows.
 | P0.3 | Documentation drift correction | verified | MCP tool count, ethics and next phases current |
 | P0.4 | Rust primary CI gates | verified locally | MSRV + stable tests; stable fmt and clippy |
 | P0.5 | Benchmark harness reliability changes | verified | typecheck/build, retries, stdio smoke, manifests |
-| P0.6 | Phase close | active | commit, push, journal entry, Phase 1 anchor |
+| P0.6 | Phase close | closed | `5638ca2`, pushed to `origin/dev`, journaled |
+
+## Phase 1 checklist
+
+| ID | Work item | Status | Evidence / exit condition |
+|---|---|---|---|
+| P1.1 | Identity and provenance contract | verified locally | typed IDs, source metadata, content hash, event/ingestion time, legacy decode |
+| P1.2 | Physical tenant boundary and scoped keys | verified locally | engine-bound tenant, user/project/session visibility, non-interference tests |
+| P1.3 | Embedding-space identity | verified locally | durable provider/model/revision/dimension/normalization; reopen/write/recall mismatch rejection |
+| P1.4 | Idempotent writes and schema migration | verified locally | retries survive reopen; conflicts fail; legacy records persist schema/identity/embedding metadata |
+| P1.5 | Canonical filter algebra | verified locally | closed typed AST, complexity limits, canonical Hyphae lowering, non-bypassable authorization |
+| P1.6 | CRUD and batch operations | verified locally | scoped get/list/update/delete; revisions; entity/vector cleanup; per-item batch outcomes |
+| P1.7 | Phase close | active | full Rust workspace green; commit/push/CI pending |
 
 ## Completed foundation
 
@@ -76,6 +88,11 @@ current benchmark harness. New storage/retrieval platform work targets Rust.
 Celiums cognition stays outside Hyphae; Hyphae storage internals stay outside
 Celiums Memory. Do not vendor or fork it into this tree.
 
+On 2026-08-05 I crossed this boundary while evaluating CRUD atomicity and
+opened Hyphae PR #111. I closed it immediately after correction. P1 must be
+implemented exclusively against published Hyphae `0.2.1`; no Hyphae repository
+changes are part of the Celiums Memory roadmap.
+
 ### D-003 - Ethics remains central
 
 Ethics is not isolated, disabled or bypassed. The product will evolve from a
@@ -100,6 +117,12 @@ stable and an isolated immutable server exists.
 | 2026-08-05 | Phase 0 benchmark package | passed | `pnpm --dir packages/memory-bench typecheck` and `build` |
 | 2026-08-05 | Phase 0 diff hygiene | passed | `git diff --check` |
 | 2026-08-05 | Benchmark to Rust MCP smoke | passed | isolated stdio process; remember/recall round trip; 0 rejected writes |
+| 2026-08-05 | Phase 0 CI on GitHub | Rust passed | MSRV 1.89 and stable jobs green; overall legacy CI failed on Node 20/Trivy |
+| 2026-08-05 | P1.1 static and MCP gates | passed | fmt, clippy `-D warnings`, MCP identity/provenance round trip, benchmark typecheck/build |
+| 2026-08-05 | P1.2 isolation gates | passed | cross-tenant writes/recalls rejected; user/project/session visibility test; benchmark tenant smoke |
+| 2026-08-05 | P1.3 embedding gates | passed | durable space record; model/revision mismatch tests; MCP round trip; benchmark smoke |
+| 2026-08-05 | P1.4-P1.6 local gates | passed | clippy `-D warnings`; 16 engine tests; 7 MCP tests; filter unit suite; benchmark typecheck/build |
+| 2026-08-05 | Hyphae boundary correction | closed | Hyphae PR #111 closed; no Hyphae change consumed by Celiums Memory |
 
 ## Update protocol
 

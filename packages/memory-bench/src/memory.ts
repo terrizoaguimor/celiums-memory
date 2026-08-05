@@ -99,7 +99,9 @@ class StdioTransport implements MemoryTransport {
     const dataDir = resolve(root, this.instanceId.replace(/[^a-zA-Z0-9_.-]/g, '_'));
     await mkdir(dataDir, { recursive: true });
 
-    const child = spawn(binary, ['mcp', '--data', dataDir], {
+    const child = spawn(binary, [
+      'mcp', '--data', dataDir, '--tenant-id', `bench-${this.instanceId}`,
+    ], {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
@@ -185,8 +187,16 @@ export class BenchMemory {
       const stamp = session.timestamp ? ` [${session.timestamp}]` : '';
       try {
         await this.transport.call('remember', {
-          userId: `bench-${this.runId}`,
-          projectId: this.projectId,
+          tenant_id: `bench-${this.runId}`,
+          user_id: `bench-${this.runId}`,
+          project_id: this.projectId,
+          session_id: session.sessionId,
+          source_kind: 'benchmark',
+          source_id: `${session.sessionId}#${index}`,
+          actor: turn.role,
+          embedding_provider: 'celiums',
+          embedding_model: 'deterministic-word-bigram-hash',
+          embedding_revision: 'v1',
           content: `(${session.sessionId}#${index}, ${turn.role})${stamp} ${turn.content}`,
           tags: ['bench', session.sessionId, this.runId],
         });
@@ -201,7 +211,11 @@ export class BenchMemory {
 
   async recall(query: string, limit = 12): Promise<string[]> {
     const result = await this.transport.call('recall', {
-      query, userId: `bench-${this.runId}`, projectId: this.projectId, limit,
+      query, tenant_id: `bench-${this.runId}`, user_id: `bench-${this.runId}`,
+      project_id: this.projectId, limit,
+      embedding_provider: 'celiums',
+      embedding_model: 'deterministic-word-bigram-hash',
+      embedding_revision: 'v1',
     }) as { results?: RecallRow[]; memories?: RecallRow[] };
     const rows: RecallRow[] = Array.isArray(result?.results)
       ? result.results

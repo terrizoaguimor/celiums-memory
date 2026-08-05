@@ -43,7 +43,7 @@ Every phase closes only when:
 - [x] Correct documentation drift: MCP tools, ethics pipeline and next steps.
 - [x] Add Rust format, clippy and test gates to primary CI.
 - [x] Freeze the roadmap and execution ledger.
-- [ ] Validate and commit the benchmark transport/reliability work separately.
+- [x] Validate and commit the benchmark transport/reliability work separately.
 
 **Exit gate:** clean worktree, green Rust CI, current docs, independently
 reproducible build and an explicit next phase.
@@ -52,14 +52,14 @@ reproducible build and an explicit next phase.
 
 **Goal:** establish the data contract required by every later capability.
 
-- Tenant, user, agent, project, conversation and session identities.
-- Physical tenant boundary plus mandatory internal query scopes.
-- Source event, actor, role, URI, source IDs and content hash.
-- Event time, ingestion time, valid-time and supersession timestamps.
-- Embedding provider/model/revision/dimension/vector-space identity.
-- Idempotency keys and schema migrations.
-- Get, list, update, forget/delete and batch operations.
-- One validated filter algebra with identical semantics in every transport.
+- [x] Tenant, user, agent, project, conversation and session identities.
+- [x] Physical tenant boundary plus mandatory internal query scopes.
+- [x] Source event, actor, role, URI, source IDs and content hash.
+- [x] Event time and ingestion time (valid-time/supersession continue in Phase 4).
+- [x] Embedding provider/model/revision/dimension/vector-space identity.
+- [x] Idempotency keys and schema migration of legacy records.
+- [x] Get, list, update, forget/delete and batch operations.
+- [x] One validated transport-independent filter algebra.
 
 **Exit gate:** isolation fuzz tests find no cross-scope result; retries are
 idempotent; filters cannot be ignored; delete leaves no orphaned vector,

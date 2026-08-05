@@ -47,7 +47,7 @@ celiums-memory (Rust, embedded engine)
     └── Hyphae hash-chained durable store
 ```
 
-The current Rust binary is local MCP stdio with 12 tools and zero external
+The current Rust binary is local MCP stdio with 17 tools and zero external
 services. HTTP/auth, canonical scopes, Cloudflare Durable Objects and SDKs are
 ordered work in the roadmap rather than implied shipped features.
 

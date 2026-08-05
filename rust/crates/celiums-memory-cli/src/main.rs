@@ -4,7 +4,9 @@
 //! `celiums-memory` — the single binary.
 //!
 //! ```text
-//! celiums-memory mcp [--data <dir>] [--dimension <n>] [--timezone-offset <min>]
+//! celiums-memory mcp [--data <dir>] [--dimension <n>] [--embedding-provider <id>]
+//!   [--embedding-model <id>] [--embedding-revision <id>] [--tenant-id <id>]
+//!   [--timezone-offset <min>]
 //! ```
 //!
 //! Runs the MCP stdio server over the embedded engine. Zero external
@@ -20,7 +22,9 @@ use std::io::{self, BufReader, BufWriter};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use celiums_memory_engine::{MemoryEngine, RecallConfig};
+use celiums_memory_engine::{
+    EmbeddingNormalization, EmbeddingSpaceIdentity, MemoryEngine, RecallConfig, TenantId,
+};
 
 /// Default embedding dimension: the deterministic offline embedder's
 /// native size. Callers with a real model pass `--dimension` (bge-m3 =
@@ -42,7 +46,7 @@ fn run() -> Result<(), String> {
     let command = args.next().unwrap_or_default();
     if command != "mcp" {
         return Err(format!(
-            "usage: celiums-memory mcp [--data <dir>] [--dimension <n>] [--timezone-offset <min>]{}",
+            "usage: celiums-memory mcp [--data <dir>] [--dimension <n>] [--embedding-provider <id>] [--embedding-model <id>] [--embedding-revision <id>] [--tenant-id <id>] [--timezone-offset <min>]{}",
             if command.is_empty() {
                 ""
             } else {
@@ -54,6 +58,10 @@ fn run() -> Result<(), String> {
     let mut data_dir: Option<PathBuf> = None;
     let mut dimension = DEFAULT_DIMENSION;
     let mut timezone_offset: Option<i32> = None;
+    let mut tenant_id = TenantId::new("local").expect("static identity");
+    let mut embedding_provider = "celiums".to_owned();
+    let mut embedding_model = "deterministic-word-bigram-hash".to_owned();
+    let mut embedding_revision = "v1".to_owned();
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--data" => {
@@ -79,13 +87,39 @@ fn run() -> Result<(), String> {
                     return Err("--timezone-offset must be within ±840 minutes".to_owned());
                 }
             }
+            "--tenant-id" => {
+                tenant_id = TenantId::new(args.next().ok_or("--tenant-id requires an id")?)
+                    .map_err(|error| error.to_string())?;
+            }
+            "--embedding-provider" => {
+                embedding_provider = args.next().ok_or("--embedding-provider requires an id")?;
+            }
+            "--embedding-model" => {
+                embedding_model = args.next().ok_or("--embedding-model requires an id")?;
+            }
+            "--embedding-revision" => {
+                embedding_revision = args.next().ok_or("--embedding-revision requires an id")?;
+            }
             other => return Err(format!("unknown flag `{other}`")),
         }
     }
     let data_dir = data_dir.unwrap_or_else(default_data_dir);
 
-    let mut engine = MemoryEngine::open(&data_dir, dimension, RecallConfig::default())
-        .map_err(|error| format!("cannot open data directory {}: {error}", data_dir.display()))?;
+    let embedding_space = EmbeddingSpaceIdentity::new(
+        embedding_provider,
+        embedding_model,
+        embedding_revision,
+        dimension,
+        EmbeddingNormalization::L2,
+    )
+    .map_err(|error| error.to_string())?;
+    let mut engine = MemoryEngine::open_for_tenant_with_embedding(
+        &data_dir,
+        RecallConfig::default(),
+        tenant_id,
+        embedding_space,
+    )
+    .map_err(|error| format!("cannot open data directory {}: {error}", data_dir.display()))?;
     if let Some(minutes) = timezone_offset {
         engine
             .set_timezone_override(Some(minutes), unix_now_ms())

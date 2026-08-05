@@ -16,8 +16,12 @@
 mod affect_state;
 mod circadian_state;
 mod embed;
+mod embedding_space;
 mod engine;
 mod entity_index;
+mod filter;
+mod idempotency;
+mod identity;
 mod journal;
 mod memory;
 mod quantize;
@@ -26,12 +30,22 @@ mod timetravel;
 pub use affect_state::AffectState;
 pub use circadian_state::CircadianState;
 pub use embed::deterministic_embed;
+pub use embedding_space::{EmbeddingNormalization, EmbeddingSpaceIdentity, InvalidEmbeddingSpace};
 pub use engine::{
-    BranchAbstention, CircadianStatus, ConsolidationReport, JournalRecallRequest,
-    JournalWriteRequest, LifecycleReport, MemoryEngine, MemoryEngineError, RecallConfig,
-    RecallRequest, RecallResponse, RememberRequest, ScoredMemory,
+    BatchRememberOutcome, BranchAbstention, CircadianStatus, ConsolidationReport,
+    DeleteMemoryOutcome, JournalRecallRequest, JournalWriteRequest, LifecycleReport,
+    ListMemoriesRequest, MemoryEngine, MemoryEngineError, MemoryPage, MemoryPatch, RecallConfig,
+    RecallRequest, RecallResponse, RememberRequest, ScoredMemory, UpdateMemoryRequest,
 };
 pub use entity_index::EntityRecord;
+pub use filter::{
+    FilterOperator, FilterValue, MemoryField, MemoryFilter, MemoryFilterError, MemoryPredicate,
+};
+pub use idempotency::{IdempotencyDecodeError, IdempotencyKey, InvalidIdempotencyKey};
+pub use identity::{
+    AgentId, ConversationId, InvalidIdentity, MemoryIdentity, ProjectId, Provenance, RecallScope,
+    RememberContext, SessionId, SourceKind, TenantId, UserId,
+};
 pub use journal::{BrokenLink, BrokenReason, ChainReport, JournalEntry, Supersession, chain_hash};
 pub use memory::{Memory, MemoryDecodeError};
 pub use quantize::{QuantizeError, quantize};

@@ -28,6 +28,9 @@ fn remember(engine: &mut MemoryEngine, content: &str, at_ms: i64) -> celiums_mem
             scope: Scope::Project,
             importance: None,
             now_ms: at_ms,
+            context: None,
+            embedding_space: None,
+            idempotency_key: None,
         })
         .expect("remember")
 }
@@ -39,6 +42,8 @@ fn recall_request(query: &str, at_ms: i64) -> RecallRequest {
         limit: 10,
         current_state: None,
         now_ms: at_ms,
+        scope: None,
+        embedding_space: None,
     }
 }
 

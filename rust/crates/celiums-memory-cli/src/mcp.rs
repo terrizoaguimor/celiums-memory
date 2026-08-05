@@ -3,7 +3,7 @@
 
 //! MCP stdio server over the embedded memory engine.
 //!
-//! Newline-delimited JSON-RPC 2.0, MCP protocol `2025-11-25`, 12 tools:
+//! Newline-delimited JSON-RPC 2.0, MCP protocol `2025-11-25`, 17 tools:
 //! memory, journal, entity graph, consolidation, lifecycle, snapshots,
 //! time-travel recall and circadian status. The transport pattern
 //! follows Hyphae's bounded stdio adapter (`hyphae-cli/src/mcp.rs`);
@@ -17,8 +17,11 @@ use std::io::{self, BufRead, Write};
 
 use celiums_cognition::{EntityKind, JournalEntryType, Scope};
 use celiums_memory_engine::{
-    BranchAbstention, JournalRecallRequest, JournalWriteRequest, MemoryEngine, RecallConfig,
-    RecallRequest, RememberRequest, ScoredMemory, deterministic_embed, recall_at, snapshot_points,
+    AgentId, BranchAbstention, ConversationId, EmbeddingNormalization, EmbeddingSpaceIdentity,
+    IdempotencyKey, JournalRecallRequest, JournalWriteRequest, ListMemoriesRequest, MemoryEngine,
+    MemoryIdentity, MemoryPatch, ProjectId, Provenance, RecallConfig, RecallRequest, RecallScope,
+    RememberContext, RememberRequest, ScoredMemory, SessionId, SourceKind, TenantId,
+    UpdateMemoryRequest, UserId, deterministic_embed, recall_at, snapshot_points,
 };
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -167,6 +170,11 @@ impl Session {
             "journal_recall" => self.tool_journal_recall(&arguments),
             "journal_verify_chain" => self.tool_journal_verify(&arguments),
             "memory_stats" => self.tool_stats(),
+            "memory_get" => self.tool_memory_get(&arguments),
+            "memory_list" => self.tool_memory_list(&arguments),
+            "memory_update" => self.tool_memory_update(&arguments),
+            "memory_delete" => self.tool_memory_delete(&arguments),
+            "remember_batch" => self.tool_remember_batch(&arguments),
             "entity_lookup" => self.tool_entity_lookup(&arguments),
             "consolidate" => self.tool_consolidate(&arguments),
             "snapshot_now" => self.tool_snapshot_now(),
@@ -184,19 +192,24 @@ impl Session {
     fn tool_remember(&mut self, arguments: &Value) -> Result<Value, String> {
         let content = required_string(arguments, "content")?;
         let embedding = self.embedding_from(arguments, &content)?;
+        let embedding_space = self.embedding_space_from(arguments)?;
+        let now = now_ms();
+        let context = remember_context(arguments, &content, now)?;
         let memory = self
             .engine
             .remember(RememberRequest {
                 content,
                 embedding,
                 tags: string_array(arguments, "tags"),
-                scope: arguments
-                    .get("scope")
-                    .and_then(Value::as_str)
-                    .and_then(Scope::parse)
-                    .unwrap_or_default(),
+                scope: optional_scope(arguments)?.unwrap_or_default(),
                 importance: arguments.get("importance").and_then(Value::as_f64),
-                now_ms: now_ms(),
+                now_ms: now,
+                context: Some(context),
+                embedding_space: Some(embedding_space),
+                idempotency_key: optional_string(arguments, "idempotency_key")?
+                    .map(IdempotencyKey::new)
+                    .transpose()
+                    .map_err(|error| error.to_string())?,
             })
             .map_err(|error| error.to_string())?;
         Ok(json!({
@@ -205,12 +218,21 @@ impl Session {
             "memory_type": memory.memory_type.as_str(),
             "valence": memory.pad.pleasure,
             "arousal": memory.pad.arousal,
+            "identity": identity_json(&memory.identity),
+            "provenance": provenance_json(&memory.provenance),
+            "embedding_space": embedding_space_json(
+                memory.embedding_space.as_ref().expect("new memory has embedding identity")
+            ),
+            "event_at_ms": memory.event_at_ms,
+            "ingested_at_ms": memory.ingested_at_ms,
         }))
     }
 
     fn tool_recall(&mut self, arguments: &Value) -> Result<Value, String> {
         let query = required_string(arguments, "query")?;
         let embedding = self.embedding_from(arguments, &query)?;
+        let embedding_space = self.embedding_space_from(arguments)?;
+        let scope = recall_scope(arguments)?;
         let limit = arguments
             .get("limit")
             .and_then(Value::as_u64)
@@ -223,6 +245,8 @@ impl Session {
                 limit,
                 current_state: None,
                 now_ms: now_ms(),
+                scope: Some(scope),
+                embedding_space: Some(embedding_space),
             })
             .map_err(|error| error.to_string())?;
         Ok(json!({
@@ -332,6 +356,111 @@ impl Session {
         }))
     }
 
+    fn tool_memory_get(&self, arguments: &Value) -> Result<Value, String> {
+        let memory = self
+            .engine
+            .get_memory(
+                &required_string(arguments, "id")?,
+                &recall_scope(arguments)?,
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(json!({ "memory": memory.as_ref().map(memory_json) }))
+    }
+
+    fn tool_memory_list(&self, arguments: &Value) -> Result<Value, String> {
+        let page = self
+            .engine
+            .list_memories(&ListMemoriesRequest {
+                scope: recall_scope(arguments)?,
+                filter: None,
+                limit: arguments.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize,
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(json!({
+            "memories": page.memories.iter().map(memory_json).collect::<Vec<_>>(),
+            "matched": page.matched,
+        }))
+    }
+
+    fn tool_memory_update(&mut self, arguments: &Value) -> Result<Value, String> {
+        let patch_value = arguments.get("patch").ok_or("`patch` is required")?;
+        let patch = MemoryPatch {
+            importance: patch_value.get("importance").and_then(Value::as_f64),
+            state: patch_value
+                .get("state")
+                .and_then(Value::as_str)
+                .and_then(celiums_cognition::MemoryState::parse),
+            scope: patch_value
+                .get("scope")
+                .and_then(Value::as_str)
+                .and_then(Scope::parse),
+            tags: patch_value
+                .get("tags")
+                .map(|_| string_array(patch_value, "tags")),
+            event_at_ms: patch_value.get("event_at_ms").map(Value::as_i64),
+        };
+        let memory = self
+            .engine
+            .update_memory(UpdateMemoryRequest {
+                id: required_string(arguments, "id")?,
+                scope: recall_scope(arguments)?,
+                patch,
+                if_revision: arguments
+                    .get("if_revision")
+                    .and_then(Value::as_u64)
+                    .ok_or("`if_revision` is required")?,
+                now_ms: now_ms(),
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(json!({ "memory": memory.as_ref().map(memory_json) }))
+    }
+
+    fn tool_memory_delete(&mut self, arguments: &Value) -> Result<Value, String> {
+        let outcome = self
+            .engine
+            .delete_memory(
+                &required_string(arguments, "id")?,
+                &recall_scope(arguments)?,
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(json!({ "id": outcome.id, "deleted": outcome.deleted }))
+    }
+
+    fn tool_remember_batch(&mut self, arguments: &Value) -> Result<Value, String> {
+        let items = arguments
+            .get("items")
+            .and_then(Value::as_array)
+            .ok_or("`items` is required")?;
+        if items.len() > 100 {
+            return Err("remember batch maximum is 100 items".to_owned());
+        }
+        let mut requests = Vec::with_capacity(items.len());
+        for item in items {
+            let content = required_string(item, "content")?;
+            requests.push(RememberRequest {
+                embedding: self.embedding_from(item, &content)?,
+                embedding_space: Some(self.embedding_space_from(item)?),
+                context: Some(remember_context(item, &content, now_ms())?),
+                idempotency_key: optional_string(item, "idempotency_key")?
+                    .map(IdempotencyKey::new)
+                    .transpose()
+                    .map_err(|error| error.to_string())?,
+                content,
+                tags: string_array(item, "tags"),
+                scope: optional_scope(item)?.unwrap_or_default(),
+                importance: item.get("importance").and_then(Value::as_f64),
+                now_ms: now_ms(),
+            });
+        }
+        let outcomes = self.engine.remember_batch(requests);
+        Ok(json!({
+            "results": outcomes.into_iter().map(|outcome| match outcome.result {
+                Ok(memory) => json!({"index": outcome.index, "memory": memory_json(&memory)}),
+                Err(error) => json!({"index": outcome.index, "error": error}),
+            }).collect::<Vec<_>>()
+        }))
+    }
+
     fn tool_entity_lookup(&mut self, arguments: &Value) -> Result<Value, String> {
         match arguments.get("name").and_then(Value::as_str) {
             Some(name) => {
@@ -412,6 +541,8 @@ impl Session {
                     .map_or(DEFAULT_RECALL_LIMIT, |value| value.max(1) as usize),
                 current_state: None,
                 now_ms: now_ms(),
+                scope: Some(recall_scope(arguments)?),
+                embedding_space: Some(self.embedding_space_from(arguments)?),
             },
         )
         .map_err(|error| error.to_string())?;
@@ -471,6 +602,27 @@ impl Session {
             None => Ok(deterministic_embed(text, self.dimension)),
         }
     }
+
+    fn embedding_space_from(&self, arguments: &Value) -> Result<EmbeddingSpaceIdentity, String> {
+        let configured = self.engine.embedding_space();
+        EmbeddingSpaceIdentity::new(
+            arguments
+                .get("embedding_provider")
+                .and_then(Value::as_str)
+                .unwrap_or(&configured.provider),
+            arguments
+                .get("embedding_model")
+                .and_then(Value::as_str)
+                .unwrap_or(&configured.model),
+            arguments
+                .get("embedding_revision")
+                .and_then(Value::as_str)
+                .unwrap_or(&configured.revision),
+            self.dimension,
+            EmbeddingNormalization::L2,
+        )
+        .map_err(|error| error.to_string())
+    }
 }
 
 fn scored_json(scored: &ScoredMemory) -> Value {
@@ -481,6 +633,11 @@ fn scored_json(scored: &ScoredMemory) -> Value {
         "importance": scored.memory.importance,
         "memory_type": scored.memory.memory_type.as_str(),
         "tags": scored.memory.tags,
+        "identity": identity_json(&scored.memory.identity),
+        "provenance": provenance_json(&scored.memory.provenance),
+        "embedding_space": scored.memory.embedding_space.as_ref().map(embedding_space_json),
+        "event_at_ms": scored.memory.event_at_ms,
+        "ingested_at_ms": scored.memory.ingested_at_ms,
         "channels": {
             "semantic": scored.channels.semantic,
             "text_match": scored.channels.text_match,
@@ -489,6 +646,27 @@ fn scored_json(scored: &ScoredMemory) -> Value {
             "emotional": scored.channels.emotional,
             "resonance": scored.channels.resonance,
         },
+    })
+}
+
+fn memory_json(memory: &celiums_memory_engine::Memory) -> Value {
+    json!({
+        "id": memory.id,
+        "content": memory.content,
+        "schema_version": memory.schema_version,
+        "revision": memory.revision,
+        "importance": memory.importance,
+        "memory_type": memory.memory_type.as_str(),
+        "state": memory.state.as_str(),
+        "scope": memory.scope.as_str(),
+        "tags": memory.tags,
+        "identity": identity_json(&memory.identity),
+        "provenance": provenance_json(&memory.provenance),
+        "embedding_space": memory.embedding_space.as_ref().map(embedding_space_json),
+        "created_at_ms": memory.created_at_ms,
+        "updated_at_ms": memory.updated_at_ms,
+        "event_at_ms": memory.event_at_ms,
+        "ingested_at_ms": memory.ingested_at_ms,
     })
 }
 
@@ -509,7 +687,22 @@ fn tool_definitions() -> Vec<Value> {
                 "embedding": { "type": "array", "items": { "type": "number" } },
                 "tags": { "type": "array", "items": { "type": "string" } },
                 "scope": { "type": "string", "enum": ["session", "project", "global"] },
-                "importance": { "type": "number", "minimum": 0, "maximum": 1 }
+                "importance": { "type": "number", "minimum": 0, "maximum": 1 },
+                "tenant_id": { "type": "string" },
+                "user_id": { "type": "string" },
+                "agent_id": { "type": "string" },
+                "project_id": { "type": "string" },
+                "conversation_id": { "type": "string" },
+                "session_id": { "type": "string" },
+                "source_kind": { "type": "string", "enum": ["user","assistant","tool","document","system","benchmark","legacy"] },
+                "source_id": { "type": "string" },
+                "source_uri": { "type": "string" },
+                "actor": { "type": "string" },
+                "event_at_ms": { "type": "integer" }
+                ,"embedding_provider": { "type": "string" }
+                ,"embedding_model": { "type": "string" }
+                ,"embedding_revision": { "type": "string" }
+                ,"idempotency_key": { "type": "string", "minLength": 1, "maxLength": 255 }
             },
             "required": ["content"]
         })
@@ -529,11 +722,73 @@ fn tool_definitions() -> Vec<Value> {
                 "properties": {
                     "query": { "type": "string" },
                     "embedding": { "type": "array", "items": { "type": "number" } },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
+                    "tenant_id": { "type": "string" },
+                    "user_id": { "type": "string" },
+                    "project_id": { "type": "string" },
+                    "conversation_id": { "type": "string" },
+                    "session_id": { "type": "string" }
+                    ,"embedding_provider": { "type": "string" }
+                    ,"embedding_model": { "type": "string" }
+                    ,"embedding_revision": { "type": "string" }
                 },
                 "required": ["query"]
             }),
             true,
+        ),
+        tool(
+            "memory_get",
+            "Get one visible memory by ID without reactivation.",
+            &scoped_id_schema(),
+            true,
+        ),
+        tool(
+            "memory_list",
+            "List visible memories, newest first, including archived memories.",
+            &scope_schema(true),
+            true,
+        ),
+        tool(
+            "memory_update",
+            "Optimistically update mutable memory metadata.",
+            &json!({
+                "type": "object",
+                "properties": {
+                    "id": {"type":"string"},
+                    "if_revision": {"type":"integer","minimum":1},
+                    "tenant_id": {"type":"string"}, "user_id": {"type":"string"},
+                    "project_id": {"type":"string"}, "conversation_id": {"type":"string"},
+                    "session_id": {"type":"string"},
+                    "patch": {
+                        "type":"object",
+                        "properties": {
+                            "importance":{"type":"number","minimum":0,"maximum":1},
+                            "state":{"type":"string","enum":["active","consolidated","archived"]},
+                            "scope":{"type":"string","enum":["session","project","global"]},
+                            "tags":{"type":"array","items":{"type":"string"}},
+                            "event_at_ms":{"type":["integer","null"]}
+                        }
+                    }
+                },
+                "required":["id","if_revision","patch"]
+            }),
+            false,
+        ),
+        tool(
+            "memory_delete",
+            "Hard-delete one visible memory and its vector/entity projections.",
+            &scoped_id_schema(),
+            false,
+        ),
+        tool(
+            "remember_batch",
+            "Store up to 100 memories with independent per-item outcomes.",
+            &json!({
+                "type":"object",
+                "properties":{"items":{"type":"array","maxItems":100,"items":text_schema("Text to remember")}},
+                "required":["items"]
+            }),
+            false,
         ),
         tool(
             "journal_write",
@@ -625,7 +880,15 @@ fn tool_definitions() -> Vec<Value> {
                     "query": { "type": "string" },
                     "checkpoint_sequence": { "type": "integer" },
                     "embedding": { "type": "array", "items": { "type": "number" } },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
+                    "tenant_id": { "type": "string" },
+                    "user_id": { "type": "string" },
+                    "project_id": { "type": "string" },
+                    "conversation_id": { "type": "string" },
+                    "session_id": { "type": "string" }
+                    ,"embedding_provider": { "type": "string" }
+                    ,"embedding_model": { "type": "string" }
+                    ,"embedding_revision": { "type": "string" }
                 },
                 "required": ["query"]
             }),
@@ -644,6 +907,30 @@ fn tool_definitions() -> Vec<Value> {
             true,
         ),
     ]
+}
+
+fn scope_schema(include_limit: bool) -> Value {
+    let mut properties = serde_json::Map::from_iter([
+        ("tenant_id".to_owned(), json!({"type":"string"})),
+        ("user_id".to_owned(), json!({"type":"string"})),
+        ("project_id".to_owned(), json!({"type":"string"})),
+        ("conversation_id".to_owned(), json!({"type":"string"})),
+        ("session_id".to_owned(), json!({"type":"string"})),
+    ]);
+    if include_limit {
+        properties.insert(
+            "limit".to_owned(),
+            json!({"type":"integer","minimum":1,"maximum":200}),
+        );
+    }
+    json!({"type":"object","properties":properties})
+}
+
+fn scoped_id_schema() -> Value {
+    let mut schema = scope_schema(false);
+    schema["properties"]["id"] = json!({"type":"string"});
+    schema["required"] = json!(["id"]);
+    schema
 }
 
 fn tool(name: &str, description: &str, input_schema: &Value, read_only: bool) -> Value {
@@ -667,6 +954,127 @@ fn required_string(arguments: &Value, field: &str) -> Result<String, String> {
         .filter(|value| !value.trim().is_empty())
         .map(str::to_owned)
         .ok_or_else(|| format!("`{field}` is required"))
+}
+
+fn optional_scope(arguments: &Value) -> Result<Option<Scope>, String> {
+    match arguments.get("scope") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Scope::parse(value)
+            .map(Some)
+            .ok_or_else(|| "scope must be session|project|global".to_owned()),
+        Some(_) => Err("scope must be a string".to_owned()),
+    }
+}
+
+fn remember_context(
+    arguments: &Value,
+    content: &str,
+    now_ms: i64,
+) -> Result<RememberContext, String> {
+    let identity = MemoryIdentity {
+        tenant_id: optional_identity(arguments, "tenant_id", TenantId::new)?
+            .unwrap_or(TenantId::new("local").expect("static identity")),
+        user_id: optional_identity(arguments, "user_id", UserId::new)?
+            .unwrap_or(UserId::new("local").expect("static identity")),
+        agent_id: optional_identity(arguments, "agent_id", AgentId::new)?,
+        project_id: optional_identity(arguments, "project_id", ProjectId::new)?,
+        conversation_id: optional_identity(arguments, "conversation_id", ConversationId::new)?,
+        session_id: optional_identity(arguments, "session_id", SessionId::new)?,
+    };
+    let source_kind = match arguments.get("source_kind").and_then(Value::as_str) {
+        None => SourceKind::User,
+        Some("user") => SourceKind::User,
+        Some("assistant") => SourceKind::Assistant,
+        Some("tool") => SourceKind::Tool,
+        Some("document") => SourceKind::Document,
+        Some("system") => SourceKind::System,
+        Some("benchmark") => SourceKind::Benchmark,
+        Some("legacy") => SourceKind::Legacy,
+        Some(_) => return Err("invalid source_kind".to_owned()),
+    };
+    Ok(RememberContext {
+        identity,
+        provenance: Provenance::observed(
+            source_kind,
+            content,
+            optional_string(arguments, "source_id")?,
+            optional_string(arguments, "source_uri")?,
+            optional_string(arguments, "actor")?,
+        ),
+        event_at_ms: optional_i64(arguments, "event_at_ms")?,
+        ingested_at_ms: now_ms,
+    })
+}
+
+fn recall_scope(arguments: &Value) -> Result<RecallScope, String> {
+    Ok(RecallScope {
+        tenant_id: optional_identity(arguments, "tenant_id", TenantId::new)?
+            .unwrap_or(TenantId::new("local").expect("static identity")),
+        user_id: optional_identity(arguments, "user_id", UserId::new)?
+            .unwrap_or(UserId::new("local").expect("static identity")),
+        project_id: optional_identity(arguments, "project_id", ProjectId::new)?,
+        conversation_id: optional_identity(arguments, "conversation_id", ConversationId::new)?,
+        session_id: optional_identity(arguments, "session_id", SessionId::new)?,
+    })
+}
+
+fn optional_identity<T>(
+    arguments: &Value,
+    field: &str,
+    constructor: impl FnOnce(String) -> Result<T, celiums_memory_engine::InvalidIdentity>,
+) -> Result<Option<T>, String> {
+    optional_string(arguments, field)?
+        .map(|value| constructor(value).map_err(|error| error.to_string()))
+        .transpose()
+}
+
+fn optional_string(arguments: &Value, field: &str) -> Result<Option<String>, String> {
+    match arguments.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if !value.is_empty() => Ok(Some(value.clone())),
+        _ => Err(format!("`{field}` must be a non-empty string")),
+    }
+}
+
+fn optional_i64(arguments: &Value, field: &str) -> Result<Option<i64>, String> {
+    match arguments.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_i64()
+            .map(Some)
+            .ok_or_else(|| format!("`{field}` must be an integer")),
+    }
+}
+
+fn identity_json(identity: &MemoryIdentity) -> Value {
+    json!({
+        "tenant_id": identity.tenant_id.as_str(),
+        "user_id": identity.user_id.as_str(),
+        "agent_id": identity.agent_id.as_ref().map(AgentId::as_str),
+        "project_id": identity.project_id.as_ref().map(ProjectId::as_str),
+        "conversation_id": identity.conversation_id.as_ref().map(ConversationId::as_str),
+        "session_id": identity.session_id.as_ref().map(SessionId::as_str),
+    })
+}
+
+fn provenance_json(provenance: &Provenance) -> Value {
+    json!({
+        "source_kind": provenance.source_kind.as_str(),
+        "source_id": provenance.source_id,
+        "source_uri": provenance.source_uri,
+        "actor": provenance.actor,
+        "content_hash": provenance.content_hash,
+    })
+}
+
+fn embedding_space_json(space: &EmbeddingSpaceIdentity) -> Value {
+    json!({
+        "provider": space.provider,
+        "model": space.model,
+        "revision": space.revision,
+        "dimension": space.dimension,
+        "normalization": space.normalization.as_str(),
+    })
 }
 
 fn string_array(arguments: &Value, field: &str) -> Vec<String> {
@@ -755,7 +1163,7 @@ mod tests {
     #[test]
     fn tool_definitions_are_valid_objects() {
         let tools = tool_definitions();
-        assert_eq!(tools.len(), 12);
+        assert_eq!(tools.len(), 17);
         assert!(tools.iter().all(|tool| tool["inputSchema"].is_object()));
         assert!(tools.iter().all(|tool| tool["name"].is_string()));
     }

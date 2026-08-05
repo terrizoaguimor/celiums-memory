@@ -83,11 +83,12 @@ engine no longer has.
     abstentions.
 - **`celiums-memory-cli`** — the single binary:
   - `celiums-memory mcp [--data <dir>] [--dimension <n>]` — MCP stdio
-    server (JSON-RPC 2.0, protocol `2025-11-25`), 12 tools:
+    server (JSON-RPC 2.0, protocol `2025-11-25`), 17 tools:
     `remember`, `recall`, `journal_write`, `journal_recall`,
     `journal_verify_chain`, `memory_stats`, `entity_lookup`,
     `consolidate`, `snapshot_now`, `recall_at`, `run_lifecycle`, and
-    `circadian_status`. The engine is embedded in the process — no HTTP
+    `circadian_status`, `memory_get`, `memory_list`, `memory_update`,
+    `memory_delete`, and `remember_batch`. The engine is embedded in the process — no HTTP
     hop. Works out of the box with the offline embedder; accepts caller
     `embedding` arrays for real models.
 
@@ -208,7 +209,7 @@ Phase 3 (this tree): the ethics pipeline and the biological clock —
     drift-correction hack (`lastCircadianApplied`) — here the drift
     is impossible by construction.
 
-MCP: 12 tools (`circadian_status` added).
+MCP: 17 tools, including scoped CRUD and batch ingestion.
 
 The ordered platform plan and its mechanical exit gates live in
 [`docs/ROADMAP.md`](../docs/ROADMAP.md); execution evidence and the current
