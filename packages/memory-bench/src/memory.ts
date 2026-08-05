@@ -1,71 +1,217 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Celiums Solutions LLC
 
-/**
- * Celiums Memory client for the benchmark — the SYSTEM UNDER TEST.
- *
- * Talks to celiums-memory over its MCP JSON-RPC endpoint:
- *   - `remember`  to ingest each haystack session
- *   - `recall`    to retrieve at QA time
- *
- * ISOLATION (non-negotiable): every bench run scopes its memories to
- * projectId = `bench:<runId>` so it never reads or pollutes a real user's
- * memory, PAD state, or circadian profile. The benchmark must measure the
- * retrieval algorithm, not Mario's actual memories.
- *
- * In-VPC: MEMORY_BASE_URL points at the in-cluster Service of the
- * bench-dedicated celiums-memory deployment (NOT prod memory.celiums.ai).
- * Auth via CELIUMS_BENCH_CMK (a scoped key, env-only, never committed).
- */
+/** Memory client for the benchmark system under test. */
 
-const BASE = (process.env.MEMORY_BASE_URL || 'http://celiums-memory-bench.distill.svc.cluster.local:3210').replace(/\/$/, '');
-const CMK = process.env.CELIUMS_BENCH_CMK || '';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { mkdir } from 'node:fs/promises';
+import { createInterface } from 'node:readline';
+import { resolve } from 'node:path';
 
-async function mcp(name: string, args: Record<string, unknown>): Promise<any> {
-  const res = await fetch(`${BASE}/mcp`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json, text/event-stream',
-      ...(CMK ? { Authorization: `Bearer ${CMK}` } : {}),
-    },
-    body: JSON.stringify({
-      jsonrpc: '2.0', id: 1, method: 'tools/call',
-      params: { name, arguments: args },
-    }),
-  });
-  if (!res.ok) throw new Error(`mcp ${name} HTTP ${res.status}`);
-  const j: any = await res.json();
-  const text = j?.result?.content?.[0]?.text;
-  if (j?.error) throw new Error(`mcp ${name}: ${JSON.stringify(j.error).slice(0, 200)}`);
-  try { return JSON.parse(text); } catch { return text; }
+type RpcResponse = {
+  id?: number;
+  error?: { message?: string };
+  result?: { isError?: boolean; content?: { text?: string }[]; structuredContent?: unknown };
+};
+
+type RecallRow = { content?: string; memory?: { content?: string } };
+
+interface MemoryTransport {
+  call(name: string, args: Record<string, unknown>): Promise<unknown>;
+  close(): Promise<void>;
+}
+
+function unwrap(response: RpcResponse, tool: string): unknown {
+  if (response.error) throw new Error(`mcp ${tool}: ${response.error.message ?? 'RPC error'}`);
+  if (response.result?.isError) {
+    throw new Error(`mcp ${tool}: ${response.result.content?.[0]?.text ?? 'tool error'}`);
+  }
+  if (response.result?.structuredContent !== undefined) return response.result.structuredContent;
+  const text = response.result?.content?.[0]?.text;
+  if (text === undefined) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+class HttpTransport implements MemoryTransport {
+  private readonly base = (process.env.MEMORY_BASE_URL || '').replace(/\/$/, '');
+  private readonly key = process.env.CELIUMS_BENCH_CMK || '';
+
+  async call(name: string, args: Record<string, unknown>): Promise<unknown> {
+    if (!this.base) throw new Error('MEMORY_BASE_URL is required for HTTP transport');
+    const response = await fetch(`${this.base}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        ...(this.key ? { Authorization: `Bearer ${this.key}` } : {}),
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args },
+      }),
+    });
+    if (!response.ok) throw new Error(`mcp ${name} HTTP ${response.status}`);
+    return unwrap(await response.json() as RpcResponse, name);
+  }
+
+  async close(): Promise<void> {}
+}
+
+class StdioTransport implements MemoryTransport {
+  private child?: ChildProcessWithoutNullStreams;
+  private nextId = 1;
+  private readonly pending = new Map<number, {
+    resolve: (response: RpcResponse) => void;
+    reject: (error: Error) => void;
+  }>();
+
+  constructor(private readonly instanceId: string) {}
+
+  async call(name: string, args: Record<string, unknown>): Promise<unknown> {
+    await this.start();
+    const response = await this.request('tools/call', { name, arguments: args });
+    return unwrap(response, name);
+  }
+
+  async close(): Promise<void> {
+    if (!this.child) return;
+    const child = this.child;
+    this.child = undefined;
+    child.stdin.end();
+    await new Promise<void>((done) => {
+      if (child.exitCode !== null) return done();
+      child.once('exit', () => done());
+      setTimeout(() => {
+        child.kill();
+        done();
+      }, 2_000).unref();
+    });
+  }
+
+  private async start(): Promise<void> {
+    if (this.child) return;
+    const binary = process.env.CELIUMS_MEMORY_BIN;
+    if (!binary) throw new Error('CELIUMS_MEMORY_BIN is required for stdio transport');
+    const root = resolve(process.env.BENCH_RUST_DATA_DIR || '.bench-data');
+    const dataDir = resolve(root, this.instanceId.replace(/[^a-zA-Z0-9_.-]/g, '_'));
+    await mkdir(dataDir, { recursive: true });
+
+    const child = spawn(binary, ['mcp', '--data', dataDir], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    this.child = child;
+    createInterface({ input: child.stdout }).on('line', (line) => this.handleLine(line));
+    child.stderr.on('data', (chunk) => process.stderr.write(`[memory:${this.instanceId}] ${chunk}`));
+    child.once('error', (error) => this.rejectAll(error));
+    child.once('exit', (code) => {
+      if (code && code !== 0) this.rejectAll(new Error(`celiums-memory exited with code ${code}`));
+    });
+
+    await this.request('initialize', {
+      protocolVersion: '2025-11-25',
+      capabilities: {},
+      clientInfo: { name: 'celiums-memory-bench', version: '2.0.0' },
+    });
+    this.notify('notifications/initialized', {});
+  }
+
+  private request(method: string, params: Record<string, unknown>): Promise<RpcResponse> {
+    const id = this.nextId++;
+    return new Promise((resolveRequest, reject) => {
+      this.pending.set(id, { resolve: resolveRequest, reject });
+      this.write({ jsonrpc: '2.0', id, method, params });
+    });
+  }
+
+  private notify(method: string, params: Record<string, unknown>): void {
+    this.write({ jsonrpc: '2.0', method, params });
+  }
+
+  private write(message: Record<string, unknown>): void {
+    if (!this.child?.stdin.writable) throw new Error('celiums-memory stdio is not writable');
+    this.child.stdin.write(`${JSON.stringify(message)}\n`);
+  }
+
+  private handleLine(line: string): void {
+    let response: RpcResponse;
+    try {
+      response = JSON.parse(line) as RpcResponse;
+    } catch {
+      this.rejectAll(new Error(`invalid MCP JSON: ${line.slice(0, 160)}`));
+      return;
+    }
+    if (typeof response.id !== 'number') return;
+    const pending = this.pending.get(response.id);
+    if (!pending) return;
+    this.pending.delete(response.id);
+    pending.resolve(response);
+  }
+
+  private rejectAll(error: Error): void {
+    for (const pending of this.pending.values()) pending.reject(error);
+    this.pending.clear();
+  }
+}
+
+function makeTransport(instanceId: string): MemoryTransport {
+  return process.env.MEMORY_TRANSPORT === 'http'
+    ? new HttpTransport()
+    : new StdioTransport(instanceId);
 }
 
 export class BenchMemory {
-  constructor(private readonly runId: string) {}
+  private readonly transport: MemoryTransport;
+  private rejected = 0;
+
+  constructor(private readonly runId: string) {
+    this.transport = makeTransport(runId);
+  }
+
   private get projectId() { return `bench:${this.runId}`; }
 
-  /** Ingest one session's turns as memories, preserving session order +
-   *  timestamp (temporal-reasoning questions depend on this). */
-  async ingestSession(s: { sessionId: string; timestamp?: string; turns: { role: string; content: string }[] }): Promise<void> {
-    for (let i = 0; i < s.turns.length; i++) {
-      const t = s.turns[i];
-      const stamp = s.timestamp ? ` [${s.timestamp}]` : '';
-      await mcp('remember', {
-        userId: `bench-${this.runId}`,
-        projectId: this.projectId,
-        content: `(${s.sessionId}#${i}, ${t.role})${stamp} ${t.content}`,
-        tags: ['bench', s.sessionId, this.runId],
-      });
+  get rejectedWrites(): number { return this.rejected; }
+
+  async ingestSession(session: {
+    sessionId: string;
+    timestamp?: string;
+    turns: { role: string; content: string }[];
+  }): Promise<void> {
+    for (let index = 0; index < session.turns.length; index++) {
+      const turn = session.turns[index];
+      const stamp = session.timestamp ? ` [${session.timestamp}]` : '';
+      try {
+        await this.transport.call('remember', {
+          userId: `bench-${this.runId}`,
+          projectId: this.projectId,
+          content: `(${session.sessionId}#${index}, ${turn.role})${stamp} ${turn.content}`,
+          tags: ['bench', session.sessionId, this.runId],
+        });
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.includes('blocked by the ethics engine')) {
+          throw error;
+        }
+        this.rejected++;
+      }
     }
   }
 
-  /** Retrieve top memories for the question, scoped to this run only. */
   async recall(query: string, limit = 12): Promise<string[]> {
-    const r = await mcp('recall', {
+    const result = await this.transport.call('recall', {
       query, userId: `bench-${this.runId}`, projectId: this.projectId, limit,
-    });
-    const rows = Array.isArray(r?.memories) ? r.memories : Array.isArray(r) ? r : [];
-    return rows.map((m: any) => String(m.content ?? m.memory?.content ?? '')).filter(Boolean);
+    }) as { results?: RecallRow[]; memories?: RecallRow[] };
+    const rows: RecallRow[] = Array.isArray(result?.results)
+      ? result.results
+      : Array.isArray(result?.memories) ? result.memories : [];
+    return rows
+      .map((memory) => String(memory.content ?? memory.memory?.content ?? ''))
+      .filter(Boolean);
+  }
+
+  close(): Promise<void> {
+    return this.transport.close();
   }
 }

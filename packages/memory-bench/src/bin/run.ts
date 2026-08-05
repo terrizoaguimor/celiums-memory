@@ -36,6 +36,7 @@ const cfg: RunConfig = {
   limit: limitRaw ? Math.max(1, parseInt(limitRaw, 10)) : null,
   arms: [], // single-arm process; arm comes from ARM env (see runner)
   runId: arg('--run', `run-${Date.now().toString(36)}`) as string,
+  outputPath: arg('--output'),
 };
 
 const dataDir = process.env.BENCH_DATA_DIR || '/data';

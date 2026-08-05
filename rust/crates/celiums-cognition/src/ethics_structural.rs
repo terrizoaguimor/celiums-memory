@@ -279,8 +279,14 @@ pub fn detect_structural_hate(text: &str, language: Language) -> Vec<StructuralM
         let group_pos = group_match.start();
         let escaped_group = regex::escape(&group);
 
-        let context_start = group_pos.saturating_sub(30);
-        let context_end = usize::min(lower.len(), group_pos + 200);
+        let mut context_start = group_pos.saturating_sub(30);
+        while !lower.is_char_boundary(context_start) {
+            context_start -= 1;
+        }
+        let mut context_end = usize::min(lower.len(), group_pos + 200);
+        while !lower.is_char_boundary(context_end) {
+            context_end -= 1;
+        }
         let context = &lower[context_start..context_end];
 
         for pattern in patterns {
@@ -466,5 +472,13 @@ mod tests {
         // Should only have one unique match (same text).
         let violations = structural_matches_to_violations(&matches);
         assert_eq!(violations.len(), 1);
+    }
+
+    #[test]
+    fn multibyte_text_around_a_group_never_panics() {
+        let prefix = "但".repeat(190);
+        let text = format!("{prefix} immigrants contribute to the community");
+
+        assert!(detect_structural_hate(&text, Language::En).is_empty());
     }
 }

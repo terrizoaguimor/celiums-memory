@@ -63,6 +63,10 @@ credentials.json
 # Data dumps
 *.sql.gz
 *.tar.gz
+packages/memory-bench/locomo.json
+packages/memory-bench/longmemeval_s.json
+packages/memory-bench/.bench-data/
+packages/memory-bench/results/
 
 # Local celiums data
 .celiums/

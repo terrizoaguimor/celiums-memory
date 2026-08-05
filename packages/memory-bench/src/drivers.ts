@@ -19,6 +19,7 @@
  */
 
 import type { Driver } from './types.js';
+import { inferencePost } from './inference.js';
 
 const DO_BASE = (process.env.DO_INFERENCE_URL || 'https://inference.do-ai.run/v1').replace(/\/$/, '');
 const DO_KEY = process.env.DO_INFERENCE_KEY || '';
@@ -31,7 +32,7 @@ Rules:
 - Pay attention to timestamps in snippets for time-related questions.`;
 
 async function doChat(model: string, system: string, user: string, maxTokens = 512): Promise<string> {
-  const res = await fetch(`${DO_BASE}/chat/completions`, {
+  const res = await inferencePost(`${DO_BASE}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

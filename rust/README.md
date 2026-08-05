@@ -83,11 +83,13 @@ engine no longer has.
     abstentions.
 - **`celiums-memory-cli`** — the single binary:
   - `celiums-memory mcp [--data <dir>] [--dimension <n>]` — MCP stdio
-    server (JSON-RPC 2.0, protocol `2025-11-25`), six tools:
+    server (JSON-RPC 2.0, protocol `2025-11-25`), 12 tools:
     `remember`, `recall`, `journal_write`, `journal_recall`,
-    `journal_verify_chain`, `memory_stats`. The engine is embedded in
-    the process — no HTTP hop. Works out of the box with the offline
-    embedder; accepts caller `embedding` arrays for real models.
+    `journal_verify_chain`, `memory_stats`, `entity_lookup`,
+    `consolidate`, `snapshot_now`, `recall_at`, `run_lifecycle`, and
+    `circadian_status`. The engine is embedded in the process — no HTTP
+    hop. Works out of the box with the offline embedder; accepts caller
+    `embedding` arrays for real models.
 
 ## Build
 
@@ -161,10 +163,10 @@ Phase 2 (this tree): the retrieval moat —
   (TS `packages/memory-bench` harness → MCP → this engine) is the
   next gate.
 
-Phase 3 (this tree): the write-gate and the biological clock —
+Phase 3 (this tree): the ethics pipeline and the biological clock —
 
-- **Ethics Layer A** — the deterministic lexicon gate runs inside
-  `remember` before anything is stored: multilingual lexicon (EN+ES
+- **Ethics Layers A/B/C/K** — the full deterministic pipeline runs
+  inside `remember`: Layer A combines the multilingual lexicon (EN+ES
   high-weight core of the TS 475-entry set) with per-term weights, the
   three-step disambiguation cascade (meta ×0.03 / technical ×0.1 /
   non-living-target ×0.1 — `kill the process` is work, `kill my
@@ -173,7 +175,12 @@ Phase 3 (this tree): the write-gate and the biological clock —
   categories always blocks). The gate enforces on
   **`enforcement_blocked`** — never on a mode-dependent `passed` (the
   2026-05-17 incident lesson), and closes the TS gap where
-  structural-only blocks did not gate writes.
+  structural-only blocks did not gate writes. Layer B adds baseline
+  CVaR-5 risk and categorical CBRN enforcement; Layer C provides the
+  five-framework philosophical advisory with a deterministic fallback;
+  Layer K is precedent-based and strictly flag-only, so it can never
+  relax enforcement. Structural EN/ES patterns catch harmful structure
+  that does not contain a lexicon trigger.
 - **Circadian clock** — `A(t) = A₀ + C·cos(2π(h−φ)/24)·e^(−λ·Δt) +
   Σ wᵢ·Fᵢ`: the cosine rhythm (peak 11:00 local), nine decaying
   factors with biological half-lives (caffeine 5 h, stress 1 h…),
@@ -203,11 +210,9 @@ Phase 3 (this tree): the write-gate and the biological clock —
 
 MCP: 12 tools (`circadian_status` added).
 
-Next phases:
-
-1. LongMemEval/LoCoMo public run vs mem0/Zep (the competitive gate).
-2. Server binary (axum, loopback-first like `hyphae-server`) replacing
-   the Node `quickstart.ts` HTTP surface; result proofs exposed.
-3. Reward/interoception (dopamine RPE, system-stress) completing
-   `updateStateFull`; grow the ethics lexicon toward the full 475.
-4. `journal_arc` / introspection (LLM-optional, BYO provider).
+The ordered platform plan and its mechanical exit gates live in
+[`docs/ROADMAP.md`](../docs/ROADMAP.md); execution evidence and the current
+work anchor live in [`docs/EXECUTION.md`](../docs/EXECUTION.md). Public
+LongMemEval/LoCoMo comparisons occur only after the Rust platform and isolated
+server are complete. Reward/interoception, personality and learned components
+remain experimental until an ablation demonstrates product value.

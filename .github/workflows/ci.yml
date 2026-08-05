@@ -10,9 +10,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 # One run per PR; cancel stale runs on new pushes.
 concurrency:
@@ -24,6 +24,37 @@ permissions:
   contents: read
 
 jobs:
+  # ── Canonical Rust implementation ───────────────────────────────
+  rust:
+    name: Rust ${{ matrix.toolchain }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: ['1.89.0', stable]
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+      - name: cargo fmt
+        if: matrix.toolchain == 'stable'
+        run: cargo fmt --check
+      - name: cargo clippy
+        if: matrix.toolchain == 'stable'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo test
+        run: cargo test --workspace
+
   # ── Lint + format ────────────────────────────────────────────────
   lint:
     name: Lint

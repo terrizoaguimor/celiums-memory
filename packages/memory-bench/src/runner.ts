@@ -22,6 +22,8 @@
  */
 
 import { loadLongMemEval, loadLoCoMo, slice } from './datasets.js';
+import { appendFile, mkdir, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { BenchMemory } from './memory.js';
 import { makeDriver } from './drivers.js';
 import { makeJudges } from './judge.js';
@@ -43,6 +45,29 @@ export async function run(cfg: RunConfig, dataDir: string): Promise<InstanceResu
   const drivers: Driver[] = [makeDriver('oss'), makeDriver('claude')];
   const judges = makeJudges();
   const results: InstanceResult[] = [];
+  if (cfg.outputPath) {
+    await mkdir(dirname(cfg.outputPath), { recursive: true });
+    await writeFile(cfg.outputPath, `${JSON.stringify({
+      __manifest__: {
+        runId: cfg.runId,
+        arm,
+        datasets: cfg.datasets,
+        limit: cfg.limit,
+        memoryTransport: process.env.MEMORY_TRANSPORT || 'stdio',
+        ossModel: process.env.BENCH_OSS_MODEL || 'openai-gpt-oss-120b',
+        claudeModel: process.env.BENCH_CLAUDE_MODEL || 'anthropic-claude-4.6-sonnet',
+        officialJudge: process.env.BENCH_JUDGE_OFFICIAL || 'openai-gpt-4o',
+        ossJudge: process.env.BENCH_JUDGE_OSS || 'openai-gpt-oss-120b',
+        startedAt: new Date().toISOString(),
+      },
+    })}\n`);
+  }
+
+  const emit = async (value: unknown): Promise<void> => {
+    const line = JSON.stringify(value);
+    process.stdout.write(`${line}\n`);
+    if (cfg.outputPath) await appendFile(cfg.outputPath, `${line}\n`);
+  };
 
   for (const ds of cfg.datasets) {
     const instances = slice(await loadDataset(ds, dataDir), cfg.limit);
@@ -52,43 +77,50 @@ export async function run(cfg: RunConfig, dataDir: string): Promise<InstanceResu
       // Per-instance isolated tenant: runId + instance id. Guarantees no
       // cross-instance leakage AND no contact with real user memory.
       const mem = new BenchMemory(`${cfg.runId}-${inst.id}`);
-      for (const s of inst.sessions) await mem.ingestSession(s);
+      try {
+        for (const s of inst.sessions) await mem.ingestSession(s);
 
-      for (const driver of drivers) {
-        const t0 = Date.now();
-        let retrieved: string[] = [];
-        let hypothesis = '';
-        try {
-          retrieved = await mem.recall(inst.question);
-          hypothesis = await driver.answer(inst.question, retrieved);
-        } catch (e) {
-          hypothesis = `__ERROR__ ${(e as Error).message}`;
-        }
-        const verdicts: Record<string, boolean> = {};
-        for (const judge of judges) {
+        for (const driver of drivers) {
+          const t0 = Date.now();
+          let retrieved: string[] = [];
+          let hypothesis = '';
           try {
-            const v = await judge.grade({
-              question: inst.question,
-              goldAnswer: inst.goldAnswer,
-              hypothesis,
-              isAbstention: inst.isAbstention,
-            });
-            verdicts[judge.id] = v.correct;
-          } catch {
-            verdicts[judge.id] = false;
+            retrieved = await mem.recall(inst.question);
+            hypothesis = await driver.answer(inst.question, retrieved);
+          } catch (e) {
+            hypothesis = `__ERROR__ ${(e as Error).message}`;
           }
+          const verdicts: Record<string, boolean> = {};
+          for (const judge of judges) {
+            try {
+              const v = await judge.grade({
+                dataset: inst.dataset,
+                category: inst.category,
+                question: inst.question,
+                goldAnswer: inst.goldAnswer,
+                hypothesis,
+                isAbstention: inst.isAbstention,
+              });
+              verdicts[judge.id] = v.correct;
+            } catch {
+              verdicts[judge.id] = false;
+            }
+          }
+          const r: InstanceResult = {
+            id: inst.id, dataset: inst.dataset, category: inst.category,
+            driverId: driver.id, arm, hypothesis,
+            verdicts, recallCount: retrieved.length, rejectedWrites: mem.rejectedWrites,
+            latencyMs: Date.now() - t0,
+          };
+          results.push(r);
+          await emit(r);
         }
-        const r: InstanceResult = {
-          id: inst.id, dataset: inst.dataset, category: inst.category,
-          driverId: driver.id, arm, hypothesis,
-          verdicts, recallCount: retrieved.length, latencyMs: Date.now() - t0,
-        };
-        results.push(r);
-        process.stdout.write(JSON.stringify(r) + '\n');
+      } finally {
+        await mem.close();
       }
     }
   }
-  process.stdout.write(JSON.stringify({ __metrics__: aggregate(results) }, null, 2) + '\n');
+  await emit({ __metrics__: aggregate(results) });
   return results;
 }
 

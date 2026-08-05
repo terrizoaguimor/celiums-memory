@@ -52,8 +52,10 @@ export interface Driver {
 
 /** A judge returns a binary correctness verdict for one (Q, gold, hyp). */
 export interface Judge {
-  id: string; // 'official' (GPT-4o-class) | 'oss' (gpt-oss-120b)
+  id: string;
   grade(args: {
+    dataset: BenchInstance['dataset'];
+    category: string;
     question: string;
     goldAnswer: string;
     hypothesis: string;
@@ -71,6 +73,8 @@ export interface InstanceResult {
   /** judgeId → correct */
   verdicts: Record<string, boolean>;
   recallCount: number;
+  /** Dataset turns rejected by the production write gate during ingestion. */
+  rejectedWrites: number;
   latencyMs: number;
 }
 
@@ -82,4 +86,6 @@ export interface RunConfig {
   /** Run id — also the isolated memory tenant/project prefix so a bench
    *  run never pollutes a real user's memory. */
   runId: string;
+  /** Optional NDJSON destination. Stdout is always retained. */
+  outputPath?: string;
 }

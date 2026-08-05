@@ -3,9 +3,9 @@
 
 //! MCP stdio server over the embedded memory engine.
 //!
-//! Newline-delimited JSON-RPC 2.0, MCP protocol `2025-11-25`, six
-//! tools: `remember`, `recall`, `journal_write`, `journal_recall`,
-//! `journal_verify_chain`, `memory_stats`. The transport pattern
+//! Newline-delimited JSON-RPC 2.0, MCP protocol `2025-11-25`, 12 tools:
+//! memory, journal, entity graph, consolidation, lifecycle, snapshots,
+//! time-travel recall and circadian status. The transport pattern
 //! follows Hyphae's bounded stdio adapter (`hyphae-cli/src/mcp.rs`);
 //! the engine is embedded directly — no HTTP hop, no services.
 //!

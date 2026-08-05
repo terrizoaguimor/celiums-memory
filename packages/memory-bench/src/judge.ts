@@ -26,16 +26,34 @@
  */
 
 import type { Judge } from './types.js';
+import { inferencePost } from './inference.js';
 
 const DO_BASE = (process.env.DO_INFERENCE_URL || 'https://inference.do-ai.run/v1').replace(/\/$/, '');
 const DO_KEY = process.env.DO_INFERENCE_KEY || '';
 
-// VERIFY: official judge prompt — replace with verbatim text from the
-// LongMemEval / LoCoMo repos before any publishable run.
-const JUDGE_SYSTEM = `You are a strict grader. Decide if the model's answer is correct given the gold answer.
-- Reply with EXACTLY one word on the final line: CORRECT or WRONG.
-- Semantic equivalence counts as correct; exact wording is not required.
-- For unanswerable / abstention questions, the answer is CORRECT only if the model declined or said it does not know, and WRONG if it fabricated an answer.`;
+const JUDGE_SYSTEM = 'Answer yes or no only.';
+
+function officialPrompt(args: {
+  category: string;
+  question: string;
+  goldAnswer: string;
+  hypothesis: string;
+  isAbstention?: boolean;
+}): string {
+  if (args.isAbstention) {
+    return `I will give you an unanswerable question, an explanation, and a response from a model. Please answer yes if the model correctly identifies the question as unanswerable. The model could say that the information is incomplete, or some other information is given but the asked information is not.\n\nQuestion: ${args.question}\n\nExplanation: ${args.goldAnswer}\n\nModel Response: ${args.hypothesis}\n\nDoes the model correctly identify the question as unanswerable? Answer yes or no only.`;
+  }
+  if (args.category === 'single-session-preference') {
+    return `I will give you a question, a rubric for desired personalized response, and a response from a model. Please answer yes if the response satisfies the desired response. Otherwise, answer no. The model does not need to reflect all the points in the rubric. The response is correct as long as it recalls and utilizes the user's personal information correctly.\n\nQuestion: ${args.question}\n\nRubric: ${args.goldAnswer}\n\nModel Response: ${args.hypothesis}\n\nIs the model response correct? Answer yes or no only.`;
+  }
+  if (args.category === 'knowledge-update') {
+    return `I will give you a question, a correct answer, and a response from a model. Please answer yes if the response contains the correct answer. Otherwise, answer no. If the response contains some previous information along with an updated answer, the response should be considered as correct as long as the updated answer is the required answer.\n\nQuestion: ${args.question}\n\nCorrect Answer: ${args.goldAnswer}\n\nModel Response: ${args.hypothesis}\n\nIs the model response correct? Answer yes or no only.`;
+  }
+  const temporal = args.category === 'temporal-reasoning'
+    ? ' In addition, do not penalize off-by-one errors for the number of days, weeks, or months.'
+    : '';
+  return `I will give you a question, a correct answer, and a response from a model. Please answer yes if the response contains the correct answer. Otherwise, answer no. If the response is equivalent to the correct answer or contains all the intermediate steps to get the correct answer, you should also answer yes. If the response only contains a subset of the information required by the answer, answer no.${temporal}\n\nQuestion: ${args.question}\n\nCorrect Answer: ${args.goldAnswer}\n\nModel Response: ${args.hypothesis}\n\nIs the model response correct? Answer yes or no only.`;
+}
 
 /**
  * Robust verdict parse. Pilot 2026-05-17 caught the brittle
@@ -62,7 +80,7 @@ export function parseVerdict(raw: string): boolean {
 }
 
 async function doGrade(model: string, sys: string, user: string): Promise<string> {
-  const res = await fetch(`${DO_BASE}/chat/completions`, {
+  const res = await inferencePost(`${DO_BASE}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -88,11 +106,10 @@ async function doGrade(model: string, sys: string, user: string): Promise<string
 function makeJudge(id: 'official' | 'oss', model: string): Judge {
   return {
     id,
-    async grade({ question, goldAnswer, hypothesis, isAbstention }) {
-      const user =
-        `Question: ${question}\n` +
-        `Gold answer: ${goldAnswer}${isAbstention ? ' (this question is UNANSWERABLE)' : ''}\n` +
-        `Model answer: ${hypothesis}\n\nVerdict (CORRECT or WRONG):`;
+    async grade({ dataset, category, question, goldAnswer, hypothesis, isAbstention }) {
+      const user = dataset === 'longmemeval'
+        ? officialPrompt({ category, question, goldAnswer, hypothesis, isAbstention })
+        : `Question: ${question}\nGold answer: ${goldAnswer}${isAbstention ? ' (UNANSWERABLE)' : ''}\nModel answer: ${hypothesis}\n\nIs the model response semantically correct? Answer yes or no only.`;
       const raw = await doGrade(model, JUDGE_SYSTEM, user);
       return { correct: parseVerdict(raw), raw };
     },

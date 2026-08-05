@@ -16,6 +16,13 @@ speaks **MCP** (Model Context Protocol) so any compatible client
 persistent memory, a first-person journal, an auditable ethics engine,
 and a per-user biological clock — without you building any of it.
 
+> **Implementation status:** the Rust workspace in [`rust/`](rust/) is the
+> canonical implementation and all new platform work targets it. The
+> TypeScript packages, Docker/Helm stack and 61-tool surface remain in this
+> repository as legacy behavior and migration reference; they are not the
+> target architecture. See the ordered [`Rust roadmap`](docs/ROADMAP.md) and
+> the live [`execution ledger`](docs/EXECUTION.md).
+
 It is open source under Apache-2.0 **in full**: no open-core split, no
 paid tier, no proprietary core held back. The Ethics Engine — every
 layer — is open and auditable. Its `ethics_knowledge` corpus is
@@ -27,7 +34,42 @@ A fuller statement of intent: [`MANIFESTO.md`](MANIFESTO.md).
 
 ---
 
-## How it works
+## Current Rust architecture
+
+```text
+MCP client
+    │
+    ▼
+celiums-memory (Rust, embedded engine)
+    ├── cognitive + ethics core
+    ├── exact Q15 vector + BM25F recall
+    ├── journal, entity graph, lifecycle and time travel
+    └── Hyphae hash-chained durable store
+```
+
+The current Rust binary is local MCP stdio with 12 tools and zero external
+services. HTTP/auth, canonical scopes, Cloudflare Durable Objects and SDKs are
+ordered work in the roadmap rather than implied shipped features.
+
+```bash
+cd rust
+cargo build --release -p celiums-memory-cli
+cargo run --release -p celiums-memory-cli -- mcp --data ../.celiums/memory
+```
+
+MCP client configuration:
+
+```json
+{ "command": "celiums-memory", "args": ["mcp"] }
+```
+
+---
+
+## Legacy TypeScript surface (reference only)
+
+The sections below document the pre-Rust TypeScript platform. They remain for
+migration and compatibility work and must not be read as the current target
+architecture.
 
 Every request — whether over MCP or HTTP — flows through the same path:
 

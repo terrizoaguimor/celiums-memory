@@ -42,6 +42,9 @@ deployment started with that arm's env. The 4-arm matrix = 4 Jobs (see
 ```sh
 # pilot (deterministic 50-question slice) — do this BEFORE any full run
 ARM=full celiums-bench --datasets longmemeval,locomo --limit 50 --run pilot-1
+# persist manifest + results
+ARM=full celiums-bench --datasets longmemeval,locomo --limit 50 --run pilot-1 \
+  --output results/pilot-1.ndjson
 # full (only after pilot is green)
 ARM=no-affect celiums-bench --datasets longmemeval,locomo --run full-1
 ```
@@ -57,6 +60,16 @@ ARM=no-affect celiums-bench --datasets longmemeval,locomo --run full-1
 | `BENCH_DATA_DIR` | dir with `longmemeval_s.json` / `locomo.json` |
 | `BENCH_OSS_MODEL` / `BENCH_CLAUDE_MODEL` | driver model ids on DO |
 | `BENCH_JUDGE_OFFICIAL` / `BENCH_JUDGE_OSS` | judge model ids on DO |
+
+For the embedded Rust engine, set `MEMORY_TRANSPORT=stdio` (the default),
+`CELIUMS_MEMORY_BIN` to the compiled `celiums-memory` executable, and
+optionally `BENCH_RUST_DATA_DIR` for isolated per-instance stores. Set
+`MEMORY_TRANSPORT=http` to retain the in-VPC HTTP deployment path.
+
+Dataset turns rejected by the production write gate are skipped rather than
+aborting the instance and are reported as `rejectedWrites` on every result.
+This keeps the product contract intact while making its benchmark impact
+explicit; publishable reports must include this count.
 
 ## Honest open items (see docs/BENCHMARK.md §Caveats)
 
