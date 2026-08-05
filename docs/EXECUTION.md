@@ -20,14 +20,14 @@ evidence and why the next action follows.
 
 | Field | Value |
 |---|---|
-| Active phase | Phase 5 - Embedded context graph |
-| Active item | P5.5 - Phase close (commit/push/CI) |
+| Active phase | Phase 6 - Hierarchical consolidation |
+| Active item | P6.1 - Turn-to-episode consolidation |
 | Branch | `dev` |
-| Baseline commit | `a2ebae4` |
+| Baseline commit | `79c9595` |
 | Canonical implementation | `rust/` |
 | Storage substrate | Hyphae `=0.2.1` |
 | Production direction | Cloudflare, one Durable Object per tenant |
-| Next phase after gate | Phase 6 - Hierarchical consolidation |
+| Next phase after gate | Phase 7 - Recall and context composition |
 
 ## Phase 0 checklist
 
@@ -158,6 +158,7 @@ stable and an isolated immutable server exists.
 | 2026-08-05 | P5.4 graph-assisted recall | passed | multi-hop graph candidate raises Recall@5 0->1; direct recall suites unchanged; foreign binding rejected; clippy green |
 | 2026-08-05 | P5.5 graph integrity | passed | 14 Phase 5 tests; endpoint/ontology/evidence/binding verifier green; delete leaves zero graph binding residue |
 | 2026-08-05 | P5 disclosure hardening | passed | legacy `entity_lookup` now requires scope and returns governed content; MCP and graph suites green |
+| 2026-08-05 | Phase 5 GitHub CI | passed | run `31055862077`; MSRV/stable Rust, Node tests, lint, typecheck, build, Trivy and secret scan green |
 
 ## Phase 3 checklist
 
@@ -187,7 +188,17 @@ stable and an isolated immutable server exists.
 | P5.2 | Temporal typed relations | closed | `d5e0f89`; CI `31054130677` green; journal `019fd41ca0de78e49d6cbbdc7e85c0ae` |
 | P5.3 | Bounded graph traversal | closed | `4a85fef`; CI `31054441287` green; journal `019fd42138aa78738c47d51226285064` |
 | P5.4 | Graph-assisted recall | closed | `6b511b7`; CI `31055060284` green; journal `019fd42ae36277cda00cb1f5543f3b77` |
-| P5.5 | Phase close | verified locally | 14 Phase 5 tests; dedup/ambiguity, temporal multi-hop, Recall@5 gain, orphan verification and delete cleanup green; journal `019fd432de9a7e67ae422a643619b81c` |
+| P5.5 | Phase close | closed | `79c9595`; 14 Phase 5 tests; CI `31055862077` green; journal `019fd432de9a7e67ae422a643619b81c` |
+
+## Phase 6 checklist
+
+| ID | Work item | Status | Evidence / exit condition |
+|---|---|---|---|
+| P6.1 | Turn-to-episode consolidation | active | source lineage and idempotency preserved |
+| P6.2 | Session/project summaries | pending | hierarchical summaries retain evidence |
+| P6.3 | Claim/duplicate consolidation | pending | contradiction-aware merge and confidence updates |
+| P6.4 | Scheduling and rollback | pending | dry-run, scheduling and snapshot rollback |
+| P6.5 | Phase close | pending | redundancy drops without recall/evidence regression |
 
 ## Update protocol
 
