@@ -20,14 +20,14 @@ evidence and why the next action follows.
 
 | Field | Value |
 |---|---|
-| Active phase | Phase 3 - Complete ingestion |
-| Active item | P3.5 - Phase close and throughput gate |
+| Active phase | Phase 4 - Temporal claims and contradictions |
+| Active item | P4.1 - Claims separated from raw episodes |
 | Branch | `dev` |
-| Baseline commit | `a8c9d6a` |
+| Baseline commit | `aaa29ae` |
 | Canonical implementation | `rust/` |
 | Storage substrate | Hyphae `=0.2.1` |
 | Production direction | Cloudflare, one Durable Object per tenant |
-| Next phase after gate | Phase 4 - Temporal claims and contradictions |
+| Next phase after gate | Phase 5 - Embedded context graph |
 
 ## Phase 0 checklist
 
@@ -143,6 +143,7 @@ stable and an isolated immutable server exists.
 | 2026-08-05 | P3.4 provider enrichment boundary | passed | provider failure survives reopen; authorized retry materializes immutable raw event; workspace test/clippy green |
 | 2026-08-05 | P3.5 ingestion coverage | passed | 4 attempted events map exactly to received/materialized/rejected/failed; no unknown outcome |
 | 2026-08-05 | P3.5 release throughput | passed | 100 raw events: sequential 153.632 ms, batch 7.1262 ms, 21.56x faster (gate >=5x) |
+| 2026-08-05 | Phase 3 GitHub CI | passed | run `31045611767`; MSRV/stable Rust, Node tests, lint, typecheck, build, Trivy and secret scan green |
 
 ## Phase 3 checklist
 
@@ -152,7 +153,17 @@ stable and an isolated immutable server exists.
 | P3.2 | Conversation and batch ingestion | closed | `82f7290`; CI `31044070987` green; journal `019fd39ad9ca7573b08645b963256fe3` |
 | P3.3 | Capture adapters | closed | `3973f09`; CI `31044478712` green; journal `019fd39f529d77139a52a5a0813a8c70` |
 | P3.4 | Provider enrichment boundary | closed | `7d62a77`; CI `31044931012` green; journal `019fd3a464177179b1a0554a57b429e3` |
-| P3.5 | Phase close | active | all attempted events accounted for; batch throughput gate |
+| P3.5 | Phase close | closed | `aaa29ae`; coverage exact; release batch 21.56x sequential; CI `31045611767` green; journal `019fd3ae15c979b4bebaadf0d1c215c6` |
+
+## Phase 4 checklist
+
+| ID | Work item | Status | Evidence / exit condition |
+|---|---|---|---|
+| P4.1 | Claims separated from raw episodes | active | claim records retain source evidence and do not mutate raw events |
+| P4.2 | Validity and contradiction model | pending | validity windows, supersession and typed contradictions |
+| P4.3 | Temporal queries | pending | latest-known and historical-at-time behavior |
+| P4.4 | Relative time and semantic diff | pending | uncertainty and snapshot diff are explicit |
+| P4.5 | Phase close | pending | temporal suites preserve prior truth and current validity |
 
 ## Update protocol
 
