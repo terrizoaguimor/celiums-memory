@@ -30,6 +30,7 @@ mod ingestion;
 mod journal;
 mod memory;
 mod quantize;
+mod temporal;
 mod timetravel;
 
 pub use affect_state::AffectState;
@@ -71,4 +72,9 @@ pub use ingestion::{
 pub use journal::{BrokenLink, BrokenReason, ChainReport, JournalEntry, Supersession, chain_hash};
 pub use memory::{Memory, MemoryDecodeError};
 pub use quantize::{QuantizeError, quantize};
+pub use temporal::{
+    ClaimSnapshot, ClaimSnapshotEntry, EventTimeBasis, ResolvedTime, SemanticClaimChange,
+    SemanticClaimDiff, SemanticClaimDiffKind, SequencedEvent, TemporalPrecision, TimeBasis,
+    parse_relative_time,
+};
 pub use timetravel::{SnapshotPoint, recall_at, snapshot_points};

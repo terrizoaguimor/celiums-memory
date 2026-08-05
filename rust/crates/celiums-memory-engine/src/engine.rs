@@ -69,6 +69,7 @@ use crate::journal::{
 };
 use crate::memory::{Memory, MemoryDecodeError};
 use crate::quantize::{QuantizeError, quantize};
+use crate::temporal::{ClaimSnapshot, EventTimeBasis, SequencedEvent, snapshot_entry};
 
 /// Named vector space holding memory embeddings.
 const MEMORY_SPACE: &str = "memories";
@@ -1572,6 +1573,66 @@ impl MemoryEngine {
             })
         });
         Ok(claims)
+    }
+
+    /// Orders visible source events by source event time, falling back explicitly to ingestion.
+    ///
+    /// # Errors
+    ///
+    /// Fails on tenant mismatch, missing/hidden event, storage, or decode failure.
+    pub fn event_sequence(
+        &self,
+        scope: &RecallScope,
+        event_ids: &[EventId],
+    ) -> Result<Vec<SequencedEvent>, MemoryEngineError> {
+        let mut sequence = Vec::with_capacity(event_ids.len());
+        for event_id in event_ids {
+            let entry = self.get_ingestion(event_id, scope)?.ok_or_else(|| {
+                MemoryEngineError::IngestionEventNotFound {
+                    event_id: event_id.to_string(),
+                }
+            })?;
+            let (effective_at_ms, basis) = entry.event_at_ms.map_or(
+                (
+                    entry.first_ingested_at_ms,
+                    EventTimeBasis::IngestionFallback,
+                ),
+                |event_at_ms| (event_at_ms, EventTimeBasis::EventTime),
+            );
+            sequence.push(SequencedEvent {
+                event_id: event_id.clone(),
+                effective_at_ms,
+                basis,
+            });
+        }
+        sequence.sort_by(|left, right| {
+            left.effective_at_ms
+                .cmp(&right.effective_at_ms)
+                .then_with(|| left.event_id.cmp(&right.event_id))
+        });
+        Ok(sequence)
+    }
+
+    /// Captures semantic claim state and proof at one bitemporal query point.
+    ///
+    /// # Errors
+    ///
+    /// Fails on query, evidence lookup, storage, or decode failure.
+    pub fn claim_snapshot(
+        &self,
+        query: ClaimPropertyQuery,
+    ) -> Result<ClaimSnapshot, MemoryEngineError> {
+        let claims = self.latest_claims(query.clone())?;
+        let mut entries = Vec::with_capacity(claims.len());
+        for claim in claims {
+            let evidence = self.claim_evidence(&claim.id, &query.scope)?;
+            entries.push(snapshot_entry(claim, &evidence));
+        }
+        Ok(ClaimSnapshot {
+            valid_at_ms: query.valid_at_ms,
+            known_at_ms: query.known_at_ms,
+            entries,
+        })
     }
 
     fn visible_claims(&self, scope: &RecallScope) -> Result<Vec<Claim>, MemoryEngineError> {

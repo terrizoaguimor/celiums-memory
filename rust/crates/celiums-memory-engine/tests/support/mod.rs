@@ -23,6 +23,15 @@ pub fn open(dir: &tempfile::TempDir) -> MemoryEngine {
 }
 
 pub fn episode(engine: &mut MemoryEngine, source_event_id: &str, content: &str) -> IngestionEntry {
+    episode_at(engine, source_event_id, content, NOW_MS)
+}
+
+pub fn episode_at(
+    engine: &mut MemoryEngine,
+    source_event_id: &str,
+    content: &str,
+    event_at_ms: i64,
+) -> IngestionEntry {
     engine
         .ingest_event(IngestEventRequest {
             source_namespace: SourceNamespace::new("temporal-test").expect("namespace"),
@@ -40,7 +49,7 @@ pub fn episode(engine: &mut MemoryEngine, source_event_id: &str, content: &str) 
                 session_id: None,
             },
             content: content.to_owned(),
-            event_at_ms: Some(NOW_MS),
+            event_at_ms: Some(event_at_ms),
             ingested_at_ms: NOW_MS,
             embedding: None,
             embedding_space: None,
