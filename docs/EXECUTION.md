@@ -20,14 +20,14 @@ evidence and why the next action follows.
 
 | Field | Value |
 |---|---|
-| Active phase | Phase 1 - Canonical identity, provenance and scopes |
-| Active item | P1.7 - Phase close and CI evidence |
+| Active phase | Phase 2 - Ethics-native memory governance |
+| Active item | P2.1 - Durable ethics trace and treatment model |
 | Branch | `dev` |
 | Baseline commit | `5638ca2` |
 | Canonical implementation | `rust/` |
 | Storage substrate | Hyphae `=0.2.1` |
 | Production direction | Cloudflare, one Durable Object per tenant |
-| Next phase after gate | Phase 2 - Ethics-native memory governance |
+| Next phase after gate | Phase 3 - Complete ingestion |
 
 ## Phase 0 checklist
 
@@ -50,7 +50,18 @@ evidence and why the next action follows.
 | P1.4 | Idempotent writes and schema migration | verified locally | retries survive reopen; conflicts fail; legacy records persist schema/identity/embedding metadata |
 | P1.5 | Canonical filter algebra | verified locally | closed typed AST, complexity limits, canonical Hyphae lowering, non-bypassable authorization |
 | P1.6 | CRUD and batch operations | verified locally | scoped get/list/update/delete; revisions; entity/vector cleanup; per-item batch outcomes |
-| P1.7 | Phase close | active | full Rust workspace green; commit/push/CI pending |
+| P1.7 | Phase close | closed | `c58077b`; Rust MSRV/stable CI green; journaled |
+
+## Phase 2 checklist
+
+| ID | Work item | Status | Evidence / exit condition |
+|---|---|---|---|
+| P2.1 | Durable ethics trace and treatment model | active | trace, policy version, normal/sensitive/restricted/quarantined persisted |
+| P2.2 | Observation vs action/disclosure contract | pending | legitimate sensitive context retained; harmful actions still blocked |
+| P2.3 | Recall disclosure policy | pending | include/summarize/redact/restrict/abstain decisions traced |
+| P2.4 | Poisoning, PII and secret governance | pending | adversarial fixtures contained; no trusted persistent instructions |
+| P2.5 | Feedback and audit | pending | durable append-only decisions and false-positive workflow |
+| P2.6 | Phase close | pending | EN/ES overblocking and poisoning gates green |
 
 ## Completed foundation
 
@@ -123,6 +134,7 @@ stable and an isolated immutable server exists.
 | 2026-08-05 | P1.3 embedding gates | passed | durable space record; model/revision mismatch tests; MCP round trip; benchmark smoke |
 | 2026-08-05 | P1.4-P1.6 local gates | passed | clippy `-D warnings`; 16 engine tests; 7 MCP tests; filter unit suite; benchmark typecheck/build |
 | 2026-08-05 | Hyphae boundary correction | closed | Hyphae PR #111 closed; no Hyphae change consumed by Celiums Memory |
+| 2026-08-05 | Phase 1 GitHub CI | Rust passed | MSRV 1.89 and stable fmt/clippy/test green; legacy Trivy found federation Hono CVE |
 
 ## Update protocol
 
