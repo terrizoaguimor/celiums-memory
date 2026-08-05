@@ -55,10 +55,12 @@ use crate::governance_audit::{
 };
 use crate::governance_state::MemoryGovernance;
 use crate::graph::{
-    CanonicalEntity, CreateEntityRequest, DefineEntityTypeRequest, EntityAlias, EntityAliasRequest,
-    EntityId, EntityLineage, EntityLineageRequest, EntityLineageType, EntityResolution,
-    EntityTypeDefinition, GraphDecodeError, InvalidGraph, built_in_entity_type, normalize_label,
-    scope_visible as graph_scope_visible, validate_interval, validate_text as validate_graph_text,
+    CanonicalEntity, CreateEntityRelationRequest, CreateEntityRequest, DefineEntityTypeRequest,
+    DefineRelationTypeRequest, EntityAlias, EntityAliasRequest, EntityId, EntityLineage,
+    EntityLineageRequest, EntityLineageType, EntityRelation, EntityResolution,
+    EntityTypeDefinition, GraphDecodeError, InvalidGraph, RelationTypeDefinition,
+    built_in_entity_type, normalize_label, scope_visible as graph_scope_visible, validate_interval,
+    validate_text as validate_graph_text,
 };
 use crate::idempotency::{
     IdempotencyDecodeError, IdempotencyKey, RememberIdempotencyRecord, canonical_remember_hash,
@@ -291,6 +293,15 @@ pub enum MemoryEngineError {
     /// Entity lineage would form a redirect cycle.
     #[error("entity lineage would create a cycle")]
     GraphLineageCycle,
+    /// One relation endpoint does not satisfy the ontology definition.
+    #[error("graph relation endpoint types do not satisfy the ontology")]
+    GraphRelationEndpointType,
+    /// A graph relation type is unknown.
+    #[error("graph relation type `{relation_type}` is not defined")]
+    GraphRelationTypeNotFound {
+        /// Missing relation type ID.
+        relation_type: String,
+    },
     /// A canonical memory filter was invalid.
     #[error(transparent)]
     Filter(#[from] MemoryFilterError),
@@ -1956,6 +1967,118 @@ impl MemoryEngine {
         Ok(definitions
             .into_iter()
             .filter(|definition| graph_scope_visible(&definition.scope, scope))
+            .collect())
+    }
+
+    /// Defines one typed, versioned entity relation.
+    pub fn define_relation_type(
+        &mut self,
+        request: DefineRelationTypeRequest,
+    ) -> Result<RelationTypeDefinition, MemoryEngineError> {
+        self.require_tenant(&request.scope.tenant_id)?;
+        validate_graph_text(&request.relation_type, "relation_type")?;
+        validate_graph_text(&request.ontology_version, "ontology_version")?;
+        if request.source_entity_types.is_empty() || request.target_entity_types.is_empty() {
+            return Err(InvalidGraph::LineageTargets.into());
+        }
+        for entity_type in request
+            .source_entity_types
+            .iter()
+            .chain(request.target_entity_types.iter())
+        {
+            self.require_entity_type(&request.scope, entity_type)?;
+        }
+        let definition = RelationTypeDefinition::from_request(request);
+        self.hyphae
+            .put_record(Uuid::now_v7(), &definition.to_record())?;
+        Ok(definition)
+    }
+
+    /// Creates one evidence-backed typed temporal edge.
+    pub fn create_entity_relation(
+        &mut self,
+        request: CreateEntityRelationRequest,
+    ) -> Result<EntityRelation, MemoryEngineError> {
+        self.require_tenant(&request.scope.tenant_id)?;
+        validate_graph_text(&request.relation_type, "relation_type")?;
+        validate_interval(request.valid_from_ms, request.valid_to_ms)?;
+        if !request.confidence.is_finite() || !(0.0..=1.0).contains(&request.confidence) {
+            return Err(InvalidGraph::Validity.into());
+        }
+        let source = self
+            .get_entity(&request.source_entity_id, &request.scope)?
+            .ok_or_else(|| MemoryEngineError::GraphEntityNotFound {
+                entity_id: request.source_entity_id.to_string(),
+            })?;
+        let target = self
+            .get_entity(&request.target_entity_id, &request.scope)?
+            .ok_or_else(|| MemoryEngineError::GraphEntityNotFound {
+                entity_id: request.target_entity_id.to_string(),
+            })?;
+        let definition = self
+            .relation_types(&request.scope)?
+            .into_iter()
+            .filter(|definition| definition.relation_type == request.relation_type)
+            .max_by(|left, right| {
+                left.recorded_at_ms
+                    .cmp(&right.recorded_at_ms)
+                    .then_with(|| left.ontology_version.cmp(&right.ontology_version))
+            })
+            .ok_or_else(|| MemoryEngineError::GraphRelationTypeNotFound {
+                relation_type: request.relation_type.clone(),
+            })?;
+        if !definition.source_entity_types.contains(&source.entity_type)
+            || !definition.target_entity_types.contains(&target.entity_type)
+        {
+            return Err(MemoryEngineError::GraphRelationEndpointType);
+        }
+        if request.evidence.is_empty() {
+            return Err(InvalidGraph::Evidence.into());
+        }
+        self.validate_graph_evidence(&request.scope, &request.evidence)?;
+        let relation = EntityRelation::from_request(&request, &definition);
+        if let Some(record) = self.hyphae.get_record(&EntityRelation::key(&relation.id))? {
+            return Ok(EntityRelation::from_record(&record)?);
+        }
+        self.hyphae
+            .put_record(Uuid::now_v7(), &relation.to_record())?;
+        Ok(relation)
+    }
+
+    /// Lists relation type definitions visible to this graph scope.
+    pub fn relation_types(
+        &self,
+        scope: &RecallScope,
+    ) -> Result<Vec<RelationTypeDefinition>, MemoryEngineError> {
+        self.require_tenant(&scope.tenant_id)?;
+        let definitions = self
+            .scan_prefix(RelationTypeDefinition::prefix())?
+            .iter()
+            .map(RelationTypeDefinition::from_record)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(definitions
+            .into_iter()
+            .filter(|definition| graph_scope_visible(&definition.scope, scope))
+            .collect())
+    }
+
+    /// Lists visible entity relations valid and known at the requested times.
+    pub fn entity_relations_at(
+        &self,
+        scope: &RecallScope,
+        valid_at_ms: i64,
+        known_at_ms: i64,
+    ) -> Result<Vec<EntityRelation>, MemoryEngineError> {
+        self.require_tenant(&scope.tenant_id)?;
+        let relations = self
+            .scan_prefix(EntityRelation::prefix())?
+            .iter()
+            .map(EntityRelation::from_record)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(relations
+            .into_iter()
+            .filter(|relation| graph_scope_visible(&relation.scope, scope))
+            .filter(|relation| relation.valid_at(valid_at_ms, known_at_ms))
             .collect())
     }
 

@@ -61,9 +61,11 @@ pub use governance_audit::{
 };
 pub use governance_state::MemoryGovernance;
 pub use graph::{
-    CanonicalEntity, CreateEntityRequest, DefineEntityTypeRequest, EntityAlias, EntityAliasRequest,
-    EntityId, EntityLineage, EntityLineageRequest, EntityLineageType, EntityResolution,
-    EntityTypeDefinition, GraphDecodeError, GraphEvidenceInput, InvalidGraph, normalize_label,
+    CanonicalEntity, CreateEntityRelationRequest, CreateEntityRequest, DefineEntityTypeRequest,
+    DefineRelationTypeRequest, EntityAlias, EntityAliasRequest, EntityId, EntityLineage,
+    EntityLineageRequest, EntityLineageType, EntityRelation, EntityRelationId, EntityResolution,
+    EntityTypeDefinition, GraphDecodeError, GraphEvidenceInput, InvalidGraph, RelationDirection,
+    RelationTypeDefinition, normalize_label,
 };
 pub use idempotency::{IdempotencyDecodeError, IdempotencyKey, InvalidIdempotencyKey};
 pub use identity::{

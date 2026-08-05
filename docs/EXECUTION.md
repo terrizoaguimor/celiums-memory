@@ -21,7 +21,7 @@ evidence and why the next action follows.
 | Field | Value |
 |---|---|
 | Active phase | Phase 5 - Embedded context graph |
-| Active item | P5.1 - Phase close (commit/push/CI) |
+| Active item | P5.2 - Phase close (commit/push/CI) |
 | Branch | `dev` |
 | Baseline commit | `a2ebae4` |
 | Canonical implementation | `rust/` |
@@ -153,6 +153,7 @@ stable and an isolated immutable server exists.
 | 2026-08-05 | P3 throughput CI hardening | passed locally | release-only explicit gate 18.10x; debug workspace suite no longer carries a noisy timing assertion |
 | 2026-08-05 | Post-close Phase 4 CI | passed | run `31049022086`; explicit release throughput gate and complete CI green |
 | 2026-08-05 | P5.1 canonical entities | passed | 4 tests: durable ID/alias, ambiguity/scope, custom ontology, merge/split resolution; clippy green |
+| 2026-08-05 | P5.2 typed temporal edges | passed | 3 tests: ontology/evidence reopen, endpoint/evidence guards, bitemporal half-open query; clippy green |
 
 ## Phase 3 checklist
 
@@ -178,8 +179,8 @@ stable and an isolated immutable server exists.
 
 | ID | Work item | Status | Evidence / exit condition |
 |---|---|---|---|
-| P5.1 | Canonical entities and aliases | verified locally | stable IDs; exact temporal aliases; ambiguity explicit; versioned custom types; append-only merge/split with evidence; journal `019fd416f0ee7ddc97212acfc7ade639` |
-| P5.2 | Temporal typed relations | pending | every edge has validity and evidence |
+| P5.1 | Canonical entities and aliases | closed | `20562bc`; CI `31053748249` green; journal `019fd416f0ee7ddc97212acfc7ade639` |
+| P5.2 | Temporal typed relations | verified locally | versioned relation ontology; typed endpoints; mandatory evidence; confidence and bitemporal validity durable; journal `019fd41ca0de78e49d6cbbdc7e85c0ae` |
 | P5.3 | Bounded graph traversal | pending | traversal is scoped and cost-bounded |
 | P5.4 | Graph-assisted recall | pending | measured quality improves without leakage |
 | P5.5 | Phase close | pending | dedup/multi-hop gates and integrity checks green |

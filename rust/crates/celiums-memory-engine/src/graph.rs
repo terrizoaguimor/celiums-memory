@@ -20,7 +20,12 @@ const LINEAGE_KIND: &str = "entity_lineage";
 const LINEAGE_PREFIX: &str = "__celiums/graph/lineage/";
 const ENTITY_TYPE_KIND: &str = "entity_type";
 const ENTITY_TYPE_PREFIX: &str = "__celiums/graph/ontology/entity_type/";
+const RELATION_TYPE_KIND: &str = "relation_type";
+const RELATION_TYPE_PREFIX: &str = "__celiums/graph/ontology/relation_type/";
+const RELATION_KIND: &str = "entity_relation";
+const RELATION_PREFIX: &str = "__celiums/graph/relation/";
 const MAX_TEXT_BYTES: usize = 4_096;
+const NANOS: f64 = 1_000_000_000.0;
 
 macro_rules! graph_id {
     ($name:ident, $field:literal) => {
@@ -49,6 +54,7 @@ macro_rules! graph_id {
 }
 
 graph_id!(EntityId, "entity_id");
+graph_id!(EntityRelationId, "entity_relation_id");
 
 /// Source evidence attached to graph facts.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -421,6 +427,342 @@ pub struct EntityLineage {
     pub recorded_at_ms: i64,
 }
 
+/// Whether a relation has an intrinsic direction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RelationDirection {
+    /// Source and target roles differ.
+    Directed,
+    /// Either endpoint may be traversed as the source.
+    Undirected,
+}
+
+impl RelationDirection {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Directed => "directed",
+            Self::Undirected => "undirected",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "directed" => Some(Self::Directed),
+            "undirected" => Some(Self::Undirected),
+            _ => None,
+        }
+    }
+}
+
+/// Request to define one typed relation in an ontology version.
+#[derive(Clone, Debug)]
+pub struct DefineRelationTypeRequest {
+    /// Owning scope.
+    pub scope: RecallScope,
+    /// Stable relation type ID.
+    pub relation_type: String,
+    /// Permitted source entity types.
+    pub source_entity_types: Vec<String>,
+    /// Permitted target entity types.
+    pub target_entity_types: Vec<String>,
+    /// Directed or undirected semantics.
+    pub direction: RelationDirection,
+    /// Whether online traversal may follow this edge type.
+    pub traversable: bool,
+    /// Immutable ontology version.
+    pub ontology_version: String,
+    /// Transaction time.
+    pub recorded_at_ms: i64,
+}
+
+/// Durable typed relation definition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RelationTypeDefinition {
+    /// Owning scope.
+    pub scope: RecallScope,
+    /// Stable relation type ID.
+    pub relation_type: String,
+    /// Permitted source types.
+    pub source_entity_types: Vec<String>,
+    /// Permitted target types.
+    pub target_entity_types: Vec<String>,
+    /// Direction semantics.
+    pub direction: RelationDirection,
+    /// Traversal permission.
+    pub traversable: bool,
+    /// Ontology version.
+    pub ontology_version: String,
+    /// Transaction time.
+    pub recorded_at_ms: i64,
+}
+
+impl RelationTypeDefinition {
+    pub(crate) fn from_request(request: DefineRelationTypeRequest) -> Self {
+        Self {
+            scope: request.scope,
+            relation_type: request.relation_type,
+            source_entity_types: request.source_entity_types,
+            target_entity_types: request.target_entity_types,
+            direction: request.direction,
+            traversable: request.traversable,
+            ontology_version: request.ontology_version,
+            recorded_at_ms: request.recorded_at_ms,
+        }
+    }
+
+    pub(crate) fn prefix() -> &'static [u8] {
+        RELATION_TYPE_PREFIX.as_bytes()
+    }
+
+    pub(crate) fn to_record(&self) -> Record {
+        let mut hasher = blake3::Hasher::new();
+        hash_scope(&mut hasher, &self.scope);
+        hash_field(&mut hasher, b"relation_type", self.relation_type.as_bytes());
+        hash_field(
+            &mut hasher,
+            b"ontology_version",
+            self.ontology_version.as_bytes(),
+        );
+        let mut fields = scope_fields(&self.scope);
+        fields.extend(BTreeMap::from([
+            ("kind".to_owned(), string(RELATION_TYPE_KIND)),
+            ("relation_type".to_owned(), string(&self.relation_type)),
+            (
+                "source_entity_types".to_owned(),
+                string_array_value(&self.source_entity_types),
+            ),
+            (
+                "target_entity_types".to_owned(),
+                string_array_value(&self.target_entity_types),
+            ),
+            ("direction".to_owned(), string(self.direction.as_str())),
+            (
+                "traversable".to_owned(),
+                Value::Integer(i64::from(self.traversable)),
+            ),
+            (
+                "ontology_version".to_owned(),
+                string(&self.ontology_version),
+            ),
+            (
+                "recorded_at_ms".to_owned(),
+                Value::Integer(self.recorded_at_ms),
+            ),
+        ]));
+        Record::new(
+            format!("{RELATION_TYPE_PREFIX}{}", hasher.finalize().to_hex()).into_bytes(),
+            Value::Object(fields),
+        )
+    }
+
+    pub(crate) fn from_record(record: &Record) -> Result<Self, GraphDecodeError> {
+        let fields = object(record, Self::prefix(), RELATION_TYPE_KIND)?;
+        Ok(Self {
+            scope: scope_from_fields(fields)?,
+            relation_type: text(fields, "relation_type")?,
+            source_entity_types: string_array(fields, "source_entity_types")?,
+            target_entity_types: string_array(fields, "target_entity_types")?,
+            direction: RelationDirection::parse(&text(fields, "direction")?)
+                .ok_or(GraphDecodeError::Field { field: "direction" })?,
+            traversable: boolean(fields, "traversable")?,
+            ontology_version: text(fields, "ontology_version")?,
+            recorded_at_ms: integer(fields, "recorded_at_ms")?,
+        })
+    }
+}
+
+/// Request to create one evidence-backed temporal entity relation.
+#[derive(Clone, Debug)]
+pub struct CreateEntityRelationRequest {
+    /// Authorization boundary.
+    pub scope: RecallScope,
+    /// Source endpoint.
+    pub source_entity_id: EntityId,
+    /// Typed relation ID.
+    pub relation_type: String,
+    /// Target endpoint.
+    pub target_entity_id: EntityId,
+    /// Confidence in `[0, 1]`.
+    pub confidence: f64,
+    /// Inclusive valid-time start.
+    pub valid_from_ms: Option<i64>,
+    /// Exclusive valid-time end.
+    pub valid_to_ms: Option<i64>,
+    /// Transaction time.
+    pub recorded_at_ms: i64,
+    /// Mandatory immutable evidence.
+    pub evidence: Vec<GraphEvidenceInput>,
+}
+
+/// Durable typed temporal edge.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EntityRelation {
+    /// Stable edge identity.
+    pub id: EntityRelationId,
+    /// Owning scope.
+    pub scope: RecallScope,
+    /// Source endpoint.
+    pub source_entity_id: EntityId,
+    /// Relation type.
+    pub relation_type: String,
+    /// Target endpoint.
+    pub target_entity_id: EntityId,
+    /// Ontology version used to validate this edge.
+    pub ontology_version: String,
+    /// Direction copied from the ontology definition.
+    pub direction: RelationDirection,
+    /// Whether traversal may follow this edge.
+    pub traversable: bool,
+    /// Deterministic confidence nanos.
+    pub confidence_nanos: i64,
+    /// Inclusive validity start.
+    pub valid_from_ms: Option<i64>,
+    /// Exclusive validity end.
+    pub valid_to_ms: Option<i64>,
+    /// Transaction time.
+    pub recorded_at_ms: i64,
+    /// Immutable source evidence.
+    pub evidence: Vec<GraphEvidenceInput>,
+    /// Cached evidence count for integrity checks.
+    pub evidence_count: u64,
+}
+
+impl EntityRelation {
+    pub(crate) fn from_request(
+        request: &CreateEntityRelationRequest,
+        definition: &RelationTypeDefinition,
+    ) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"celiums-memory/entity-relation/v1");
+        hash_scope(&mut hasher, &request.scope);
+        hash_field(
+            &mut hasher,
+            b"source_entity_id",
+            request.source_entity_id.as_str().as_bytes(),
+        );
+        hash_field(
+            &mut hasher,
+            b"relation_type",
+            request.relation_type.as_bytes(),
+        );
+        hash_field(
+            &mut hasher,
+            b"target_entity_id",
+            request.target_entity_id.as_str().as_bytes(),
+        );
+        hash_field(
+            &mut hasher,
+            b"ontology_version",
+            definition.ontology_version.as_bytes(),
+        );
+        hash_optional_i64(&mut hasher, b"valid_from_ms", request.valid_from_ms);
+        hash_optional_i64(&mut hasher, b"valid_to_ms", request.valid_to_ms);
+        for item in &request.evidence {
+            hash_field(&mut hasher, b"event_id", item.event_id.as_str().as_bytes());
+            hash_optional(&mut hasher, b"excerpt", item.excerpt.as_deref());
+        }
+        Self {
+            id: EntityRelationId(uuid_from_hash(hasher.finalize()).to_string()),
+            scope: request.scope.clone(),
+            source_entity_id: request.source_entity_id.clone(),
+            relation_type: request.relation_type.clone(),
+            target_entity_id: request.target_entity_id.clone(),
+            ontology_version: definition.ontology_version.clone(),
+            direction: definition.direction,
+            traversable: definition.traversable,
+            confidence_nanos: scalar_nanos(request.confidence),
+            valid_from_ms: request.valid_from_ms,
+            valid_to_ms: request.valid_to_ms,
+            recorded_at_ms: request.recorded_at_ms,
+            evidence: request.evidence.clone(),
+            evidence_count: request.evidence.len() as u64,
+        }
+    }
+
+    pub(crate) fn key(id: &EntityRelationId) -> Vec<u8> {
+        format!("{RELATION_PREFIX}{id}").into_bytes()
+    }
+
+    pub(crate) fn prefix() -> &'static [u8] {
+        RELATION_PREFIX.as_bytes()
+    }
+
+    pub(crate) fn valid_at(&self, valid_at_ms: i64, known_at_ms: i64) -> bool {
+        self.recorded_at_ms <= known_at_ms
+            && self.valid_from_ms.is_none_or(|from| from <= valid_at_ms)
+            && self.valid_to_ms.is_none_or(|to| valid_at_ms < to)
+    }
+
+    pub(crate) fn to_record(&self) -> Record {
+        let mut fields = scope_fields(&self.scope);
+        fields.extend(BTreeMap::from([
+            ("kind".to_owned(), string(RELATION_KIND)),
+            ("relation_id".to_owned(), string(self.id.as_str())),
+            (
+                "source_entity_id".to_owned(),
+                string(self.source_entity_id.as_str()),
+            ),
+            ("relation_type".to_owned(), string(&self.relation_type)),
+            (
+                "target_entity_id".to_owned(),
+                string(self.target_entity_id.as_str()),
+            ),
+            (
+                "ontology_version".to_owned(),
+                string(&self.ontology_version),
+            ),
+            ("direction".to_owned(), string(self.direction.as_str())),
+            (
+                "traversable".to_owned(),
+                Value::Integer(i64::from(self.traversable)),
+            ),
+            (
+                "confidence_nanos".to_owned(),
+                Value::Integer(self.confidence_nanos),
+            ),
+            (
+                "valid_from_ms".to_owned(),
+                nullable_integer(self.valid_from_ms),
+            ),
+            ("valid_to_ms".to_owned(), nullable_integer(self.valid_to_ms)),
+            (
+                "recorded_at_ms".to_owned(),
+                Value::Integer(self.recorded_at_ms),
+            ),
+            ("evidence".to_owned(), evidence_value(&self.evidence)),
+            (
+                "evidence_count".to_owned(),
+                Value::Integer(i64::try_from(self.evidence_count).unwrap_or(i64::MAX)),
+            ),
+        ]));
+        Record::new(Self::key(&self.id), Value::Object(fields))
+    }
+
+    pub(crate) fn from_record(record: &Record) -> Result<Self, GraphDecodeError> {
+        let fields = object(record, Self::prefix(), RELATION_KIND)?;
+        Ok(Self {
+            id: EntityRelationId::parse(text(fields, "relation_id")?)?,
+            scope: scope_from_fields(fields)?,
+            source_entity_id: EntityId::parse(text(fields, "source_entity_id")?)?,
+            relation_type: text(fields, "relation_type")?,
+            target_entity_id: EntityId::parse(text(fields, "target_entity_id")?)?,
+            ontology_version: text(fields, "ontology_version")?,
+            direction: RelationDirection::parse(&text(fields, "direction")?)
+                .ok_or(GraphDecodeError::Field { field: "direction" })?,
+            traversable: boolean(fields, "traversable")?,
+            confidence_nanos: integer(fields, "confidence_nanos")?,
+            valid_from_ms: optional_integer(fields, "valid_from_ms")?,
+            valid_to_ms: optional_integer(fields, "valid_to_ms")?,
+            recorded_at_ms: integer(fields, "recorded_at_ms")?,
+            evidence: evidence_from_value(
+                fields
+                    .get("evidence")
+                    .ok_or(GraphDecodeError::Field { field: "evidence" })?,
+            )?,
+            evidence_count: unsigned(fields, "evidence_count")?,
+        })
+    }
+}
+
 impl EntityLineage {
     pub(crate) fn from_request(request: &EntityLineageRequest) -> Self {
         let mut hasher = blake3::Hasher::new();
@@ -719,6 +1061,64 @@ fn string_array(
     }
 }
 
+fn string_array_value(values: &[String]) -> Value {
+    Value::Array(values.iter().map(|value| string(value)).collect())
+}
+
+fn boolean(
+    fields: &BTreeMap<String, Value>,
+    field: &'static str,
+) -> Result<bool, GraphDecodeError> {
+    match fields.get(field) {
+        Some(Value::Integer(0)) => Ok(false),
+        Some(Value::Integer(1)) => Ok(true),
+        _ => field_error(field),
+    }
+}
+
+fn evidence_value(evidence: &[GraphEvidenceInput]) -> Value {
+    Value::Array(
+        evidence
+            .iter()
+            .map(|item| {
+                Value::Object(BTreeMap::from([
+                    ("event_id".to_owned(), string(item.event_id.as_str())),
+                    (
+                        "excerpt".to_owned(),
+                        item.excerpt.as_deref().map_or(Value::Null, string),
+                    ),
+                ]))
+            })
+            .collect(),
+    )
+}
+
+fn evidence_from_value(value: &Value) -> Result<Vec<GraphEvidenceInput>, GraphDecodeError> {
+    let Value::Array(values) = value else {
+        return field_error("evidence");
+    };
+    values
+        .iter()
+        .map(|value| {
+            let Value::Object(fields) = value else {
+                return field_error("evidence");
+            };
+            Ok(GraphEvidenceInput {
+                event_id: EventId::parse(text(fields, "event_id")?)
+                    .map_err(|_| GraphDecodeError::Field { field: "event_id" })?,
+                excerpt: optional_text(fields, "excerpt")?,
+            })
+        })
+        .collect()
+}
+
+fn scalar_nanos(value: f64) -> i64 {
+    #[allow(clippy::cast_possible_truncation)]
+    {
+        (value * NANOS).round() as i64
+    }
+}
+
 fn field_error<T>(field: &'static str) -> Result<T, GraphDecodeError> {
     Err(GraphDecodeError::Field { field })
 }
@@ -743,6 +1143,16 @@ fn hash_optional(hasher: &mut blake3::Hasher, name: &[u8], value: Option<&str>) 
         Some(value) => {
             hash_field(hasher, name, &[1]);
             hash_field(hasher, name, value.as_bytes());
+        }
+        None => hash_field(hasher, name, &[0]),
+    }
+}
+
+fn hash_optional_i64(hasher: &mut blake3::Hasher, name: &[u8], value: Option<i64>) {
+    match value {
+        Some(value) => {
+            hash_field(hasher, name, &[1]);
+            hash_field(hasher, name, &value.to_le_bytes());
         }
         None => hash_field(hasher, name, &[0]),
     }
