@@ -494,6 +494,28 @@ pub struct ClaimContradiction {
     pub overlap_to_ms: Option<i64>,
 }
 
+/// Bitemporal query for one canonical subject/predicate property.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimPropertyQuery {
+    /// Authorization boundary.
+    pub scope: RecallScope,
+    /// Canonical subject.
+    pub subject: String,
+    /// Canonical predicate.
+    pub predicate: String,
+    /// World-valid time being queried.
+    pub valid_at_ms: i64,
+    /// Transaction time up to which knowledge is visible.
+    pub known_at_ms: i64,
+}
+
+impl Claim {
+    pub(crate) fn valid_at(&self, at_ms: i64) -> bool {
+        self.valid_from_ms.is_none_or(|from| from <= at_ms)
+            && self.valid_to_ms.is_none_or(|to| at_ms < to)
+    }
+}
+
 /// Returns the overlap of two half-open validity intervals.
 pub(crate) fn validity_overlap(left: &Claim, right: &Claim) -> Option<(Option<i64>, Option<i64>)> {
     let from = match (left.valid_from_ms, right.valid_from_ms) {

@@ -42,8 +42,8 @@ use crate::affect_state::{AFFECT_STATE_KEY, AffectState};
 use crate::circadian_state::{CIRCADIAN_STATE_KEY, CircadianState};
 use crate::claim::{
     Claim, ClaimContradiction, ClaimContradictionKind, ClaimDecodeError, ClaimEvidence, ClaimId,
-    ClaimSupersession, ClaimSupersessionRelation, CreateClaimRequest, InvalidClaim,
-    SupersedeClaimRequest, validity_overlap,
+    ClaimPropertyQuery, ClaimSupersession, ClaimSupersessionRelation, CreateClaimRequest,
+    InvalidClaim, SupersedeClaimRequest, validity_overlap,
 };
 use crate::embedding_space::{EMBEDDING_SPACE_KEY, EmbeddingSpaceIdentity};
 use crate::entity_index::{EntityRecord, entity_key, entity_prefix};
@@ -1529,6 +1529,49 @@ impl MemoryEngine {
             }
         }
         Ok(contradictions)
+    }
+
+    /// Returns all claims for one property valid and known at the requested times.
+    ///
+    /// # Errors
+    ///
+    /// Fails on tenant mismatch, query, or durable decode failure.
+    pub fn claims_at(&self, query: ClaimPropertyQuery) -> Result<Vec<Claim>, MemoryEngineError> {
+        let mut claims: Vec<Claim> = self
+            .visible_claims(&query.scope)?
+            .into_iter()
+            .filter(|claim| claim.subject == query.subject && claim.predicate == query.predicate)
+            .filter(|claim| claim.recorded_at_ms <= query.known_at_ms)
+            .filter(|claim| claim.valid_at(query.valid_at_ms))
+            .collect();
+        claims.sort_by(|left, right| {
+            left.recorded_at_ms
+                .cmp(&right.recorded_at_ms)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(claims)
+    }
+
+    /// Returns current heads for one property, preserving all unresolved conflicts.
+    ///
+    /// # Errors
+    ///
+    /// Fails on tenant mismatch, query, or durable decode failure.
+    pub fn latest_claims(
+        &self,
+        query: ClaimPropertyQuery,
+    ) -> Result<Vec<Claim>, MemoryEngineError> {
+        let links = self.claim_supersessions(&query.scope)?;
+        let mut claims = self.claims_at(query.clone())?;
+        claims.retain(|claim| {
+            !links.iter().any(|link| {
+                link.original_claim_id == claim.id
+                    && link.relation.retires_original()
+                    && link.effective_at_ms <= query.valid_at_ms
+                    && link.recorded_at_ms <= query.known_at_ms
+            })
+        });
+        Ok(claims)
     }
 
     fn visible_claims(&self, scope: &RecallScope) -> Result<Vec<Claim>, MemoryEngineError> {
