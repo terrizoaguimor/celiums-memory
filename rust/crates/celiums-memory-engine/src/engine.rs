@@ -58,10 +58,11 @@ use crate::graph::{
     CanonicalEntity, CreateEntityRelationRequest, CreateEntityRequest, DefineEntityTypeRequest,
     DefineRelationTypeRequest, EntityAlias, EntityAliasRequest, EntityId, EntityLineage,
     EntityLineageRequest, EntityLineageType, EntityRelation, EntityResolution,
-    EntityTypeDefinition, GraphDecodeError, GraphMemoryBinding, GraphTraversalRequest,
-    GraphTraversalResult, GraphTruncationReason, InvalidGraph, RelationDirection,
-    RelationTypeDefinition, TraversedEdge, built_in_entity_type, normalize_label,
-    scope_visible as graph_scope_visible, validate_interval, validate_text as validate_graph_text,
+    EntityTypeDefinition, GraphDecodeError, GraphIntegrityIssue, GraphIntegrityReport,
+    GraphMemoryBinding, GraphTraversalRequest, GraphTraversalResult, GraphTruncationReason,
+    InvalidGraph, RelationDirection, RelationTypeDefinition, TraversedEdge, built_in_entity_type,
+    normalize_label, scope_visible as graph_scope_visible, validate_interval,
+    validate_text as validate_graph_text,
 };
 use crate::idempotency::{
     IdempotencyDecodeError, IdempotencyKey, RememberIdempotencyRecord, canonical_remember_hash,
@@ -112,6 +113,8 @@ const CONSOLIDATION_STRENGTH: f64 = 1.2;
 const MIN_IMPORTANCE: f64 = 0.01;
 /// Lifecycle pagination batch (getForLifecycle batchSize).
 const LIFECYCLE_BATCH: usize = 200;
+/// Transparent graph contribution for graph-derived candidates.
+const GRAPH_CANDIDATE_WEIGHT: f64 = 1.0;
 
 /// Failure while operating the memory engine.
 #[derive(Debug, Error)]
@@ -544,6 +547,8 @@ pub struct GraphScoredMemory {
     pub channels: ChannelScores,
     /// Final score with a transparent graph candidate floor.
     pub final_score: f64,
+    /// Explicit graph-path score (`1 / path length`), zero for direct candidates.
+    pub graph_score: f64,
     /// Policy-safe content.
     pub disclosed_content: Option<String>,
     /// Disclosure decision.
@@ -563,6 +568,17 @@ pub struct GraphRecallResponse {
     pub graph_truncation_reason: Option<GraphTruncationReason>,
     /// Visible edges inspected.
     pub graph_inspected_edges: usize,
+}
+
+/// Policy-safe entity lookup result.
+#[derive(Clone, Debug)]
+pub struct EntityMemoryView {
+    /// Visible memory metadata.
+    pub memory: Memory,
+    /// Governed content view.
+    pub disclosed_content: Option<String>,
+    /// Disclosure decision.
+    pub disclosure: celiums_cognition::DisclosureClass,
 }
 
 /// Scoped request to list durable memories without reactivation.
@@ -1973,6 +1989,40 @@ impl MemoryEngine {
             .collect()
     }
 
+    /// Memories bound to a legacy extracted entity, filtered by scope and disclosure.
+    pub fn entity_memories_scoped(
+        &self,
+        kind: celiums_cognition::EntityKind,
+        name: &str,
+        scope: &RecallScope,
+        authority: celiums_cognition::DisclosureAuthority,
+        purpose: MemoryPurpose,
+    ) -> Result<Vec<EntityMemoryView>, MemoryEngineError> {
+        self.require_tenant(&scope.tenant_id)?;
+        let Some(record) = self.hyphae.get_record(&entity_key(kind, name))? else {
+            return Ok(Vec::new());
+        };
+        let entity = EntityRecord::from_record(&record)?;
+        let mut views = Vec::new();
+        for id in entity.memory_ids {
+            let Some(memory) = self.get_memory(&id, scope)? else {
+                continue;
+            };
+            if memory.state == MemoryState::Archived {
+                continue;
+            }
+            let (disclosure, disclosed_content) = disclose_memory(&memory, authority, purpose);
+            if disclosure != celiums_cognition::DisclosureClass::Abstain {
+                views.push(EntityMemoryView {
+                    memory,
+                    disclosed_content,
+                    disclosure,
+                });
+            }
+        }
+        Ok(views)
+    }
+
     /// All indexed entities, ordered by kind then name.
     ///
     /// # Errors
@@ -2318,6 +2368,7 @@ impl MemoryEngine {
                         memory: scored.memory,
                         channels: scored.channels,
                         final_score: scored.final_score,
+                        graph_score: 0.0,
                         disclosed_content: scored.disclosed_content,
                         disclosure: scored.disclosure,
                         graph_path: Vec::new(),
@@ -2341,7 +2392,8 @@ impl MemoryEngine {
                 .current_state
                 .unwrap_or_else(|| self.affect_state(request.recall.now_ms));
             let cognitive = recall::score(&self.config.weights, &channels, current_state.arousal);
-            let final_score = cognitive.max(self.config.score_threshold);
+            let graph_score = 1.0 / path.len().saturating_sub(1).max(1) as f64;
+            let final_score = cognitive + GRAPH_CANDIDATE_WEIGHT * graph_score;
             let (disclosure, disclosed_content) = disclose_memory(
                 &memory,
                 request.recall.disclosure_authority,
@@ -2350,12 +2402,16 @@ impl MemoryEngine {
             if disclosure == celiums_cognition::DisclosureClass::Abstain {
                 continue;
             }
+            if final_score < self.config.score_threshold {
+                continue;
+            }
             results.insert(
                 memory_id,
                 GraphScoredMemory {
                     memory,
                     channels,
                     final_score,
+                    graph_score,
                     disclosed_content,
                     disclosure,
                     graph_path: path,
@@ -2377,6 +2433,126 @@ impl MemoryEngine {
             graph_truncation_reason: traversal.truncation_reason,
             graph_inspected_edges: traversal.inspected_edges,
         })
+    }
+
+    /// Performs an exhaustive offline integrity check over the visible graph.
+    pub fn graph_verify(
+        &self,
+        scope: &RecallScope,
+    ) -> Result<GraphIntegrityReport, MemoryEngineError> {
+        self.require_tenant(&scope.tenant_id)?;
+        let entities = self.visible_canonical_entities(scope)?;
+        let entity_ids: std::collections::BTreeSet<EntityId> =
+            entities.iter().map(|entity| entity.id.clone()).collect();
+        let relations = self
+            .scan_prefix(EntityRelation::prefix())?
+            .iter()
+            .map(EntityRelation::from_record)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|relation| graph_scope_visible(&relation.scope, scope))
+            .collect::<Vec<_>>();
+        let bindings = self
+            .scan_prefix(GraphMemoryBinding::prefix())?
+            .iter()
+            .map(GraphMemoryBinding::from_record)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|binding| graph_scope_visible(&binding.scope, scope))
+            .collect::<Vec<_>>();
+        let relation_types = self.relation_types(scope)?;
+        let mut issues = Vec::new();
+        for relation in &relations {
+            if !entity_ids.contains(&relation.source_entity_id) {
+                issues.push(GraphIntegrityIssue {
+                    kind: "missing_source_entity".to_owned(),
+                    subject_id: relation.id.to_string(),
+                });
+            }
+            if !entity_ids.contains(&relation.target_entity_id) {
+                issues.push(GraphIntegrityIssue {
+                    kind: "missing_target_entity".to_owned(),
+                    subject_id: relation.id.to_string(),
+                });
+            }
+            if relation.evidence.is_empty()
+                || relation.evidence_count != relation.evidence.len() as u64
+            {
+                issues.push(GraphIntegrityIssue {
+                    kind: "invalid_evidence_count".to_owned(),
+                    subject_id: relation.id.to_string(),
+                });
+            }
+            if !relation_types.iter().any(|definition| {
+                definition.relation_type == relation.relation_type
+                    && definition.ontology_version == relation.ontology_version
+            }) {
+                issues.push(GraphIntegrityIssue {
+                    kind: "missing_relation_type".to_owned(),
+                    subject_id: relation.id.to_string(),
+                });
+            }
+            for evidence in &relation.evidence {
+                if self.get_ingestion(&evidence.event_id, scope)?.is_none() {
+                    issues.push(GraphIntegrityIssue {
+                        kind: "missing_relation_evidence".to_owned(),
+                        subject_id: relation.id.to_string(),
+                    });
+                }
+            }
+        }
+        for entity in &entities {
+            if entity.evidence.is_empty() || entity.evidence_count != entity.evidence.len() as u64 {
+                issues.push(GraphIntegrityIssue {
+                    kind: "invalid_entity_evidence".to_owned(),
+                    subject_id: entity.id.to_string(),
+                });
+            }
+            for evidence in &entity.evidence {
+                if self.get_ingestion(&evidence.event_id, scope)?.is_none() {
+                    issues.push(GraphIntegrityIssue {
+                        kind: "missing_entity_evidence".to_owned(),
+                        subject_id: entity.id.to_string(),
+                    });
+                }
+            }
+        }
+        for binding in &bindings {
+            if !entity_ids.contains(&binding.entity_id) {
+                issues.push(GraphIntegrityIssue {
+                    kind: "missing_binding_entity".to_owned(),
+                    subject_id: binding.memory_id.clone(),
+                });
+            }
+            if self.get_memory(&binding.memory_id, scope)?.is_none() {
+                issues.push(GraphIntegrityIssue {
+                    kind: "missing_binding_memory".to_owned(),
+                    subject_id: binding.memory_id.clone(),
+                });
+            }
+        }
+        Ok(GraphIntegrityReport {
+            valid: issues.is_empty(),
+            entity_count: entities.len(),
+            relation_count: relations.len(),
+            binding_count: bindings.len(),
+            issues,
+        })
+    }
+
+    fn visible_canonical_entities(
+        &self,
+        scope: &RecallScope,
+    ) -> Result<Vec<CanonicalEntity>, MemoryEngineError> {
+        let entities = self
+            .scan_prefix(CanonicalEntity::prefix())?
+            .iter()
+            .map(CanonicalEntity::from_record)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(entities
+            .into_iter()
+            .filter(|entity| graph_scope_visible(&entity.scope, scope))
+            .collect())
     }
 
     fn graph_query_seeds(
@@ -3229,6 +3405,7 @@ impl MemoryEngine {
             });
         };
         self.unindex_entities(&memory)?;
+        self.delete_graph_memory_bindings(&memory.id, scope)?;
         self.hyphae
             .delete_vectors(Uuid::now_v7(), &memory_space(), &[memory.id.as_bytes()])?;
         self.hyphae
@@ -3237,6 +3414,21 @@ impl MemoryEngine {
             id: id.to_owned(),
             deleted: true,
         })
+    }
+
+    fn delete_graph_memory_bindings(
+        &mut self,
+        memory_id: &str,
+        scope: &RecallScope,
+    ) -> Result<(), MemoryEngineError> {
+        let records = self.scan_prefix(GraphMemoryBinding::prefix())?;
+        for record in records {
+            let binding = GraphMemoryBinding::from_record(&record)?;
+            if binding.memory_id == memory_id && graph_scope_visible(&binding.scope, scope) {
+                self.hyphae.delete_record(Uuid::now_v7(), &record.key)?;
+            }
+        }
+        Ok(())
     }
 
     /// Runs independent remember operations and returns every per-item result.

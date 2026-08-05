@@ -113,10 +113,10 @@ invalidated claims while historical recall preserves prior truth and proof.
 
 **Goal:** provide temporal graph memory without an external graph database.
 
-- Canonical entities, aliases, merge/split and configurable ontology.
-- Typed entity relations with validity windows and edge provenance.
-- Bounded graph traversal and graph-assisted recall.
-- Integrity and orphan checks.
+- [x] Canonical entities, aliases, merge/split and configurable ontology.
+- [x] Typed entity relations with validity windows and edge provenance.
+- [x] Bounded graph traversal and graph-assisted recall.
+- [x] Integrity and orphan checks.
 
 **Exit gate:** entity deduplication and multi-hop retrieval improve measured
 quality; every edge has provenance; traversal has bounded cost.

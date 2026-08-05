@@ -518,13 +518,20 @@ impl Session {
                     .ok_or("entity_kind must be one of person|technology|project")?;
                 let memories = self
                     .engine
-                    .entity_memories(kind, name)
+                    .entity_memories_scoped(
+                        kind,
+                        name,
+                        &recall_scope(arguments)?,
+                        parse_disclosure_authority(arguments)?,
+                        parse_memory_purpose(arguments, "disclosure_purpose")?,
+                    )
                     .map_err(|error| error.to_string())?;
                 Ok(json!({
-                    "memories": memories.iter().map(|memory| json!({
-                        "id": memory.id,
-                        "content": memory.content,
-                        "importance": memory.importance,
+                    "memories": memories.iter().map(|view| json!({
+                        "id": view.memory.id,
+                        "content": view.disclosed_content,
+                        "disclosure": format!("{:?}", view.disclosure).to_lowercase(),
+                        "importance": view.memory.importance,
                     })).collect::<Vec<_>>(),
                 }))
             }

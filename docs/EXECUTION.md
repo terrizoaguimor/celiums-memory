@@ -21,7 +21,7 @@ evidence and why the next action follows.
 | Field | Value |
 |---|---|
 | Active phase | Phase 5 - Embedded context graph |
-| Active item | P5.4 - Phase close (commit/push/CI) |
+| Active item | P5.5 - Phase close (commit/push/CI) |
 | Branch | `dev` |
 | Baseline commit | `a2ebae4` |
 | Canonical implementation | `rust/` |
@@ -156,6 +156,8 @@ stable and an isolated immutable server exists.
 | 2026-08-05 | P5.2 typed temporal edges | passed | 3 tests: ontology/evidence reopen, endpoint/evidence guards, bitemporal half-open query; clippy green |
 | 2026-08-05 | P5.3 bounded traversal | passed | 3 tests: deterministic two-hop, depth/edge truncation, cycle termination and foreign-scope rejection; clippy green |
 | 2026-08-05 | P5.4 graph-assisted recall | passed | multi-hop graph candidate raises Recall@5 0->1; direct recall suites unchanged; foreign binding rejected; clippy green |
+| 2026-08-05 | P5.5 graph integrity | passed | 14 Phase 5 tests; endpoint/ontology/evidence/binding verifier green; delete leaves zero graph binding residue |
+| 2026-08-05 | P5 disclosure hardening | passed | legacy `entity_lookup` now requires scope and returns governed content; MCP and graph suites green |
 
 ## Phase 3 checklist
 
@@ -184,8 +186,8 @@ stable and an isolated immutable server exists.
 | P5.1 | Canonical entities and aliases | closed | `20562bc`; CI `31053748249` green; journal `019fd416f0ee7ddc97212acfc7ade639` |
 | P5.2 | Temporal typed relations | closed | `d5e0f89`; CI `31054130677` green; journal `019fd41ca0de78e49d6cbbdc7e85c0ae` |
 | P5.3 | Bounded graph traversal | closed | `4a85fef`; CI `31054441287` green; journal `019fd42138aa78738c47d51226285064` |
-| P5.4 | Graph-assisted recall | verified locally | alias/direct seeds + bounded traversal + scoped memory bindings; explicit graph paths/cost; fixture Recall@5 improves 0->1; journal `019fd42ae36277cda00cb1f5543f3b77` |
-| P5.5 | Phase close | pending | dedup/multi-hop gates and integrity checks green |
+| P5.4 | Graph-assisted recall | closed | `6b511b7`; CI `31055060284` green; journal `019fd42ae36277cda00cb1f5543f3b77` |
+| P5.5 | Phase close | verified locally | 14 Phase 5 tests; dedup/ambiguity, temporal multi-hop, Recall@5 gain, orphan verification and delete cleanup green; journal `019fd432de9a7e67ae422a643619b81c` |
 
 ## Update protocol
 

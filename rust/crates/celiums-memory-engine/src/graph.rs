@@ -97,6 +97,8 @@ pub struct CanonicalEntity {
     pub recorded_at_ms: i64,
     /// Number of source evidence links.
     pub evidence_count: u64,
+    /// Immutable source evidence.
+    pub evidence: Vec<GraphEvidenceInput>,
 }
 
 impl CanonicalEntity {
@@ -117,6 +119,7 @@ impl CanonicalEntity {
             canonical_label: request.canonical_label.clone(),
             recorded_at_ms: request.recorded_at_ms,
             evidence_count: request.evidence.len() as u64,
+            evidence: request.evidence.clone(),
         }
     }
 
@@ -143,6 +146,7 @@ impl CanonicalEntity {
                 "evidence_count".to_owned(),
                 Value::Integer(i64::try_from(self.evidence_count).unwrap_or(i64::MAX)),
             ),
+            ("evidence".to_owned(), evidence_value(&self.evidence)),
         ]));
         Record::new(Self::key(&self.id), Value::Object(fields))
     }
@@ -156,6 +160,11 @@ impl CanonicalEntity {
             canonical_label: text(fields, "canonical_label")?,
             recorded_at_ms: integer(fields, "recorded_at_ms")?,
             evidence_count: unsigned(fields, "evidence_count")?,
+            evidence: evidence_from_value(
+                fields
+                    .get("evidence")
+                    .ok_or(GraphDecodeError::Field { field: "evidence" })?,
+            )?,
         })
     }
 }
@@ -273,6 +282,8 @@ pub struct EntityAlias {
     pub valid_to_ms: Option<i64>,
     /// Transaction time.
     pub recorded_at_ms: i64,
+    /// Optional immutable source evidence.
+    pub evidence: Vec<GraphEvidenceInput>,
 }
 
 impl EntityAlias {
@@ -284,6 +295,7 @@ impl EntityAlias {
             valid_from_ms: request.valid_from_ms,
             valid_to_ms: request.valid_to_ms,
             recorded_at_ms: request.recorded_at_ms,
+            evidence: request.evidence.clone(),
         }
     }
 
@@ -330,6 +342,7 @@ impl EntityAlias {
                 "recorded_at_ms".to_owned(),
                 Value::Integer(self.recorded_at_ms),
             ),
+            ("evidence".to_owned(), evidence_value(&self.evidence)),
         ]));
         Record::new(
             format!("{ALIAS_PREFIX}{}", hasher.finalize().to_hex()).into_bytes(),
@@ -349,6 +362,11 @@ impl EntityAlias {
                 valid_from_ms: optional_integer(fields, "valid_from_ms")?,
                 valid_to_ms: optional_integer(fields, "valid_to_ms")?,
                 recorded_at_ms: integer(fields, "recorded_at_ms")?,
+                evidence: evidence_from_value(
+                    fields
+                        .get("evidence")
+                        .ok_or(GraphDecodeError::Field { field: "evidence" })?,
+                )?,
             },
             scope_from_fields(fields)?,
             text(fields, "entity_type")?,
@@ -427,6 +445,8 @@ pub struct EntityLineage {
     pub effective_at_ms: i64,
     /// Transaction time.
     pub recorded_at_ms: i64,
+    /// Immutable evidence for the merge or split.
+    pub evidence: Vec<GraphEvidenceInput>,
 }
 
 /// Whether a relation has an intrinsic direction.
@@ -697,6 +717,30 @@ pub struct GraphMemoryBinding {
     pub recorded_at_ms: i64,
 }
 
+/// One graph integrity violation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GraphIntegrityIssue {
+    /// Stable machine-readable issue kind.
+    pub kind: String,
+    /// Offending record or referenced ID.
+    pub subject_id: String,
+}
+
+/// Complete explicit graph integrity report.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct GraphIntegrityReport {
+    /// True when no issue was found.
+    pub valid: bool,
+    /// Visible canonical entities inspected.
+    pub entity_count: usize,
+    /// Visible temporal relations inspected.
+    pub relation_count: usize,
+    /// Visible memory bindings inspected.
+    pub binding_count: usize,
+    /// All detected issues.
+    pub issues: Vec<GraphIntegrityIssue>,
+}
+
 impl GraphMemoryBinding {
     pub(crate) fn new(
         scope: RecallScope,
@@ -918,6 +962,7 @@ impl EntityLineage {
             lineage_type: request.lineage_type,
             effective_at_ms: request.effective_at_ms,
             recorded_at_ms: request.recorded_at_ms,
+            evidence: request.evidence.clone(),
         }
     }
 
@@ -955,6 +1000,7 @@ impl EntityLineage {
                 "recorded_at_ms".to_owned(),
                 Value::Integer(self.recorded_at_ms),
             ),
+            ("evidence".to_owned(), evidence_value(&self.evidence)),
         ]));
         Record::new(
             format!("{LINEAGE_PREFIX}{}", self.id).into_bytes(),
@@ -979,6 +1025,11 @@ impl EntityLineage {
                 )?,
                 effective_at_ms: integer(fields, "effective_at_ms")?,
                 recorded_at_ms: integer(fields, "recorded_at_ms")?,
+                evidence: evidence_from_value(
+                    fields
+                        .get("evidence")
+                        .ok_or(GraphDecodeError::Field { field: "evidence" })?,
+                )?,
             },
             scope_from_fields(fields)?,
         ))

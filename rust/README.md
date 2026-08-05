@@ -255,6 +255,20 @@ Roadmap Phase 4 adds temporal knowledge without rewriting source history:
   confidence. Event sequences expose source-time vs ingestion fallback, and
   semantic claim snapshots diff values/evidence without cognitive metadata.
 
+Roadmap Phase 5 embeds a temporal context graph in the same Hyphae store:
+
+- Stable `EntityId` records are separate from extracted mentions. Exact
+  temporal aliases resolve within scope, ambiguity is explicit, configurable
+  ontology types survive reopen, and merge/split events are append-only.
+- Versioned typed entity relations validate endpoint types, preserve immutable
+  event evidence, and use half-open valid time plus transaction time.
+- Deterministic BFS traversal enforces depth, edge and entity budgets and
+  reports truncation/cost. Graph-assisted recall uses it only for candidate
+  generation, retaining standard cognitive scoring and disclosure; the
+  multi-hop fixture improves Recall@5 from 0 to 1.
+- `graph_verify` checks endpoint, ontology, evidence and memory-binding
+  integrity. Hard-delete removes graph bindings so no orphan remains.
+
 The ordered platform plan and its mechanical exit gates live in
 [`docs/ROADMAP.md`](../docs/ROADMAP.md); execution evidence and the current
 work anchor live in [`docs/EXECUTION.md`](../docs/EXECUTION.md). Public
