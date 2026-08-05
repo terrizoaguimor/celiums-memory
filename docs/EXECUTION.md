@@ -23,7 +23,7 @@ evidence and why the next action follows.
 | Active phase | Phase 5 - Embedded context graph |
 | Active item | P5.1 - Canonical entities and aliases |
 | Branch | `dev` |
-| Baseline commit | `734c122` |
+| Baseline commit | `a2ebae4` |
 | Canonical implementation | `rust/` |
 | Storage substrate | Hyphae `=0.2.1` |
 | Production direction | Cloudflare, one Durable Object per tenant |
@@ -151,6 +151,7 @@ stable and an isolated immutable server exists.
 | 2026-08-05 | P4.5 phase gate | passed | knowledge update omits retired current claim; historical query preserves prior claim/evidence; half-open boundary verified; full workspace green |
 | 2026-08-05 | Phase 4 GitHub CI | passed | run `31048701559`; MSRV/stable Rust, Node tests, lint, typecheck, build, Trivy and secret scan green |
 | 2026-08-05 | P3 throughput CI hardening | passed locally | release-only explicit gate 18.10x; debug workspace suite no longer carries a noisy timing assertion |
+| 2026-08-05 | Post-close Phase 4 CI | passed | run `31049022086`; explicit release throughput gate and complete CI green |
 
 ## Phase 3 checklist
 
