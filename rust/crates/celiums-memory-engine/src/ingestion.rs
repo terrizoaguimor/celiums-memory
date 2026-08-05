@@ -10,6 +10,8 @@ use hyphae_query::{Record, Value};
 use thiserror::Error;
 use uuid::Uuid;
 
+use celiums_cognition::{ContentRole, MemoryPurpose, Scope};
+
 use crate::{
     ConversationId, MemoryIdentity, ProjectId, RecallScope, SessionId, SourceKind, TenantId, UserId,
 };
@@ -20,6 +22,7 @@ const INGESTION_KIND: &str = "ingestion_event";
 const INGESTION_KEY_PREFIX: &str = "__celiums/ingestion/event/";
 const BATCH_KIND: &str = "ingestion_batch";
 const BATCH_KEY_PREFIX: &str = "__celiums/ingestion/batch/";
+const NANOS: f64 = 1_000_000_000.0;
 
 macro_rules! ingestion_identity {
     ($name:ident, $label:literal) => {
@@ -368,6 +371,16 @@ pub struct IngestionEntry {
     pub actor: Option<String>,
     /// Exact raw content received at the ingestion boundary.
     pub content: String,
+    /// Tags to apply when materialized.
+    pub tags: Vec<String>,
+    /// Visibility of the resulting memory.
+    pub scope: Scope,
+    /// Optional importance override represented as deterministic nanos.
+    pub importance_nanos: Option<i64>,
+    /// Governance role of the raw content.
+    pub content_role: ContentRole,
+    /// Declared retention purpose.
+    pub purpose: MemoryPurpose,
     /// BLAKE3 of the exact raw content bytes.
     pub content_hash: String,
     /// Hash of all immutable event inputs used for conflict detection.
@@ -388,6 +401,10 @@ pub struct IngestionEntry {
     pub memory_id: Option<String>,
     /// Stable machine-readable error classification.
     pub error_code: Option<String>,
+    /// Last provider used for optional enrichment.
+    pub enrichment_provider: Option<String>,
+    /// Number of provider success/failure attempts.
+    pub enrichment_attempt_count: u64,
 }
 
 impl IngestionEntry {
@@ -429,6 +446,20 @@ impl IngestionEntry {
             ("user_id".to_owned(), string(self.identity.user_id.as_str())),
             ("source_kind".to_owned(), string(self.source_kind.as_str())),
             ("content".to_owned(), string(&self.content)),
+            (
+                "tags".to_owned(),
+                Value::Array(self.tags.iter().map(|tag| string(tag)).collect()),
+            ),
+            ("scope".to_owned(), string(self.scope.as_str())),
+            (
+                "importance_nanos".to_owned(),
+                self.importance_nanos.map_or(Value::Null, Value::Integer),
+            ),
+            (
+                "content_role".to_owned(),
+                string(content_role_name(self.content_role)),
+            ),
+            ("purpose".to_owned(), string(purpose_name(self.purpose))),
             ("content_hash".to_owned(), string(&self.content_hash)),
             ("request_hash".to_owned(), string(&self.request_hash)),
             (
@@ -485,6 +516,15 @@ impl IngestionEntry {
         );
         insert_optional(&mut fields, "memory_id", self.memory_id.as_deref());
         insert_optional(&mut fields, "error_code", self.error_code.as_deref());
+        insert_optional(
+            &mut fields,
+            "enrichment_provider",
+            self.enrichment_provider.as_deref(),
+        );
+        fields.insert(
+            "enrichment_attempt_count".to_owned(),
+            Value::Integer(i64::try_from(self.enrichment_attempt_count).unwrap_or(i64::MAX)),
+        );
         Record::new(Self::durable_key(&self.event_id), Value::Object(fields))
     }
 
@@ -533,6 +573,17 @@ impl IngestionEntry {
             source_uri: optional_text(fields, "source_uri")?,
             actor: optional_text(fields, "source_actor")?,
             content: text(fields, "content")?,
+            tags: string_array(fields, "tags")?,
+            scope: Scope::parse(&text(fields, "scope")?)
+                .ok_or(IngestionDecodeError::Field { field: "scope" })?,
+            importance_nanos: optional_integer(fields, "importance_nanos")?,
+            content_role: parse_content_role(&text(fields, "content_role")?).ok_or(
+                IngestionDecodeError::Field {
+                    field: "content_role",
+                },
+            )?,
+            purpose: parse_purpose(&text(fields, "purpose")?)
+                .ok_or(IngestionDecodeError::Field { field: "purpose" })?,
             content_hash: text(fields, "content_hash")?,
             request_hash: text(fields, "request_hash")?,
             event_at_ms: optional_integer(fields, "event_at_ms")?,
@@ -544,7 +595,17 @@ impl IngestionEntry {
                 .ok_or(IngestionDecodeError::Field { field: "status" })?,
             memory_id: optional_text(fields, "memory_id")?,
             error_code: optional_text(fields, "error_code")?,
+            enrichment_provider: optional_text(fields, "enrichment_provider")?,
+            enrichment_attempt_count: unsigned(fields, "enrichment_attempt_count")?,
         })
+    }
+}
+
+impl IngestionEntry {
+    /// Returns the optional importance override in the public scalar domain.
+    pub fn importance(&self) -> Option<f64> {
+        #[allow(clippy::cast_precision_loss)]
+        self.importance_nanos.map(|value| value as f64 / NANOS)
     }
 }
 
@@ -636,6 +697,58 @@ fn optional_identity<T>(
     optional_text(fields, field)?
         .map(|value| constructor(value).map_err(|_| IngestionDecodeError::Field { field }))
         .transpose()
+}
+
+fn string_array(
+    fields: &BTreeMap<String, Value>,
+    field: &'static str,
+) -> Result<Vec<String>, IngestionDecodeError> {
+    match fields.get(field) {
+        Some(Value::Array(values)) => values
+            .iter()
+            .map(|value| match value {
+                Value::String(value) => Ok(value.clone()),
+                _ => Err(IngestionDecodeError::Field { field }),
+            })
+            .collect(),
+        _ => Err(IngestionDecodeError::Field { field }),
+    }
+}
+
+fn content_role_name(role: ContentRole) -> &'static str {
+    match role {
+        ContentRole::Observation => "observation",
+        ContentRole::Description => "description",
+        ContentRole::OperationalRequest => "operational_request",
+    }
+}
+
+fn parse_content_role(value: &str) -> Option<ContentRole> {
+    match value {
+        "observation" => Some(ContentRole::Observation),
+        "description" => Some(ContentRole::Description),
+        "operational_request" => Some(ContentRole::OperationalRequest),
+        _ => None,
+    }
+}
+
+fn purpose_name(purpose: MemoryPurpose) -> &'static str {
+    match purpose {
+        MemoryPurpose::ConversationalContext => "conversational_context",
+        MemoryPurpose::Personalization => "personalization",
+        MemoryPurpose::TaskExecution => "task_execution",
+        MemoryPurpose::SafetyAudit => "safety_audit",
+    }
+}
+
+fn parse_purpose(value: &str) -> Option<MemoryPurpose> {
+    match value {
+        "conversational_context" => Some(MemoryPurpose::ConversationalContext),
+        "personalization" => Some(MemoryPurpose::Personalization),
+        "task_execution" => Some(MemoryPurpose::TaskExecution),
+        "safety_audit" => Some(MemoryPurpose::SafetyAudit),
+        _ => None,
+    }
 }
 
 fn scope_value(scope: &RecallScope) -> Value {

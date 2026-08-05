@@ -198,6 +198,12 @@ pub enum MemoryEngineError {
         /// Invalid input index.
         index: usize,
     },
+    /// A visible ingestion event could not be found for enrichment.
+    #[error("ingestion event `{event_id}` was not found in the requested scope")]
+    IngestionEventNotFound {
+        /// Missing stable event ID.
+        event_id: String,
+    },
     /// A durable ingestion ledger record was malformed.
     #[error(transparent)]
     IngestionDecode(#[from] IngestionDecodeError),
@@ -334,6 +340,23 @@ pub struct IngestConversationRequest {
     pub conversation_id: crate::ConversationId,
     /// Durable batch request.
     pub batch: IngestBatchRequest,
+}
+
+/// Provider output used to resume one durable raw event.
+#[derive(Clone, Debug)]
+pub struct EnrichEventRequest {
+    /// Stable engine event ID.
+    pub event_id: EventId,
+    /// Authorized event owner.
+    pub scope: RecallScope,
+    /// Provider/runtime name used for this attempt.
+    pub provider: String,
+    /// Provider-produced embedding.
+    pub embedding: Vec<f32>,
+    /// Complete embedding-space identity when not using the engine default.
+    pub embedding_space: Option<EmbeddingSpaceIdentity>,
+    /// Attempt time.
+    pub now_ms: i64,
 }
 
 /// A recall query.
@@ -939,6 +962,11 @@ impl MemoryEngine {
             source_uri: request.source_uri.clone(),
             actor: request.actor.clone(),
             content: request.content.clone(),
+            tags: request.tags.clone(),
+            scope: request.scope,
+            importance_nanos: request.importance.map(scalar_nanos),
+            content_role: request.content_role,
+            purpose: request.purpose,
             content_hash: blake3::hash(request.content.as_bytes())
                 .to_hex()
                 .to_string(),
@@ -951,6 +979,8 @@ impl MemoryEngine {
             status: IngestionStatus::Received,
             memory_id: None,
             error_code: None,
+            enrichment_provider: None,
+            enrichment_attempt_count: 0,
         };
         self.persist_ingestion(&entry)?;
         Ok(entry)
@@ -1009,6 +1039,122 @@ impl MemoryEngine {
         self.hyphae
             .put_record(deterministic_ingestion_uuid(entry), &entry.to_record())?;
         Ok(())
+    }
+
+    /// Records a provider failure without losing or changing the raw event.
+    ///
+    /// # Errors
+    ///
+    /// Fails on tenant/scope mismatch, missing event, or storage failure.
+    pub fn record_enrichment_failure(
+        &mut self,
+        event_id: &EventId,
+        scope: &RecallScope,
+        provider: &str,
+        error_code: &str,
+        now_ms: i64,
+    ) -> Result<IngestionEntry, MemoryEngineError> {
+        let mut entry = self.get_ingestion(event_id, scope)?.ok_or_else(|| {
+            MemoryEngineError::IngestionEventNotFound {
+                event_id: event_id.to_string(),
+            }
+        })?;
+        if entry.status.is_terminal() {
+            return Ok(entry);
+        }
+        entry.status = IngestionStatus::Failed;
+        entry.error_code = Some(error_code.to_owned());
+        entry.enrichment_provider = Some(provider.to_owned());
+        entry.enrichment_attempt_count = entry.enrichment_attempt_count.saturating_add(1);
+        entry.last_attempted_at_ms = now_ms;
+        self.persist_ingestion(&entry)?;
+        Ok(entry)
+    }
+
+    /// Resumes one raw event with provider enrichment.
+    ///
+    /// # Errors
+    ///
+    /// Fails on scope, provider output, governance, or storage failure. The raw
+    /// event remains durable and retryable after any provider/materialization failure.
+    pub fn enrich_event(
+        &mut self,
+        request: EnrichEventRequest,
+    ) -> Result<IngestionEntry, MemoryEngineError> {
+        let mut entry = self
+            .get_ingestion(&request.event_id, &request.scope)?
+            .ok_or_else(|| MemoryEngineError::IngestionEventNotFound {
+                event_id: request.event_id.to_string(),
+            })?;
+        if entry.status.is_terminal() {
+            return Ok(entry);
+        }
+        entry.enrichment_provider = Some(request.provider);
+        entry.enrichment_attempt_count = entry.enrichment_attempt_count.saturating_add(1);
+        entry.last_attempted_at_ms = request.now_ms;
+        self.persist_ingestion(&entry)?;
+
+        let result = self.materialize_ingestion_entry(
+            &entry,
+            request.embedding,
+            request.embedding_space,
+            request.now_ms,
+        );
+        match result {
+            Ok(memory) => {
+                entry.status = IngestionStatus::Materialized;
+                entry.memory_id = Some(memory.id);
+                entry.error_code = None;
+                self.persist_ingestion(&entry)?;
+                Ok(entry)
+            }
+            Err(error) => {
+                entry.status = IngestionStatus::Failed;
+                entry.error_code = Some(ingestion_error_code(&error).to_owned());
+                self.persist_ingestion(&entry)?;
+                Err(error)
+            }
+        }
+    }
+
+    fn materialize_ingestion_entry(
+        &mut self,
+        entry: &IngestionEntry,
+        embedding: Vec<f32>,
+        embedding_space: Option<EmbeddingSpaceIdentity>,
+        now_ms: i64,
+    ) -> Result<Memory, MemoryEngineError> {
+        let mut provenance = crate::Provenance::observed(
+            entry.source_kind,
+            &entry.content,
+            Some(entry.source_event_id.to_string()),
+            entry.source_uri.clone(),
+            entry.actor.clone(),
+        );
+        provenance.source_namespace = Some(entry.source_namespace.to_string());
+        provenance.event_id = Some(entry.event_id.to_string());
+        provenance.turn_id = entry.turn_id.as_ref().map(ToString::to_string);
+        self.remember(RememberRequest {
+            content: entry.content.clone(),
+            embedding,
+            tags: entry.tags.clone(),
+            scope: entry.scope,
+            importance: entry.importance(),
+            now_ms,
+            context: Some(RememberContext {
+                identity: entry.identity.clone(),
+                provenance,
+                event_at_ms: entry.event_at_ms,
+                ingested_at_ms: entry.first_ingested_at_ms,
+            }),
+            embedding_space,
+            idempotency_key: Some(
+                IdempotencyKey::new(format!("ingestion:{}", entry.event_id))
+                    .expect("event UUID yields a valid idempotency key"),
+            ),
+            content_role: entry.content_role,
+            purpose: entry.purpose,
+        })
     }
 
     /// Ingests a conversation after validating that every event belongs to it.
@@ -2590,6 +2736,13 @@ fn hours_between(earlier_ms: i64, later_ms: i64) -> f64 {
     minutes_between(earlier_ms, later_ms) / 60.0
 }
 
+fn scalar_nanos(value: f64) -> i64 {
+    #[allow(clippy::cast_possible_truncation)]
+    {
+        (value * 1_000_000_000.0).round() as i64
+    }
+}
+
 pub(crate) fn memory_visible_to(memory: &Memory, scope: &RecallScope) -> bool {
     if memory.identity.tenant_id != scope.tenant_id || memory.identity.user_id != scope.user_id {
         return false;
@@ -2828,7 +2981,12 @@ fn deterministic_ingestion_uuid(entry: &IngestionEntry) -> Uuid {
     hasher.update(entry.event_id.as_str().as_bytes());
     hasher.update(&entry.attempt_count.to_le_bytes());
     hasher.update(&entry.conflict_count.to_le_bytes());
+    hasher.update(&entry.enrichment_attempt_count.to_le_bytes());
+    hasher.update(&entry.last_attempted_at_ms.to_le_bytes());
     hasher.update(entry.status.as_str().as_bytes());
+    if let Some(provider) = &entry.enrichment_provider {
+        hasher.update(provider.as_bytes());
+    }
     if let Some(memory_id) = &entry.memory_id {
         hasher.update(memory_id.as_bytes());
     }

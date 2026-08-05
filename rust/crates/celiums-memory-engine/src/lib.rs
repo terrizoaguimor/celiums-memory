@@ -38,10 +38,10 @@ pub use embed::deterministic_embed;
 pub use embedding_space::{EmbeddingNormalization, EmbeddingSpaceIdentity, InvalidEmbeddingSpace};
 pub use engine::{
     ActionDecision, BatchRememberOutcome, BranchAbstention, CircadianStatus, ConsolidationReport,
-    DeleteMemoryOutcome, IngestBatchRequest, IngestConversationRequest, IngestEventRequest,
-    JournalRecallRequest, JournalWriteRequest, LifecycleReport, ListMemoriesRequest, MemoryEngine,
-    MemoryEngineError, MemoryPage, MemoryPatch, RecallConfig, RecallRequest, RecallResponse,
-    RememberRequest, ScoredMemory, UpdateMemoryRequest,
+    DeleteMemoryOutcome, EnrichEventRequest, IngestBatchRequest, IngestConversationRequest,
+    IngestEventRequest, JournalRecallRequest, JournalWriteRequest, LifecycleReport,
+    ListMemoriesRequest, MemoryEngine, MemoryEngineError, MemoryPage, MemoryPatch, RecallConfig,
+    RecallRequest, RecallResponse, RememberRequest, ScoredMemory, UpdateMemoryRequest,
 };
 pub use entity_index::EntityRecord;
 pub use filter::{
