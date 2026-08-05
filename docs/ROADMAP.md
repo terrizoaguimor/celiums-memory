@@ -69,14 +69,14 @@ entity, relation or derived record.
 
 **Goal:** retain legitimate sensitive context while governing its use.
 
-- Durable ethics trace and policy/profile version per memory.
-- Purpose, source, sensitivity, trust, poisoning risk and disclosure class.
-- `normal`, `sensitive`, `restricted` and `quarantined` treatment states.
-- Separate observation/description from operational intent and action.
-- Recall redaction, summarization, disclosure and abstention policies.
-- PII/secret detection, persistent-instruction defense and durable audit.
-- False-positive feedback and review workflow.
-- Signed/versioned optional Layer K precedent corpus; K remains flag-only.
+- [x] Durable ethics trace and policy/profile version per memory.
+- [x] Purpose, source, sensitivity, trust, poisoning risk and disclosure class.
+- [x] `normal`, `sensitive`, `restricted` and `quarantined` treatment states.
+- [x] Separate observation/description from operational intent and action.
+- [x] Recall redaction, summarization, disclosure and abstention policies.
+- [x] PII/secret detection, persistent-instruction defense and durable audit.
+- [x] False-positive feedback and append-only review workflow.
+- [x] Layer K remains flag-only; optional corpus signing remains a server integration concern.
 
 **Exit gate:** descriptive sensitive fixtures remain available under the
 correct policy; dangerous actions remain blocked; memory-poisoning fixtures

@@ -111,6 +111,8 @@ fn main() {
                     context: None,
                     embedding_space: None,
                     idempotency_key: None,
+                    content_role: celiums_cognition::ContentRole::Observation,
+                    purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
                 })
                 .expect("remember");
             stored += 1;
@@ -131,6 +133,8 @@ fn main() {
                 context: None,
                 embedding_space: None,
                 idempotency_key: None,
+                content_role: celiums_cognition::ContentRole::Observation,
+                purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
             })
             .expect("remember filler");
         stored += 1;
@@ -152,6 +156,8 @@ fn main() {
                 now_ms: NOW_MS + 1000,
                 scope: None,
                 embedding_space: None,
+                disclosure_authority: celiums_cognition::DisclosureAuthority::Agent,
+                disclosure_purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
             })
             .expect("recall");
         latencies_us.push(started.elapsed().as_micros());

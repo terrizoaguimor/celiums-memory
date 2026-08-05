@@ -31,6 +31,8 @@ fn remember(engine: &mut MemoryEngine, content: &str, at_ms: i64) -> celiums_mem
             context: None,
             embedding_space: None,
             idempotency_key: None,
+            content_role: celiums_cognition::ContentRole::Observation,
+            purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
         })
         .expect("remember")
 }
@@ -44,6 +46,8 @@ fn recall_request(query: &str, at_ms: i64) -> RecallRequest {
         now_ms: at_ms,
         scope: None,
         embedding_space: None,
+        disclosure_authority: celiums_cognition::DisclosureAuthority::Agent,
+        disclosure_purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
     }
 }
 

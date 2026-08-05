@@ -21,8 +21,9 @@ use std::path::Path;
 
 use celiums_cognition::{
     ActivityRhythm, ChannelScores, CircadianConfig, CircadianEvent, EthicsViolation, FactorWeights,
-    JournalEntryType, LimbicConfig, MemoryInfluence, MemoryState, Pad, RecallWeights, Scope,
-    SupersessionRelation, circadian, classify_importance, classify_memory_type, emotional_weight,
+    JournalEntryType, LimbicConfig, MemoryInfluence, MemoryPurpose, MemoryState, Pad,
+    RecallWeights, Scope, SourceTrust, SupersessionRelation, Treatment, circadian,
+    classify_governance, classify_importance, classify_memory_type, emotional_weight,
     evaluate_ethics, extract_entities, extract_pad, infer_activity_rhythm, is_valid_agent_id,
     limbic, recall, resonance, retention, retrievability,
 };
@@ -43,6 +44,11 @@ use crate::embedding_space::{EMBEDDING_SPACE_KEY, EmbeddingSpaceIdentity};
 use crate::entity_index::{EntityRecord, entity_key, entity_prefix};
 use crate::filter::authorization_filter;
 use crate::filter::{MemoryFilter, MemoryFilterError};
+use crate::governance_audit::{
+    AuditDecision, EthicsAuditEntry, FeedbackEntry, FeedbackKind, FeedbackResolution,
+    GovernedOperation, ReviewDisposition, ReviewState, audit_prefix, feedback_prefix,
+};
+use crate::governance_state::MemoryGovernance;
 use crate::idempotency::{
     IdempotencyDecodeError, IdempotencyKey, RememberIdempotencyRecord, canonical_remember_hash,
     deterministic_remember_uuid,
@@ -234,6 +240,10 @@ pub struct RememberRequest {
     pub embedding_space: Option<EmbeddingSpaceIdentity>,
     /// Caller key for retry-safe creation.
     pub idempotency_key: Option<IdempotencyKey>,
+    /// How the content functions: observation, description, or requested action.
+    pub content_role: celiums_cognition::ContentRole,
+    /// Why the memory is being retained.
+    pub purpose: MemoryPurpose,
 }
 
 /// A recall query.
@@ -257,6 +267,10 @@ pub struct RecallRequest {
     pub scope: Option<RecallScope>,
     /// Space that produced the query embedding. Engine default is used when absent.
     pub embedding_space: Option<EmbeddingSpaceIdentity>,
+    /// Authority used to derive the disclosed view.
+    pub disclosure_authority: celiums_cognition::DisclosureAuthority,
+    /// Purpose used to derive the disclosed view.
+    pub disclosure_purpose: MemoryPurpose,
 }
 
 /// One recalled memory with its full score breakdown — glass-box
@@ -269,6 +283,10 @@ pub struct ScoredMemory {
     pub channels: ChannelScores,
     /// Final cognitive score.
     pub final_score: f64,
+    /// Policy-safe content view; raw content remains internal to `memory`.
+    pub disclosed_content: Option<String>,
+    /// Disclosure decision applied to this result.
+    pub disclosure: celiums_cognition::DisclosureClass,
 }
 
 /// Why one retrieval branch produced no candidates.
@@ -359,6 +377,17 @@ pub struct BatchRememberOutcome {
     pub index: usize,
     /// Successful memory or typed error text.
     pub result: Result<Memory, String>,
+}
+
+/// Result of evaluating a proposed action without executing it.
+#[derive(Clone, Debug)]
+pub struct ActionDecision {
+    /// Whether policy permits the proposed action.
+    pub allowed: bool,
+    /// Full deterministic governance classification.
+    pub governance: celiums_cognition::GovernanceClassification,
+    /// Durable audit entry recording the decision.
+    pub audit: EthicsAuditEntry,
 }
 
 /// Circadian telemetry: what time the engine thinks it is for the
@@ -722,7 +751,15 @@ impl MemoryEngine {
         // a mode-dependent `passed`. Blocked content never reaches the
         // log, the vectors or the entity index.
         let evaluation = evaluate_ethics(&request.content, None);
-        if evaluation.enforcement_blocked {
+        let governance = classify_governance(
+            &request.content,
+            source_trust(request.context.as_ref()),
+            request.content_role,
+            request.purpose,
+            request.now_ms,
+            &evaluation,
+        );
+        if governance.enforcement == celiums_cognition::EnforcementDecision::Reject {
             let category = evaluation
                 .layer_a
                 .violations
@@ -767,11 +804,12 @@ impl MemoryEngine {
         );
         let memory = Memory {
             id: memory_id,
-            schema_version: 1,
+            schema_version: 2,
             revision: 1,
             identity: context.identity,
             provenance: context.provenance,
             embedding_space: Some(self.embedding_space.clone()),
+            governance: Some(MemoryGovernance(governance.clone())),
             importance: request
                 .importance
                 .map_or(classified_importance, |value| value.clamp(0.0, 1.0)),
@@ -806,34 +844,61 @@ impl MemoryEngine {
                     .ok_or_else(|| MemoryEngineError::BrokenIdempotencyReference {
                         id: existing.memory_id.clone(),
                     })?;
+                let existing_memory = Memory::from_record(&record)?;
                 // Repair a vector write interrupted after the atomic document commit.
-                self.hyphae.put_vectors(
-                    deterministic_phase_uuid(&self.tenant_id, key, "vector"),
-                    &memory_space(),
-                    &[(existing.memory_id.as_bytes().to_vec(), vector)],
-                )?;
-                return Ok(Memory::from_record(&record)?);
+                if existing_memory
+                    .governance
+                    .as_ref()
+                    .is_none_or(|state| state.0.treatment != Treatment::Quarantined)
+                {
+                    self.hyphae.put_vectors(
+                        deterministic_phase_uuid(&self.tenant_id, key, "vector"),
+                        &memory_space(),
+                        &[(existing.memory_id.as_bytes().to_vec(), vector)],
+                    )?;
+                }
+                return Ok(existing_memory);
             }
         }
 
+        let quarantined = governance.treatment == Treatment::Quarantined;
         if let Some(key) = &request.idempotency_key {
             let ledger = RememberIdempotencyRecord::new(memory.id.clone(), request_hash);
             self.hyphae.put_records(
                 deterministic_phase_uuid(&self.tenant_id, key, "documents"),
                 &[memory.to_record(), ledger.to_record(&self.tenant_id, key)],
             )?;
-            self.hyphae.put_vectors(
-                deterministic_phase_uuid(&self.tenant_id, key, "vector"),
-                &memory_space(),
-                &[(memory.key(), vector)],
-            )?;
+            if !quarantined {
+                self.hyphae.put_vectors(
+                    deterministic_phase_uuid(&self.tenant_id, key, "vector"),
+                    &memory_space(),
+                    &[(memory.key(), vector)],
+                )?;
+            }
         } else {
             self.hyphae
                 .put_record(Uuid::now_v7(), &memory.to_record())?;
-            self.hyphae
-                .put_vectors(Uuid::now_v7(), &memory_space(), &[(memory.key(), vector)])?;
+            if !quarantined {
+                self.hyphae.put_vectors(
+                    Uuid::now_v7(),
+                    &memory_space(),
+                    &[(memory.key(), vector)],
+                )?;
+            }
         }
-        self.index_entities(&memory)?;
+        if !quarantined {
+            self.index_entities(&memory)?;
+        }
+        self.append_audit(
+            GovernedOperation::Store,
+            &memory.id,
+            Some(&memory.provenance.content_hash),
+            request.purpose,
+            governance.treatment,
+            audit_decision_for_enforcement(governance.enforcement),
+            governance_reason_codes(&governance),
+            request.now_ms,
+        )?;
 
         // The stimulus moves the engine's own emotional state — the
         // amygdala pass of the TS pipeline (limbic.updateState on input).
@@ -999,14 +1064,24 @@ impl MemoryEngine {
                 resonance: resonance(current_state, memory.pad),
             };
             let final_score = recall::score(&self.config.weights, &channels, current_state.arousal);
+            let (disclosure, disclosed_content) = disclose_memory(
+                &memory,
+                request.disclosure_authority,
+                request.disclosure_purpose,
+            );
             scored.push(ScoredMemory {
                 memory,
                 channels,
                 final_score,
+                disclosed_content,
+                disclosure,
             });
         }
 
-        scored.retain(|entry| entry.final_score >= self.config.score_threshold);
+        scored.retain(|entry| {
+            entry.final_score >= self.config.score_threshold
+                && entry.disclosure != celiums_cognition::DisclosureClass::Abstain
+        });
         scored.sort_by(|left, right| {
             right
                 .final_score
@@ -1050,6 +1125,158 @@ impl MemoryEngine {
             requested: requested.to_string(),
             engine: self.tenant_id.to_string(),
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn append_audit(
+        &mut self,
+        operation: GovernedOperation,
+        subject_id: &str,
+        content_digest: Option<&str>,
+        purpose: MemoryPurpose,
+        treatment: Treatment,
+        decision: AuditDecision,
+        reason_codes: Vec<String>,
+        now_ms: i64,
+    ) -> Result<EthicsAuditEntry, MemoryEngineError> {
+        let previous_hash = self.audit_entries()?.last().map(|entry| entry.hash.clone());
+        let mut entry = EthicsAuditEntry {
+            id: Uuid::now_v7().to_string(),
+            tenant_id: self.tenant_id.to_string(),
+            operation,
+            subject_id: subject_id.to_owned(),
+            content_digest: content_digest.map(str::to_owned),
+            purpose: purpose_name(purpose).to_owned(),
+            treatment: treatment_name(treatment).to_owned(),
+            policy_id: celiums_cognition::GOVERNANCE_POLICY_ID.to_owned(),
+            policy_version: celiums_cognition::GOVERNANCE_POLICY_VERSION.to_owned(),
+            decision,
+            reason_codes,
+            review_state: ReviewState::Unreviewed,
+            actor_id: None,
+            occurred_at_ms: now_ms,
+            previous_hash,
+            hash: String::new(),
+        };
+        entry.hash = entry.compute_hash();
+        self.hyphae.put_record(Uuid::now_v7(), &entry.to_record())?;
+        Ok(entry)
+    }
+
+    /// Lists this tenant's append-only ethics audit entries.
+    pub fn audit_entries(&self) -> Result<Vec<EthicsAuditEntry>, MemoryEngineError> {
+        self.scan_prefix(&audit_prefix())?
+            .iter()
+            .map(|record| EthicsAuditEntry::from_record(record).map_err(Into::into))
+            .collect()
+    }
+
+    /// Verifies this tenant's ethics audit hash chain.
+    pub fn audit_verify_chain(&self) -> Result<crate::AuditChainReport, MemoryEngineError> {
+        Ok(crate::verify_audit_chain(
+            self.tenant_id.as_str(),
+            &self.audit_entries()?,
+        ))
+    }
+
+    /// Evaluates and audits a proposed action without executing or storing it.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the durable audit entry cannot be written.
+    pub fn evaluate_action(
+        &mut self,
+        content: &str,
+        source_kind: crate::SourceKind,
+        purpose: MemoryPurpose,
+        now_ms: i64,
+    ) -> Result<ActionDecision, MemoryEngineError> {
+        let ethics = evaluate_ethics(content, None);
+        let context = RememberContext {
+            identity: crate::MemoryIdentity::local(),
+            provenance: crate::Provenance::observed(source_kind, content, None, None, None),
+            event_at_ms: None,
+            ingested_at_ms: now_ms,
+        };
+        let governance = classify_governance(
+            content,
+            source_trust(Some(&context)),
+            celiums_cognition::ContentRole::OperationalRequest,
+            purpose,
+            now_ms,
+            &ethics,
+        );
+        let allowed = matches!(
+            governance.enforcement,
+            celiums_cognition::EnforcementDecision::Allow
+                | celiums_cognition::EnforcementDecision::AllowRestricted
+        );
+        let content_digest = blake3::hash(content.as_bytes()).to_hex().to_string();
+        let audit = self.append_audit(
+            GovernedOperation::Ingest,
+            "action",
+            Some(&content_digest),
+            purpose,
+            governance.treatment,
+            audit_decision_for_enforcement(governance.enforcement),
+            governance_reason_codes(&governance),
+            now_ms,
+        )?;
+        Ok(ActionDecision {
+            allowed,
+            governance,
+            audit,
+        })
+    }
+
+    /// Appends feedback about an audit decision without modifying history.
+    pub fn submit_ethics_feedback(
+        &mut self,
+        audit_entry_id: &str,
+        kind: FeedbackKind,
+        reason_code: &str,
+        submitted_by: Option<String>,
+        now_ms: i64,
+    ) -> Result<FeedbackEntry, MemoryEngineError> {
+        let entry = FeedbackEntry {
+            id: Uuid::now_v7().to_string(),
+            tenant_id: self.tenant_id.to_string(),
+            audit_entry_id: audit_entry_id.to_owned(),
+            kind,
+            reason_code: reason_code.to_owned(),
+            submitted_by,
+            submitted_at_ms: now_ms,
+        };
+        self.hyphae.put_record(Uuid::now_v7(), &entry.to_record())?;
+        Ok(entry)
+    }
+
+    /// Appends a review resolution; the original feedback remains immutable.
+    pub fn resolve_ethics_feedback(
+        &mut self,
+        feedback_entry_id: &str,
+        disposition: ReviewDisposition,
+        reason_code: &str,
+        reviewed_by: Option<String>,
+        now_ms: i64,
+    ) -> Result<FeedbackResolution, MemoryEngineError> {
+        let resolution = FeedbackResolution {
+            id: Uuid::now_v7().to_string(),
+            tenant_id: self.tenant_id.to_string(),
+            feedback_entry_id: feedback_entry_id.to_owned(),
+            disposition,
+            reason_code: reason_code.to_owned(),
+            reviewed_by,
+            resolved_at_ms: now_ms,
+        };
+        self.hyphae
+            .put_record(Uuid::now_v7(), &resolution.to_record())?;
+        Ok(resolution)
+    }
+
+    /// Lists append-only feedback and resolution records as canonical documents.
+    pub fn ethics_feedback_records(&self) -> Result<Vec<hyphae_query::Record>, MemoryEngineError> {
+        self.scan_prefix(&feedback_prefix())
     }
 
     /// Creates (or reuses) a verified snapshot of the current
@@ -1429,6 +1656,8 @@ impl MemoryEngine {
                         context: None,
                         embedding_space: None,
                         idempotency_key: None,
+                        content_role: celiums_cognition::ContentRole::Observation,
+                        purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
                     })?;
                     // Consolidation-born memories start consolidated.
                     let mut consolidated = memory;
@@ -1896,12 +2125,26 @@ fn migrate_legacy_memories(
         let mut migrated = Vec::new();
         for record in &result.rows {
             let mut memory = Memory::from_record(record)?;
-            if memory.schema_version >= 1 && memory.embedding_space.is_some() {
+            if memory.schema_version >= 2
+                && memory.embedding_space.is_some()
+                && memory.governance.is_some()
+            {
                 continue;
             }
-            memory.schema_version = 1;
+            memory.schema_version = 2;
             memory.identity.tenant_id = tenant_id.clone();
             memory.embedding_space = Some(embedding_space.clone());
+            if memory.governance.is_none() {
+                let evaluation = evaluate_ethics(&memory.content, None);
+                memory.governance = Some(MemoryGovernance(classify_governance(
+                    &memory.content,
+                    SourceTrust::Unknown,
+                    celiums_cognition::ContentRole::Description,
+                    MemoryPurpose::SafetyAudit,
+                    memory.created_at_ms,
+                    &evaluation,
+                )));
+            }
             memory.updated_at_ms = memory.updated_at_ms.max(memory.created_at_ms);
             migrated.push(memory.to_record());
         }
@@ -1976,6 +2219,95 @@ pub(crate) fn memory_visible_to(memory: &Memory, scope: &RecallScope) -> bool {
                 && memory.identity.session_id == scope.session_id
         }
     }
+}
+
+pub(crate) fn disclose_memory(
+    memory: &Memory,
+    authority: celiums_cognition::DisclosureAuthority,
+    purpose: MemoryPurpose,
+) -> (celiums_cognition::DisclosureClass, Option<String>) {
+    use celiums_cognition::DisclosureClass;
+    let Some(governance) = &memory.governance else {
+        return (
+            DisclosureClass::Restrict,
+            Some(celiums_cognition::RESTRICTED_SUMMARY.to_owned()),
+        );
+    };
+    let decision =
+        celiums_cognition::disclosure_decision(governance.0.treatment, authority, purpose);
+    let content = match decision.class {
+        DisclosureClass::Include => Some(memory.content.clone()),
+        DisclosureClass::Redact => Some(celiums_cognition::redact(
+            &memory.content,
+            &governance.0.trace.redaction_spans,
+        )),
+        DisclosureClass::Summarize | DisclosureClass::Restrict => decision.summary,
+        DisclosureClass::Abstain => None,
+    };
+    (decision.class, content)
+}
+
+fn source_trust(context: Option<&RememberContext>) -> SourceTrust {
+    match context.map(|context| context.provenance.source_kind) {
+        Some(crate::SourceKind::User) => SourceTrust::UserProvided,
+        Some(crate::SourceKind::System) => SourceTrust::Trusted,
+        Some(
+            crate::SourceKind::Assistant
+            | crate::SourceKind::Tool
+            | crate::SourceKind::Document
+            | crate::SourceKind::Benchmark
+            | crate::SourceKind::Legacy,
+        ) => SourceTrust::External,
+        None => SourceTrust::UserProvided,
+    }
+}
+
+fn treatment_name(treatment: Treatment) -> &'static str {
+    match treatment {
+        Treatment::Normal => "normal",
+        Treatment::Sensitive => "sensitive",
+        Treatment::Restricted => "restricted",
+        Treatment::Quarantined => "quarantined",
+    }
+}
+
+fn purpose_name(purpose: MemoryPurpose) -> &'static str {
+    match purpose {
+        MemoryPurpose::ConversationalContext => "conversational_context",
+        MemoryPurpose::Personalization => "personalization",
+        MemoryPurpose::TaskExecution => "task_execution",
+        MemoryPurpose::SafetyAudit => "safety_audit",
+    }
+}
+
+fn audit_decision_for_enforcement(
+    decision: celiums_cognition::EnforcementDecision,
+) -> AuditDecision {
+    match decision {
+        celiums_cognition::EnforcementDecision::Allow => AuditDecision::Allow,
+        celiums_cognition::EnforcementDecision::AllowRestricted => AuditDecision::Restrict,
+        celiums_cognition::EnforcementDecision::Reject => AuditDecision::Reject,
+        celiums_cognition::EnforcementDecision::Quarantine => AuditDecision::Quarantine,
+    }
+}
+
+fn governance_reason_codes(
+    governance: &celiums_cognition::GovernanceClassification,
+) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if governance.trace.ethics_enforcement_blocked {
+        reasons.push("ethics_enforcement".to_owned());
+    }
+    if governance.poisoning_risk != celiums_cognition::PoisoningRisk::None {
+        reasons.push("memory_poisoning".to_owned());
+    }
+    if !governance.trace.pii.is_empty() {
+        reasons.push("pii".to_owned());
+    }
+    if !governance.trace.secrets.is_empty() {
+        reasons.push("secret".to_owned());
+    }
+    reasons
 }
 
 fn validate_scope_identity(

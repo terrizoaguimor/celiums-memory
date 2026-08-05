@@ -20,6 +20,8 @@ mod embedding_space;
 mod engine;
 mod entity_index;
 mod filter;
+mod governance_audit;
+mod governance_state;
 mod idempotency;
 mod identity;
 mod journal;
@@ -32,7 +34,7 @@ pub use circadian_state::CircadianState;
 pub use embed::deterministic_embed;
 pub use embedding_space::{EmbeddingNormalization, EmbeddingSpaceIdentity, InvalidEmbeddingSpace};
 pub use engine::{
-    BatchRememberOutcome, BranchAbstention, CircadianStatus, ConsolidationReport,
+    ActionDecision, BatchRememberOutcome, BranchAbstention, CircadianStatus, ConsolidationReport,
     DeleteMemoryOutcome, JournalRecallRequest, JournalWriteRequest, LifecycleReport,
     ListMemoriesRequest, MemoryEngine, MemoryEngineError, MemoryPage, MemoryPatch, RecallConfig,
     RecallRequest, RecallResponse, RememberRequest, ScoredMemory, UpdateMemoryRequest,
@@ -41,6 +43,11 @@ pub use entity_index::EntityRecord;
 pub use filter::{
     FilterOperator, FilterValue, MemoryField, MemoryFilter, MemoryFilterError, MemoryPredicate,
 };
+pub use governance_audit::{
+    AuditChainReport, AuditDecision, EthicsAuditEntry, FeedbackEntry, FeedbackKind,
+    FeedbackResolution, GovernedOperation, ReviewDisposition, ReviewState, verify_audit_chain,
+};
+pub use governance_state::MemoryGovernance;
 pub use idempotency::{IdempotencyDecodeError, IdempotencyKey, InvalidIdempotencyKey};
 pub use identity::{
     AgentId, ConversationId, InvalidIdentity, MemoryIdentity, ProjectId, Provenance, RecallScope,

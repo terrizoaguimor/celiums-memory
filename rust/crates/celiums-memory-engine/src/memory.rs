@@ -14,11 +14,11 @@ use celiums_cognition::{EntityKind, ExtractedEntity, MemoryState, MemoryType, Pa
 use hyphae_query::{Record, Value};
 use thiserror::Error;
 
-use crate::EmbeddingSpaceIdentity;
 use crate::identity::{
     AgentId, ConversationId, MemoryIdentity, ProjectId, Provenance, SessionId, SourceKind,
     TenantId, UserId,
 };
+use crate::{EmbeddingSpaceIdentity, MemoryGovernance};
 
 /// Nanos scale shared with Hyphae score semantics.
 const NANOS: f64 = 1_000_000_000.0;
@@ -38,6 +38,8 @@ pub struct Memory {
     pub provenance: Provenance,
     /// Embedding space used by this memory's vector.
     pub embedding_space: Option<EmbeddingSpaceIdentity>,
+    /// Durable policy classification and disclosure treatment.
+    pub governance: Option<MemoryGovernance>,
     /// Raw remembered text.
     pub content: String,
     /// Importance in `[0, 1]`.
@@ -161,6 +163,12 @@ impl Memory {
                 Value::String(space.normalization.as_str().to_owned()),
             );
         }
+        fields.insert(
+            "governance".to_owned(),
+            self.governance
+                .as_ref()
+                .map_or(Value::Null, MemoryGovernance::to_value),
+        );
         fields.insert("content".to_owned(), Value::String(self.content.clone()));
         fields.insert("importance".to_owned(), nanos_value(self.importance));
         fields.insert("valence".to_owned(), nanos_value(self.pad.pleasure));
@@ -259,6 +267,7 @@ impl Memory {
             identity: identity_fields(fields)?,
             provenance: provenance_fields(fields, &content)?,
             embedding_space: embedding_space_fields(fields)?,
+            governance: governance_field(fields)?,
             content,
             importance: nanos_field(fields, "importance")?,
             pad: Pad {
@@ -408,6 +417,15 @@ fn embedding_space_fields(
         })
 }
 
+fn governance_field(
+    fields: &BTreeMap<String, Value>,
+) -> Result<Option<MemoryGovernance>, MemoryDecodeError> {
+    match fields.get("governance") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => MemoryGovernance::from_value(value).map(Some),
+    }
+}
+
 fn entities_field(
     fields: &BTreeMap<String, Value>,
 ) -> Result<Vec<ExtractedEntity>, MemoryDecodeError> {
@@ -534,6 +552,7 @@ mod tests {
                 )
                 .expect("embedding identity"),
             ),
+            governance: None,
             content: "We decided to port the engine to Rust".to_owned(),
             importance: 0.85,
             pad: Pad {
@@ -623,6 +642,7 @@ mod tests {
             "embedding_revision",
             "embedding_dimension",
             "embedding_normalization",
+            "governance",
         ] {
             fields.remove(field);
         }

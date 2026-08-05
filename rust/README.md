@@ -211,6 +211,16 @@ Phase 3 (this tree): the ethics pipeline and the biological clock —
 
 MCP: 17 tools, including scoped CRUD and batch ingestion.
 
+Phase 4 (roadmap P2): ethics-native governance — every memory now carries a
+durable, versioned policy trace with purpose, trust, sensitivity, poisoning
+risk and one of `normal` / `sensitive` / `restricted` / `quarantined`.
+Sensitive observations are retained instead of discarded, while operational
+requests are evaluated separately. Recall and time-travel expose governed
+views (include, redact, summarize, restrict or abstain); external persistent
+instructions never enter vector/entity indexes. Deterministic EN/ES poisoning,
+PII and secret detection runs offline. Decisions are recorded in a per-tenant
+BLAKE3 audit chain with append-only feedback and review resolution records.
+
 The ordered platform plan and its mechanical exit gates live in
 [`docs/ROADMAP.md`](../docs/ROADMAP.md); execution evidence and the current
 work anchor live in [`docs/EXECUTION.md`](../docs/EXECUTION.md). Public

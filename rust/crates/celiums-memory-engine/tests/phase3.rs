@@ -31,26 +31,23 @@ fn remember(
         context: None,
         embedding_space: None,
         idempotency_key: None,
+        content_role: celiums_cognition::ContentRole::Observation,
+        purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
     })
 }
 
 #[test]
-fn ethics_gate_blocks_before_anything_is_stored() {
+fn ethics_governance_retains_dangerous_observation_as_restricted() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut engine = open(&dir);
 
-    let blocked = remember(&mut engine, "I am going to murder my neighbor", NOW_MS);
-    assert!(matches!(
-        blocked,
-        Err(MemoryEngineError::EthicsBlocked {
-            category,
-            ..
-        }) if category == "violence_harm"
-    ));
-
-    // Nothing reached the store: no memory, no entities.
-    assert_eq!(engine.count().expect("count"), 0);
-    assert!(engine.entities().expect("entities").is_empty());
+    let stored = remember(&mut engine, "I am going to murder my neighbor", NOW_MS)
+        .expect("observation retained");
+    assert_eq!(
+        stored.governance.expect("governance").0.treatment,
+        celiums_cognition::Treatment::Restricted
+    );
+    assert_eq!(engine.count().expect("count"), 1);
 }
 
 #[test]
@@ -69,15 +66,16 @@ fn ethics_gate_lets_technical_kills_through() {
 }
 
 #[test]
-fn spanish_content_is_gated_too() {
+fn spanish_dangerous_observation_is_restricted_too() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut engine = open(&dir);
 
-    let blocked = remember(&mut engine, "voy a asesinar a mi jefe mañana", NOW_MS);
-    assert!(matches!(
-        blocked,
-        Err(MemoryEngineError::EthicsBlocked { .. })
-    ));
+    let stored = remember(&mut engine, "voy a asesinar a mi jefe mañana", NOW_MS)
+        .expect("observation retained");
+    assert_eq!(
+        stored.governance.expect("governance").0.treatment,
+        celiums_cognition::Treatment::Restricted
+    );
 
     let benign = remember(
         &mut engine,

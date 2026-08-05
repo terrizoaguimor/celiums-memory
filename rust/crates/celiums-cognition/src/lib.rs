@@ -21,6 +21,7 @@ pub mod ethics_layer_c;
 pub mod ethics_layer_k;
 pub mod ethics_pipeline;
 pub mod ethics_structural;
+pub mod governance;
 pub mod importance;
 pub mod journal;
 pub mod limbic;
@@ -48,6 +49,13 @@ pub use ethics_layer_k::{
     KnowledgeMatch, LayerKDecision, LayerKResult, SIM_FLOOR, evaluate_layer_k,
 };
 pub use ethics_pipeline::{FullEthicsEvaluation, evaluate_ethics};
+pub use governance::{
+    ContentRole, DisclosureAuthority, DisclosureClass, DisclosureDecision, EnforcementDecision,
+    GOVERNANCE_POLICY_ID, GOVERNANCE_POLICY_VERSION, GovernanceClassification, GovernanceTrace,
+    MemoryPurpose, PiiKind, PoisoningRisk, RESTRICTED_SUMMARY, RedactionCategory, RedactionSpan,
+    SecretKind, Sensitivity, SourceTrust, Treatment, TrustLevel, classify_governance,
+    disclosure_decision, policy_hash, redact,
+};
 pub use importance::{ImportanceSignals, classify_importance, content_boost, score_importance};
 pub use journal::{JournalEntryType, SupersessionRelation, is_valid_agent_id};
 pub use limbic::{LimbicConfig, MemoryInfluence, average_memory_pad, emotion_label};

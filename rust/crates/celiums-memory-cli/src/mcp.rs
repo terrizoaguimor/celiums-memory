@@ -210,6 +210,8 @@ impl Session {
                     .map(IdempotencyKey::new)
                     .transpose()
                     .map_err(|error| error.to_string())?,
+                content_role: parse_content_role(arguments)?,
+                purpose: parse_memory_purpose(arguments, "purpose")?,
             })
             .map_err(|error| error.to_string())?;
         Ok(json!({
@@ -247,6 +249,8 @@ impl Session {
                 now_ms: now_ms(),
                 scope: Some(scope),
                 embedding_space: Some(embedding_space),
+                disclosure_authority: parse_disclosure_authority(arguments)?,
+                disclosure_purpose: parse_memory_purpose(arguments, "disclosure_purpose")?,
             })
             .map_err(|error| error.to_string())?;
         Ok(json!({
@@ -445,6 +449,8 @@ impl Session {
                     .map(IdempotencyKey::new)
                     .transpose()
                     .map_err(|error| error.to_string())?,
+                content_role: parse_content_role(item)?,
+                purpose: parse_memory_purpose(item, "purpose")?,
                 content,
                 tags: string_array(item, "tags"),
                 scope: optional_scope(item)?.unwrap_or_default(),
@@ -543,6 +549,8 @@ impl Session {
                 now_ms: now_ms(),
                 scope: Some(recall_scope(arguments)?),
                 embedding_space: Some(self.embedding_space_from(arguments)?),
+                disclosure_authority: parse_disclosure_authority(arguments)?,
+                disclosure_purpose: parse_memory_purpose(arguments, "disclosure_purpose")?,
             },
         )
         .map_err(|error| error.to_string())?;
@@ -628,7 +636,8 @@ impl Session {
 fn scored_json(scored: &ScoredMemory) -> Value {
     json!({
         "id": scored.memory.id,
-        "content": scored.memory.content,
+        "content": scored.disclosed_content,
+        "disclosure": format!("{:?}", scored.disclosure).to_lowercase(),
         "score": scored.final_score,
         "importance": scored.memory.importance,
         "memory_type": scored.memory.memory_type.as_str(),
@@ -667,6 +676,7 @@ fn memory_json(memory: &celiums_memory_engine::Memory) -> Value {
         "updated_at_ms": memory.updated_at_ms,
         "event_at_ms": memory.event_at_ms,
         "ingested_at_ms": memory.ingested_at_ms,
+        "governance": memory.governance.as_ref().map(governance_json),
     })
 }
 
@@ -703,6 +713,8 @@ fn tool_definitions() -> Vec<Value> {
                 ,"embedding_model": { "type": "string" }
                 ,"embedding_revision": { "type": "string" }
                 ,"idempotency_key": { "type": "string", "minLength": 1, "maxLength": 255 }
+                ,"content_role": { "type": "string", "enum": ["observation","description","operational_request"] }
+                ,"purpose": { "type": "string", "enum": ["conversational_context","personalization","task_execution","safety_audit"] }
             },
             "required": ["content"]
         })
@@ -731,6 +743,8 @@ fn tool_definitions() -> Vec<Value> {
                     ,"embedding_provider": { "type": "string" }
                     ,"embedding_model": { "type": "string" }
                     ,"embedding_revision": { "type": "string" }
+                    ,"disclosure_authority": { "type": "string", "enum": ["owner","agent","auditor","third_party"] }
+                    ,"disclosure_purpose": { "type": "string", "enum": ["conversational_context","personalization","task_execution","safety_audit"] }
                 },
                 "required": ["query"]
             }),
@@ -966,6 +980,49 @@ fn optional_scope(arguments: &Value) -> Result<Option<Scope>, String> {
     }
 }
 
+fn parse_content_role(arguments: &Value) -> Result<celiums_cognition::ContentRole, String> {
+    match arguments.get("content_role").and_then(Value::as_str) {
+        None | Some("observation") => Ok(celiums_cognition::ContentRole::Observation),
+        Some("description") => Ok(celiums_cognition::ContentRole::Description),
+        Some("operational_request") => Ok(celiums_cognition::ContentRole::OperationalRequest),
+        Some(_) => {
+            Err("content_role must be observation|description|operational_request".to_owned())
+        }
+    }
+}
+
+fn parse_memory_purpose(
+    arguments: &Value,
+    field: &str,
+) -> Result<celiums_cognition::MemoryPurpose, String> {
+    match arguments.get(field).and_then(Value::as_str) {
+        None | Some("conversational_context") => {
+            Ok(celiums_cognition::MemoryPurpose::ConversationalContext)
+        }
+        Some("personalization") => Ok(celiums_cognition::MemoryPurpose::Personalization),
+        Some("task_execution") => Ok(celiums_cognition::MemoryPurpose::TaskExecution),
+        Some("safety_audit") => Ok(celiums_cognition::MemoryPurpose::SafetyAudit),
+        Some(_) => Err(format!(
+            "{field} must be conversational_context|personalization|task_execution|safety_audit"
+        )),
+    }
+}
+
+fn parse_disclosure_authority(
+    arguments: &Value,
+) -> Result<celiums_cognition::DisclosureAuthority, String> {
+    match arguments
+        .get("disclosure_authority")
+        .and_then(Value::as_str)
+    {
+        None | Some("agent") => Ok(celiums_cognition::DisclosureAuthority::Agent),
+        Some("owner") => Ok(celiums_cognition::DisclosureAuthority::Owner),
+        Some("auditor") => Ok(celiums_cognition::DisclosureAuthority::Auditor),
+        Some("third_party") => Ok(celiums_cognition::DisclosureAuthority::ThirdParty),
+        Some(_) => Err("disclosure_authority must be owner|agent|auditor|third_party".to_owned()),
+    }
+}
+
 fn remember_context(
     arguments: &Value,
     content: &str,
@@ -1074,6 +1131,22 @@ fn embedding_space_json(space: &EmbeddingSpaceIdentity) -> Value {
         "revision": space.revision,
         "dimension": space.dimension,
         "normalization": space.normalization.as_str(),
+    })
+}
+
+fn governance_json(governance: &celiums_memory_engine::MemoryGovernance) -> Value {
+    let classification = &governance.0;
+    json!({
+        "policy_id": classification.trace.policy_id,
+        "policy_version": classification.trace.policy_version,
+        "policy_hash": classification.trace.policy_hash,
+        "role": format!("{:?}", classification.role).to_lowercase(),
+        "purpose": format!("{:?}", classification.purpose).to_lowercase(),
+        "trust": format!("{:?}", classification.trust).to_lowercase(),
+        "sensitivity": format!("{:?}", classification.sensitivity).to_lowercase(),
+        "poisoning_risk": format!("{:?}", classification.poisoning_risk).to_lowercase(),
+        "treatment": format!("{:?}", classification.treatment).to_lowercase(),
+        "enforcement": format!("{:?}", classification.enforcement).to_lowercase(),
     })
 }
 

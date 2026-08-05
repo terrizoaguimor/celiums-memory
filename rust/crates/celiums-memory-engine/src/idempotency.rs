@@ -358,6 +358,7 @@ mod tests {
                 )
                 .expect("embedding space"),
             ),
+            governance: None,
             content: content.to_owned(),
             importance: 0.75,
             pad: Pad {

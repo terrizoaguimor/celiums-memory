@@ -45,6 +45,8 @@ fn remember(
             context: None,
             embedding_space: None,
             idempotency_key: None,
+            content_role: celiums_cognition::ContentRole::Observation,
+            purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
         })
         .expect("remember must succeed")
 }
@@ -58,6 +60,8 @@ fn recall_request(query: &str, embedding: Vec<f32>) -> RecallRequest {
         now_ms: NOW_MS,
         scope: None,
         embedding_space: None,
+        disclosure_authority: celiums_cognition::DisclosureAuthority::Agent,
+        disclosure_purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
     }
 }
 
@@ -151,6 +155,8 @@ fn identity_provenance_and_source_time_survive_reopen_and_recall() {
                 }),
                 embedding_space: None,
                 idempotency_key: None,
+                content_role: celiums_cognition::ContentRole::Observation,
+                purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
             })
             .expect("remember");
     }
@@ -196,6 +202,8 @@ fn remember_rejects_forged_provenance_hash() {
         context: Some(context),
         embedding_space: None,
         idempotency_key: None,
+        content_role: celiums_cognition::ContentRole::Observation,
+        purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
     });
 
     assert!(matches!(
@@ -254,6 +262,8 @@ fn physical_tenant_boundary_rejects_cross_tenant_writes_and_recalls() {
         )),
         embedding_space: None,
         idempotency_key: None,
+        content_role: celiums_cognition::ContentRole::Observation,
+        purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
     });
     assert!(matches!(
         write,
@@ -322,6 +332,8 @@ fn recall_scope_enforces_user_project_and_session_visibility() {
                 context: Some(scoped_context(content, "tenant-a", user, project, session)),
                 embedding_space: None,
                 idempotency_key: None,
+                content_role: celiums_cognition::ContentRole::Observation,
+                purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
             })
             .expect("remember");
     }
@@ -412,6 +424,8 @@ fn idempotent_remember_survives_reopen_and_conflicts_on_changed_request() {
                 context: None,
                 embedding_space: None,
                 idempotency_key: Some(key.clone()),
+                content_role: celiums_cognition::ContentRole::Observation,
+                purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
             })
             .expect("first write");
         let retry = engine
@@ -425,6 +439,8 @@ fn idempotent_remember_survives_reopen_and_conflicts_on_changed_request() {
                 context: None,
                 embedding_space: None,
                 idempotency_key: Some(key.clone()),
+                content_role: celiums_cognition::ContentRole::Observation,
+                purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
             })
             .expect("retry");
         assert_eq!(retry.id, first.id);
@@ -445,6 +461,8 @@ fn idempotent_remember_survives_reopen_and_conflicts_on_changed_request() {
             context: None,
             embedding_space: None,
             idempotency_key: Some(key.clone()),
+            content_role: celiums_cognition::ContentRole::Observation,
+            purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
         })
         .expect("reopen retry");
     assert_eq!(retry.id, first.id);
@@ -458,6 +476,8 @@ fn idempotent_remember_survives_reopen_and_conflicts_on_changed_request() {
         context: None,
         embedding_space: None,
         idempotency_key: Some(key),
+        content_role: celiums_cognition::ContentRole::Observation,
+        purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
     });
     assert!(matches!(
         conflict,
@@ -507,6 +527,8 @@ fn filtered_crud_and_batch_preserve_scope_revision_and_projection_cleanup() {
             )),
             embedding_space: None,
             idempotency_key: Some(IdempotencyKey::new(format!("batch-{index}")).expect("key")),
+            content_role: celiums_cognition::ContentRole::Observation,
+            purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
         })
         .collect();
     let outcomes = engine.remember_batch(requests);
@@ -640,6 +662,8 @@ fn write_and_recall_reject_incompatible_embedding_identity() {
         context: Some(scoped_context(content, "tenant-a", "alice", None, None)),
         embedding_space: Some(incompatible.clone()),
         idempotency_key: None,
+        content_role: celiums_cognition::ContentRole::Observation,
+        purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
     });
     assert!(matches!(
         write,
@@ -678,6 +702,8 @@ fn dimension_guard_fails_loud_never_degrades() {
         context: None,
         embedding_space: None,
         idempotency_key: None,
+        content_role: celiums_cognition::ContentRole::Observation,
+        purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
     });
     assert!(matches!(
         wrong,

@@ -21,7 +21,7 @@ evidence and why the next action follows.
 | Field | Value |
 |---|---|
 | Active phase | Phase 2 - Ethics-native memory governance |
-| Active item | P2.1 - Durable ethics trace and treatment model |
+| Active item | P2.6 - Phase close (commit/push/CI) |
 | Branch | `dev` |
 | Baseline commit | `5638ca2` |
 | Canonical implementation | `rust/` |
@@ -56,12 +56,12 @@ evidence and why the next action follows.
 
 | ID | Work item | Status | Evidence / exit condition |
 |---|---|---|---|
-| P2.1 | Durable ethics trace and treatment model | active | trace, policy version, normal/sensitive/restricted/quarantined persisted |
-| P2.2 | Observation vs action/disclosure contract | pending | legitimate sensitive context retained; harmful actions still blocked |
-| P2.3 | Recall disclosure policy | pending | include/summarize/redact/restrict/abstain decisions traced |
-| P2.4 | Poisoning, PII and secret governance | pending | adversarial fixtures contained; no trusted persistent instructions |
-| P2.5 | Feedback and audit | pending | durable append-only decisions and false-positive workflow |
-| P2.6 | Phase close | pending | EN/ES overblocking and poisoning gates green |
+| P2.1 | Durable ethics trace and treatment model | verified locally | schema v2 governance trace and policy hash persisted/reopened |
+| P2.2 | Observation vs action/disclosure contract | verified locally | dangerous observations restricted; action API blocks and audits |
+| P2.3 | Recall disclosure policy | verified locally | include/redact/summarize/restrict/abstain applied to live/time-travel recall |
+| P2.4 | Poisoning, PII and secret governance | verified locally | EN/ES poisoning quarantine; PII/secrets redacted or withheld |
+| P2.5 | Feedback and audit | verified locally | tenant hash chain; append-only feedback and resolutions |
+| P2.6 | Phase close | verified locally | docs and journal complete; commit/push/CI pending |
 
 ## Completed foundation
 
@@ -135,6 +135,7 @@ stable and an isolated immutable server exists.
 | 2026-08-05 | P1.4-P1.6 local gates | passed | clippy `-D warnings`; 16 engine tests; 7 MCP tests; filter unit suite; benchmark typecheck/build |
 | 2026-08-05 | Hyphae boundary correction | closed | Hyphae PR #111 closed; no Hyphae change consumed by Celiums Memory |
 | 2026-08-05 | Phase 1 GitHub CI | Rust passed | MSRV 1.89 and stable fmt/clippy/test green; legacy Trivy found federation Hono CVE |
+| 2026-08-05 | P2 full local gates | passed | 136 cognition, 53 engine unit, 7 governance, 16 engine, MCP/journal/phase suites; fmt/clippy green |
 
 ## Update protocol
 

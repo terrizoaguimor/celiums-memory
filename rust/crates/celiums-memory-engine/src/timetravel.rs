@@ -157,14 +157,24 @@ pub fn recall_at(
             },
         };
         let final_score = recall::score(&config.weights, &channels, current_arousal);
+        let (disclosure, disclosed_content) = crate::engine::disclose_memory(
+            &memory,
+            request.disclosure_authority,
+            request.disclosure_purpose,
+        );
         scored.push(ScoredMemory {
             memory,
             channels,
             final_score,
+            disclosed_content,
+            disclosure,
         });
     }
 
-    scored.retain(|entry| entry.final_score >= config.score_threshold);
+    scored.retain(|entry| {
+        entry.final_score >= config.score_threshold
+            && entry.disclosure != celiums_cognition::DisclosureClass::Abstain
+    });
     scored.sort_by(|left, right| {
         right
             .final_score
