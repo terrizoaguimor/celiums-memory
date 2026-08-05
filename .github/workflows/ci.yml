@@ -54,6 +54,9 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo test
         run: cargo test --workspace
+      - name: Phase 3 release throughput gate
+        if: matrix.toolchain == 'stable'
+        run: cargo test --release -p celiums-memory-engine --test ingestion_gate raw_batch_is_at_least_five_times_faster_than_sequential_ingestion -- --ignored --nocapture
 
   # ── Lint + format ────────────────────────────────────────────────
   lint:

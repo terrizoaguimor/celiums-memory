@@ -150,6 +150,7 @@ stable and an isolated immutable server exists.
 | 2026-08-05 | P4.4 temporal tools | passed | 4 tests: EN/ES relative time, explicit uncertainty/basis, event sequence, semantic claim diff; clippy green |
 | 2026-08-05 | P4.5 phase gate | passed | knowledge update omits retired current claim; historical query preserves prior claim/evidence; half-open boundary verified; full workspace green |
 | 2026-08-05 | Phase 4 GitHub CI | passed | run `31048701559`; MSRV/stable Rust, Node tests, lint, typecheck, build, Trivy and secret scan green |
+| 2026-08-05 | P3 throughput CI hardening | passed locally | release-only explicit gate 18.10x; debug workspace suite no longer carries a noisy timing assertion |
 
 ## Phase 3 checklist
 
