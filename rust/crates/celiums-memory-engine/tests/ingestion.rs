@@ -224,4 +224,13 @@ fn ingestion_ledger_enforces_user_scope() {
             .expect("list")
             .is_empty()
     );
+
+    let mut foreign_project = entry.scope();
+    foreign_project.project_id = Some(ProjectId::new("other-project").expect("project"));
+    assert!(
+        engine
+            .get_ingestion(&entry.event_id, &foreign_project)
+            .expect("project lookup")
+            .is_none()
+    );
 }

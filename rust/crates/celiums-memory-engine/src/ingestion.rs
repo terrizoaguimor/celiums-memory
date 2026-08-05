@@ -134,6 +134,28 @@ pub enum IngestionStatus {
     Failed,
 }
 
+/// Complete status accounting for visible ingestion events.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct IngestionCoverage {
+    /// Unique durable events attempted.
+    pub attempted: u64,
+    /// Raw events awaiting enrichment.
+    pub received: u64,
+    /// Events materialized as memories.
+    pub materialized: u64,
+    /// Events rejected by policy.
+    pub rejected: u64,
+    /// Events awaiting retry after failure.
+    pub failed: u64,
+}
+
+impl IngestionCoverage {
+    /// Sum of mutually exclusive durable statuses.
+    pub fn accounted(self) -> u64 {
+        self.received + self.materialized + self.rejected + self.failed
+    }
+}
+
 impl IngestionStatus {
     /// Stable serialized status name.
     pub fn as_str(self) -> &'static str {

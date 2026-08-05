@@ -21,7 +21,7 @@ evidence and why the next action follows.
 | Field | Value |
 |---|---|
 | Active phase | Phase 3 - Complete ingestion |
-| Active item | P3.4 - Phase close (commit/push/CI) |
+| Active item | P3.5 - Phase close and throughput gate |
 | Branch | `dev` |
 | Baseline commit | `a8c9d6a` |
 | Canonical implementation | `rust/` |
@@ -141,6 +141,8 @@ stable and an isolated immutable server exists.
 | 2026-08-05 | P3.2 conversation and batch ingestion | passed | 4 batch tests: partial failure, reopen resume, membership conflict, conversation preflight; workspace test/clippy green |
 | 2026-08-05 | P3.3 capture adapters | passed | 5 distinct namespaces normalized through `capture_event`; MCP session 8 tests; workspace test/clippy green |
 | 2026-08-05 | P3.4 provider enrichment boundary | passed | provider failure survives reopen; authorized retry materializes immutable raw event; workspace test/clippy green |
+| 2026-08-05 | P3.5 ingestion coverage | passed | 4 attempted events map exactly to received/materialized/rejected/failed; no unknown outcome |
+| 2026-08-05 | P3.5 release throughput | passed | 100 raw events: sequential 153.632 ms, batch 7.1262 ms, 21.56x faster (gate >=5x) |
 
 ## Phase 3 checklist
 
@@ -149,8 +151,8 @@ stable and an isolated immutable server exists.
 | P3.1 | Event and turn ingestion contract | closed | `78d850c` + scoped-access fix `de798ff`; CI green; journal `019fd3391d4070138899cb175733649d` |
 | P3.2 | Conversation and batch ingestion | closed | `82f7290`; CI `31044070987` green; journal `019fd39ad9ca7573b08645b963256fe3` |
 | P3.3 | Capture adapters | closed | `3973f09`; CI `31044478712` green; journal `019fd39f529d77139a52a5a0813a8c70` |
-| P3.4 | Provider enrichment boundary | verified locally | raw event precedes provider, failure metadata is durable, authorized retry resumes without content replacement; journal `019fd3a464177179b1a0554a57b429e3` |
-| P3.5 | Phase close | pending | all attempted events accounted for; batch throughput gate |
+| P3.4 | Provider enrichment boundary | closed | `7d62a77`; CI `31044931012` green; journal `019fd3a464177179b1a0554a57b429e3` |
+| P3.5 | Phase close | active | all attempted events accounted for; batch throughput gate |
 
 ## Update protocol
 

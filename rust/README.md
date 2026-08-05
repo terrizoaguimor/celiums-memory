@@ -234,6 +234,13 @@ Roadmap Phase 3 ingestion begins with a durable raw-event boundary:
   event can resume when an embedding becomes available; changed immutable
   payloads fail as durable conflicts, and policy rejections remain accounted
   for without becoming recallable memories.
+- Conversation batches validate ownership before writing, persist per-item
+  outcomes and resume after reopen. Raw-only batches commit all event ledgers
+  and the job record together; the release gate measured 100 events at 21.56x
+  the sequential throughput (153.632 ms vs 7.1262 ms).
+- `CaptureEvent` normalizes OpenCode/Codex, Claude Code, Cursor, generic MCP
+  and webhook inputs. Optional provider enrichment records durable failures
+  and can only materialize the original authorized raw event.
 
 The ordered platform plan and its mechanical exit gates live in
 [`docs/ROADMAP.md`](../docs/ROADMAP.md); execution evidence and the current

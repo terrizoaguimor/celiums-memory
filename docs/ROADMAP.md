@@ -86,11 +86,11 @@ cannot become trusted instructions; EN/ES overblocking is measured.
 
 **Goal:** make integration require no bespoke glue.
 
-- Event, turn, conversation and batch ingestion.
-- Per-item ledger, partial failures and resumable jobs.
-- Deterministic IDs and duplicate-free retries.
-- Provider enrichment is optional/asynchronous; raw events are never lost.
-- OpenCode/Codex, Claude Code, Cursor, generic MCP and webhook adapters.
+- [x] Event, turn, conversation and batch ingestion.
+- [x] Per-item ledger, partial failures and resumable jobs.
+- [x] Deterministic IDs and duplicate-free retries.
+- [x] Provider enrichment is optional/asynchronous; raw events are never lost.
+- [x] OpenCode/Codex, Claude Code, Cursor, generic MCP and webhook adapters.
 
 **Exit gate:** every attempted event is accounted for; batch ingestion is at
 least 5x faster than sequential ingestion; provider failures preserve source

@@ -55,8 +55,8 @@ use crate::idempotency::{
 };
 use crate::identity::{RecallScope, RememberContext, TenantId};
 use crate::ingestion::{
-    BatchId, BatchItemOutcome, EventId, IngestionBatch, IngestionDecodeError, IngestionEntry,
-    IngestionStatus, SourceEventId, SourceNamespace, TurnId,
+    BatchId, BatchItemOutcome, EventId, IngestionBatch, IngestionCoverage, IngestionDecodeError,
+    IngestionEntry, IngestionStatus, SourceEventId, SourceNamespace, TurnId,
 };
 use crate::journal::{
     BrokenLink, BrokenReason, ChainReport, JournalEntry, MAX_VALENCE_REASON_CHARS, Supersession,
@@ -952,36 +952,7 @@ impl MemoryEngine {
             return Ok(entry);
         }
 
-        let entry = IngestionEntry {
-            event_id,
-            source_namespace: request.source_namespace.clone(),
-            source_event_id: request.source_event_id.clone(),
-            turn_id: request.turn_id.clone(),
-            identity: request.identity.clone(),
-            source_kind: request.source_kind,
-            source_uri: request.source_uri.clone(),
-            actor: request.actor.clone(),
-            content: request.content.clone(),
-            tags: request.tags.clone(),
-            scope: request.scope,
-            importance_nanos: request.importance.map(scalar_nanos),
-            content_role: request.content_role,
-            purpose: request.purpose,
-            content_hash: blake3::hash(request.content.as_bytes())
-                .to_hex()
-                .to_string(),
-            request_hash,
-            event_at_ms: request.event_at_ms,
-            first_ingested_at_ms: request.ingested_at_ms,
-            last_attempted_at_ms: request.ingested_at_ms,
-            attempt_count: 1,
-            conflict_count: 0,
-            status: IngestionStatus::Received,
-            memory_id: None,
-            error_code: None,
-            enrichment_provider: None,
-            enrichment_attempt_count: 0,
-        };
+        let entry = new_ingestion_entry(request, event_id, request_hash);
         self.persist_ingestion(&entry)?;
         Ok(entry)
     }
@@ -1021,6 +992,31 @@ impl MemoryEngine {
             .into_iter()
             .filter(|entry| ingestion_visible_to(entry, scope))
             .collect())
+    }
+
+    /// Counts every visible event by its mutually exclusive durable status.
+    ///
+    /// # Errors
+    ///
+    /// Fails on tenant mismatch, query, or durable decode failure.
+    pub fn ingestion_coverage(
+        &self,
+        scope: &RecallScope,
+    ) -> Result<IngestionCoverage, MemoryEngineError> {
+        let entries = self.ingestion_entries(scope)?;
+        let mut coverage = IngestionCoverage {
+            attempted: entries.len() as u64,
+            ..IngestionCoverage::default()
+        };
+        for entry in entries {
+            match entry.status {
+                IngestionStatus::Received => coverage.received += 1,
+                IngestionStatus::Materialized => coverage.materialized += 1,
+                IngestionStatus::Rejected => coverage.rejected += 1,
+                IngestionStatus::Failed => coverage.failed += 1,
+            }
+        }
+        Ok(coverage)
     }
 
     fn get_ingestion_unscoped(
@@ -1197,6 +1193,10 @@ impl MemoryEngine {
             });
         }
 
+        if existing.is_none() && request.events.iter().all(|event| event.embedding.is_none()) {
+            return self.ingest_raw_batch(request, scope, request_hash);
+        }
+
         let mut items = Vec::with_capacity(request.events.len());
         for (index, event) in request.events.into_iter().enumerate() {
             let event_id = EventId::derive(
@@ -1232,6 +1232,42 @@ impl MemoryEngine {
         Ok(batch)
     }
 
+    fn ingest_raw_batch(
+        &mut self,
+        request: IngestBatchRequest,
+        scope: RecallScope,
+        request_hash: String,
+    ) -> Result<IngestionBatch, MemoryEngineError> {
+        let entries: Vec<IngestionEntry> = request
+            .events
+            .iter()
+            .map(|event| {
+                let event_id = EventId::derive(
+                    &self.tenant_id,
+                    &event.source_namespace,
+                    &event.source_event_id,
+                );
+                new_ingestion_entry(event, event_id, canonical_ingest_event_hash(event))
+            })
+            .collect();
+        let items = entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let mut item = BatchItemOutcome::from(entry);
+                item.index = index;
+                item
+            })
+            .collect();
+        let batch =
+            IngestionBatch::new(request.batch_id, request_hash, scope, request.now_ms, items);
+        let mut records: Vec<hyphae_query::Record> =
+            entries.iter().map(IngestionEntry::to_record).collect();
+        records.push(batch.to_record());
+        self.hyphae.put_records(Uuid::now_v7(), &records)?;
+        Ok(batch)
+    }
+
     /// Gets one visible durable ingestion batch.
     ///
     /// # Errors
@@ -1245,9 +1281,7 @@ impl MemoryEngine {
         self.require_tenant(&scope.tenant_id)?;
         Ok(self
             .get_ingestion_batch_unscoped(batch_id)?
-            .filter(|batch| {
-                batch.scope.tenant_id == scope.tenant_id && batch.scope.user_id == scope.user_id
-            }))
+            .filter(|batch| recall_scope_visible_to(&batch.scope, scope)))
     }
 
     fn get_ingestion_batch_unscoped(
@@ -2758,7 +2792,24 @@ pub(crate) fn memory_visible_to(memory: &Memory, scope: &RecallScope) -> bool {
 }
 
 fn ingestion_visible_to(entry: &IngestionEntry, scope: &RecallScope) -> bool {
-    entry.identity.tenant_id == scope.tenant_id && entry.identity.user_id == scope.user_id
+    if entry.identity.tenant_id != scope.tenant_id || entry.identity.user_id != scope.user_id {
+        return false;
+    }
+    match entry.scope {
+        Scope::Global => true,
+        Scope::Project => entry.identity.project_id == scope.project_id,
+        Scope::Session => {
+            entry.identity.project_id == scope.project_id
+                && entry.identity.session_id == scope.session_id
+        }
+    }
+}
+
+fn recall_scope_visible_to(owner: &RecallScope, requested: &RecallScope) -> bool {
+    owner.tenant_id == requested.tenant_id
+        && owner.user_id == requested.user_id
+        && owner.project_id == requested.project_id
+        && owner.session_id == requested.session_id
 }
 
 pub(crate) fn disclose_memory(
@@ -2834,19 +2885,51 @@ fn batch_scope(events: &[IngestEventRequest]) -> Result<RecallScope, MemoryEngin
     Ok(scope)
 }
 
+fn new_ingestion_entry(
+    request: &IngestEventRequest,
+    event_id: EventId,
+    request_hash: String,
+) -> IngestionEntry {
+    IngestionEntry {
+        event_id,
+        source_namespace: request.source_namespace.clone(),
+        source_event_id: request.source_event_id.clone(),
+        turn_id: request.turn_id.clone(),
+        identity: request.identity.clone(),
+        source_kind: request.source_kind,
+        source_uri: request.source_uri.clone(),
+        actor: request.actor.clone(),
+        content: request.content.clone(),
+        tags: request.tags.clone(),
+        scope: request.scope,
+        importance_nanos: request.importance.map(scalar_nanos),
+        content_role: request.content_role,
+        purpose: request.purpose,
+        content_hash: blake3::hash(request.content.as_bytes())
+            .to_hex()
+            .to_string(),
+        request_hash,
+        event_at_ms: request.event_at_ms,
+        first_ingested_at_ms: request.ingested_at_ms,
+        last_attempted_at_ms: request.ingested_at_ms,
+        attempt_count: 1,
+        conflict_count: 0,
+        status: IngestionStatus::Received,
+        memory_id: None,
+        error_code: None,
+        enrichment_provider: None,
+        enrichment_attempt_count: 0,
+    }
+}
+
 fn canonical_batch_hash(events: &[IngestEventRequest]) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"celiums-memory/ingestion-batch/v1");
     for event in events {
         write_ingest_hash_field(
             &mut hasher,
-            b"source_namespace",
-            event.source_namespace.as_str().as_bytes(),
-        );
-        write_ingest_hash_field(
-            &mut hasher,
-            b"source_event_id",
-            event.source_event_id.as_str().as_bytes(),
+            b"event_request_hash",
+            canonical_ingest_event_hash(event).as_bytes(),
         );
     }
     hasher.finalize().to_hex().to_string()

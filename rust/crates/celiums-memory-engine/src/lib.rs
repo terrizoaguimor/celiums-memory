@@ -58,9 +58,9 @@ pub use identity::{
     RememberContext, SessionId, SourceKind, TenantId, UserId,
 };
 pub use ingestion::{
-    BatchId, BatchItemOutcome, BatchStatus, EventId, IngestionBatch, IngestionDecodeError,
-    IngestionEntry, IngestionStatus, InvalidIngestionIdentity, SourceEventId, SourceNamespace,
-    TurnId,
+    BatchId, BatchItemOutcome, BatchStatus, EventId, IngestionBatch, IngestionCoverage,
+    IngestionDecodeError, IngestionEntry, IngestionStatus, InvalidIngestionIdentity, SourceEventId,
+    SourceNamespace, TurnId,
 };
 pub use journal::{BrokenLink, BrokenReason, ChainReport, JournalEntry, Supersession, chain_hash};
 pub use memory::{Memory, MemoryDecodeError};

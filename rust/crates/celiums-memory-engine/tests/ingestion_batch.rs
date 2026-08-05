@@ -142,6 +142,22 @@ fn changed_batch_membership_is_a_durable_conflict() {
 }
 
 #[test]
+fn changed_batch_payload_is_a_durable_conflict() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut engine = open(&dir);
+    engine
+        .ingest_batch(batch(vec![event("1", "first", None)]))
+        .expect("first batch");
+
+    let conflict = engine.ingest_batch(batch(vec![event("1", "changed", None)]));
+
+    assert!(matches!(
+        conflict,
+        Err(celiums_memory_engine::MemoryEngineError::IngestionBatchConflict { .. })
+    ));
+}
+
+#[test]
 fn conversation_ingestion_rejects_mixed_conversation_ids_before_writing() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut engine = open(&dir);
