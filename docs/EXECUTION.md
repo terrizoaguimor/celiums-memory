@@ -21,7 +21,7 @@ evidence and why the next action follows.
 | Field | Value |
 |---|---|
 | Active phase | Phase 3 - Complete ingestion |
-| Active item | P3.1 - Phase close (commit/push/CI) |
+| Active item | P3.2 - Conversation and resumable batch ingestion |
 | Branch | `dev` |
 | Baseline commit | `a8c9d6a` |
 | Canonical implementation | `rust/` |
@@ -143,8 +143,8 @@ stable and an isolated immutable server exists.
 
 | ID | Work item | Status | Evidence / exit condition |
 |---|---|---|---|
-| P3.1 | Event and turn ingestion contract | verified locally | raw event, deterministic event/memory IDs, turn provenance, retries/conflicts/rejections ledgered; journal `019fd3391d4070138899cb175733649d` |
-| P3.2 | Conversation and batch ingestion | pending | resumable jobs and per-item outcomes |
+| P3.1 | Event and turn ingestion contract | closed | `78d850c` + scoped-access fix `de798ff`; CI green; journal `019fd3391d4070138899cb175733649d` |
+| P3.2 | Conversation and batch ingestion | active | resumable jobs and per-item outcomes |
 | P3.3 | Capture adapters | pending | OpenCode/Codex, Claude Code, Cursor, MCP, webhook |
 | P3.4 | Provider enrichment boundary | pending | raw events survive provider failure and resume safely |
 | P3.5 | Phase close | pending | all attempted events accounted for; batch throughput gate |
