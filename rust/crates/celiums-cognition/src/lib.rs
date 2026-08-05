@@ -13,7 +13,14 @@
 //! this crate's scoring on top of the Hyphae data engine.
 
 pub mod affect;
+pub mod circadian;
 pub mod entities;
+pub mod ethics;
+pub mod ethics_layer_b;
+pub mod ethics_layer_c;
+pub mod ethics_layer_k;
+pub mod ethics_pipeline;
+pub mod ethics_structural;
 pub mod importance;
 pub mod journal;
 pub mod limbic;
@@ -24,7 +31,23 @@ pub use affect::{
     Pad, classify_memory_type, compute_arousal, compute_dominance, compute_valence, extract_pad,
     resonance,
 };
+pub use circadian::{
+    ActivityRhythm, CircadianConfig, CircadianEvent, CircadianFactors, FactorWeights,
+    classify_time_of_day, infer_activity_rhythm,
+};
 pub use entities::{EntityKind, ExtractedEntity, extract_entities};
+pub use ethics::{EthicsCategory, EthicsFlag, EthicsViolation, Evaluation};
+pub use ethics_layer_b::{
+    Breadth, LayerBDecision, LayerBResult, Magnitude, Reversibility, Risk, evaluate_layer_b,
+};
+pub use ethics_layer_c::{
+    Framework, FrameworkEvaluation, LayerCResult, Verdict, aggregate_framework_evaluations,
+    evaluate_layer_c,
+};
+pub use ethics_layer_k::{
+    KnowledgeMatch, LayerKDecision, LayerKResult, SIM_FLOOR, evaluate_layer_k,
+};
+pub use ethics_pipeline::{FullEthicsEvaluation, evaluate_ethics};
 pub use importance::{ImportanceSignals, classify_importance, content_boost, score_importance};
 pub use journal::{JournalEntryType, SupersessionRelation, is_valid_agent_id};
 pub use limbic::{LimbicConfig, MemoryInfluence, average_memory_pad, emotion_label};

@@ -161,14 +161,53 @@ Phase 2 (this tree): the retrieval moat —
   (TS `packages/memory-bench` harness → MCP → this engine) is the
   next gate.
 
+Phase 3 (this tree): the write-gate and the biological clock —
+
+- **Ethics Layer A** — the deterministic lexicon gate runs inside
+  `remember` before anything is stored: multilingual lexicon (EN+ES
+  high-weight core of the TS 475-entry set) with per-term weights, the
+  three-step disambiguation cascade (meta ×0.03 / technical ×0.1 /
+  non-living-target ×0.1 — `kill the process` is work, `kill my
+  neighbor` blocks), per-category violation/block thresholds, and the
+  catastrophic floor (unsuppressed ≥0.95 in the six critical
+  categories always blocks). The gate enforces on
+  **`enforcement_blocked`** — never on a mode-dependent `passed` (the
+  2026-05-17 incident lesson), and closes the TS gap where
+  structural-only blocks did not gate writes.
+- **Circadian clock** — `A(t) = A₀ + C·cos(2π(h−φ)/24)·e^(−λ·Δt) +
+  Σ wᵢ·Fᵢ`: the cosine rhythm (peak 11:00 local), nine decaying
+  factors with biological half-lives (caffeine 5 h, stress 1 h…),
+  sleep debt that grows with inactivity, Yerkes-Dodson stress, the
+  seasonal term, and the isolation penalty. Wired end to end:
+  `remember` ticks session activity and emotional spikes,
+  `consolidate` is the engine's nap, and `affect_state` modulates
+  arousal by the time of day — which feeds the SAR filter, so the
+  same query recalls differently at 11:00 than at 03:00.
+- **User continuity** (the TS engine had none):
+  - The full circadian state — factors, activity histogram, timezone —
+    is a **durable record**; a reopened engine knows how caffeinated
+    it is and keeps decaying from where it left off (the TS factors
+    lived in process memory and vanished on restart).
+  - **Behavioural timezone inference** (port of the TS #165 Layer B
+    `activity-rhythm`): a 24-bucket UTC-hour histogram of real
+    interactions; the 8 h low-activity trough centred on ~03:30 local
+    yields the user's effective UTC offset. VPN-immune — only genuine
+    activity moves it. Effective tz = explicit override (`--timezone-offset`)
+    > inferred behaviour (confidence ≥ 0.3) > UTC fallback, with
+    provenance reported by `circadian_status`.
+  - **Raw-state storage**: the limbic snapshot persists unmodulated;
+    the circadian modulation applies fresh-on-read only. The TS
+    engine baked night-arousal into the stored state and needed a
+    drift-correction hack (`lastCircadianApplied`) — here the drift
+    is impossible by construction.
+
+MCP: 12 tools (`circadian_status` added).
+
 Next phases:
 
-1. Ethics Layer A (deterministic lexicon write-gate; `enforcementBlocked`
-   contract preserved verbatim).
-2. Circadian clock (pure `A(t)` cosine model + 12 factors) feeding
-   arousal into the SAR filter, plus reward/interoception completing
-   `updateStateFull`.
-3. LongMemEval/LoCoMo public run vs mem0/Zep (the competitive gate).
-4. Server binary (axum, loopback-first like `hyphae-server`) replacing
+1. LongMemEval/LoCoMo public run vs mem0/Zep (the competitive gate).
+2. Server binary (axum, loopback-first like `hyphae-server`) replacing
    the Node `quickstart.ts` HTTP surface; result proofs exposed.
-5. `journal_arc` / introspection (LLM-optional, BYO provider).
+3. Reward/interoception (dopamine RPE, system-stress) completing
+   `updateStateFull`; grow the ethics lexicon toward the full 475.
+4. `journal_arc` / introspection (LLM-optional, BYO provider).

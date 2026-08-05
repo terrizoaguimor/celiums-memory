@@ -172,6 +172,7 @@ impl Session {
             "snapshot_now" => self.tool_snapshot_now(),
             "recall_at" => self.tool_recall_at(&arguments),
             "run_lifecycle" => self.tool_run_lifecycle(),
+            "circadian_status" => self.tool_circadian_status(),
             _ => return rpc_error(id, -32602, "Unknown tool"),
         };
         match result {
@@ -430,6 +431,29 @@ impl Session {
         Ok(json!({ "decayed": report.decayed, "archived": report.archived }))
     }
 
+    fn tool_circadian_status(&mut self) -> Result<Value, String> {
+        let status = self.engine.circadian_status(now_ms());
+        Ok(json!({
+            "offset_minutes": status.offset_minutes,
+            "source": status.source,
+            "local_hour": status.local_hour,
+            "time_of_day": status.time_of_day,
+            "factors": {
+                "session_activity": status.factors.session_activity,
+                "stress": status.factors.stress_level,
+                "caffeine": status.factors.caffeine_level,
+                "sleep_debt": status.factors.sleep_debt,
+                "cognitive_load": status.factors.cognitive_load,
+                "motivation": status.factors.motivation_trend,
+            },
+            "rhythm": {
+                "inferred_offset_minutes": status.rhythm.offset_minutes,
+                "confidence": status.rhythm.confidence,
+                "samples": status.rhythm.samples,
+            },
+        }))
+    }
+
     /// The caller's embedding when provided, the deterministic offline
     /// embedder otherwise.
     fn embedding_from(&self, arguments: &Value, text: &str) -> Result<Vec<f32>, String> {
@@ -613,6 +637,12 @@ fn tool_definitions() -> Vec<Value> {
             &json!({ "type": "object", "properties": {}, "additionalProperties": false }),
             false,
         ),
+        tool(
+            "circadian_status",
+            "The engine's biological clock: effective timezone (override/inferred/UTC), local hour, day phase, physiological factors.",
+            &json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            true,
+        ),
     ]
 }
 
@@ -725,7 +755,7 @@ mod tests {
     #[test]
     fn tool_definitions_are_valid_objects() {
         let tools = tool_definitions();
-        assert_eq!(tools.len(), 11);
+        assert_eq!(tools.len(), 12);
         assert!(tools.iter().all(|tool| tool["inputSchema"].is_object()));
         assert!(tools.iter().all(|tool| tool["name"].is_string()));
     }

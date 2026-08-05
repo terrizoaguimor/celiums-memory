@@ -74,7 +74,7 @@ fn full_remember_recall_round_trip_over_mcp() {
             "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}
         }))
         .expect("tools list");
-    assert_eq!(tools["result"]["tools"].as_array().map(Vec::len), Some(11));
+    assert_eq!(tools["result"]["tools"].as_array().map(Vec::len), Some(12));
 
     let remembered = call(
         &mut session,

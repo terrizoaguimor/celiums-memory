@@ -14,6 +14,7 @@
 //! Hyphae's canonical Q15 domain and enforces the dimension guard.
 
 mod affect_state;
+mod circadian_state;
 mod embed;
 mod engine;
 mod entity_index;
@@ -23,11 +24,12 @@ mod quantize;
 mod timetravel;
 
 pub use affect_state::AffectState;
+pub use circadian_state::CircadianState;
 pub use embed::deterministic_embed;
 pub use engine::{
-    BranchAbstention, ConsolidationReport, JournalRecallRequest, JournalWriteRequest,
-    LifecycleReport, MemoryEngine, MemoryEngineError, RecallConfig, RecallRequest, RecallResponse,
-    RememberRequest, ScoredMemory,
+    BranchAbstention, CircadianStatus, ConsolidationReport, JournalRecallRequest,
+    JournalWriteRequest, LifecycleReport, MemoryEngine, MemoryEngineError, RecallConfig,
+    RecallRequest, RecallResponse, RememberRequest, ScoredMemory,
 };
 pub use entity_index::EntityRecord;
 pub use journal::{BrokenLink, BrokenReason, ChainReport, JournalEntry, Supersession, chain_hash};

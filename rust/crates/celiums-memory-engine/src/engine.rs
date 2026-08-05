@@ -20,10 +20,11 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use celiums_cognition::{
-    ChannelScores, JournalEntryType, LimbicConfig, MemoryInfluence, MemoryState, Pad,
-    RecallWeights, Scope, SupersessionRelation, classify_importance, classify_memory_type,
-    emotional_weight, extract_entities, extract_pad, is_valid_agent_id, limbic, recall, resonance,
-    retention, retrievability,
+    ActivityRhythm, ChannelScores, CircadianConfig, CircadianEvent, EthicsViolation, FactorWeights,
+    JournalEntryType, LimbicConfig, MemoryInfluence, MemoryState, Pad, RecallWeights, Scope,
+    SupersessionRelation, circadian, classify_importance, classify_memory_type, emotional_weight,
+    evaluate_ethics, extract_entities, extract_pad, infer_activity_rhythm, is_valid_agent_id,
+    limbic, recall, resonance, retention, retrievability,
 };
 use hyphae_core::{Q15Vector, VectorSpaceDefinition, VectorSpaceName, VectorValueError};
 use hyphae_engine::{EngineError as HyphaeError, HyphaeEngine};
@@ -37,6 +38,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::affect_state::{AFFECT_STATE_KEY, AffectState};
+use crate::circadian_state::{CIRCADIAN_STATE_KEY, CircadianState};
 use crate::entity_index::{EntityRecord, entity_key, entity_prefix};
 use crate::journal::{
     BrokenLink, BrokenReason, ChainReport, JournalEntry, MAX_VALENCE_REASON_CHARS, Supersession,
@@ -114,6 +116,14 @@ pub enum MemoryEngineError {
     Snapshot {
         /// What failed.
         detail: String,
+    },
+    /// The ethics write-gate blocked the content. Nothing was stored.
+    #[error("memory blocked by the ethics engine: {category}")]
+    EthicsBlocked {
+        /// Blocking category id.
+        category: String,
+        /// All violations, for audit.
+        violations: Vec<EthicsViolation>,
     },
     /// A referenced journal entry does not exist for this agent.
     #[error("journal entry `{entry_id}` not found for agent `{agent_id}`")]
@@ -220,6 +230,24 @@ pub struct RecallResponse {
     pub semantic_abstention: Option<BranchAbstention>,
 }
 
+/// Circadian telemetry: what time the engine thinks it is for the
+/// user, and why.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CircadianStatus {
+    /// Effective UTC offset in minutes.
+    pub offset_minutes: i32,
+    /// Provenance: `override`, `behavior`, or `utc-fallback`.
+    pub source: &'static str,
+    /// Local hour under the effective offset.
+    pub local_hour: f64,
+    /// Semantic day phase (morning-peak, night-rest…).
+    pub time_of_day: &'static str,
+    /// Factor accumulators, decayed to now.
+    pub factors: celiums_cognition::CircadianFactors,
+    /// The behaviour-inferred rhythm.
+    pub rhythm: ActivityRhythm,
+}
+
 /// Outcome of one consolidation pass.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ConsolidationReport {
@@ -294,6 +322,9 @@ pub struct MemoryEngine {
     config: RecallConfig,
     limbic_config: LimbicConfig,
     affect: AffectState,
+    circadian_config: CircadianConfig,
+    factor_weights: FactorWeights,
+    circadian: CircadianState,
 }
 
 impl MemoryEngine {
@@ -336,26 +367,152 @@ impl MemoryEngine {
                 updated_at_ms: 0,
             },
         };
+        // The circadian state survives restarts: rhythm continuity is
+        // the point. A fresh engine starts neutral (no override).
+        let circadian = match hyphae.get_record(CIRCADIAN_STATE_KEY)? {
+            Some(record) => CircadianState::from_record(&record)?,
+            None => CircadianState::new(None),
+        };
         Ok(Self {
             hyphae,
             dimension,
             config,
             limbic_config,
             affect,
+            circadian_config: CircadianConfig::default(),
+            factor_weights: FactorWeights::default(),
+            circadian,
         })
     }
 
-    /// Current limbic (PAD) state after homeostatic decay to `now_ms`.
+    /// Sets (or clears) the explicit timezone override, persisting it.
+    /// An explicit offset always wins over the inferred rhythm.
     ///
-    /// Fresh-on-read: the stored snapshot is decayed by the elapsed
-    /// time on every read, so long-idle engines report a state near
-    /// baseline instead of a stale spike.
+    /// # Errors
+    ///
+    /// Fails on storage failure.
+    pub fn set_timezone_override(
+        &mut self,
+        offset_minutes: Option<i32>,
+        now_ms: i64,
+    ) -> Result<(), MemoryEngineError> {
+        self.circadian.timezone_override_minutes = offset_minutes;
+        self.persist_circadian(now_ms)
+    }
+
+    /// The effective UTC offset in minutes, with its provenance:
+    /// explicit override wins, then the behaviour-inferred rhythm
+    /// (when confident), then UTC.
+    pub fn effective_timezone(&self) -> (i32, &'static str) {
+        if let Some(minutes) = self.circadian.timezone_override_minutes {
+            return (minutes, "override");
+        }
+        let rhythm = self.activity_rhythm();
+        match rhythm.offset_minutes {
+            // Below this confidence the trough is noise, not schedule.
+            Some(minutes) if rhythm.confidence >= 0.3 => (minutes, "behavior"),
+            _ => (0, "utc-fallback"),
+        }
+    }
+
+    /// The behaviour-inferred activity rhythm (VPN-immune tz signal).
+    pub fn activity_rhythm(&self) -> ActivityRhythm {
+        infer_activity_rhythm(&self.circadian.activity_histogram)
+    }
+
+    /// Current limbic (PAD) state after homeostatic decay to `now_ms`,
+    /// modulated by the circadian rhythm.
+    ///
+    /// Fresh-on-read on both layers: the limbic snapshot decays by the
+    /// elapsed time AND the circadian factors are viewed decayed —
+    /// caffeine from five hours ago is half gone even if no event
+    /// fired since. The rhythm runs on the user's effective local hour
+    /// (override > inferred behaviour > UTC), not raw UTC.
     pub fn affect_state(&self, now_ms: i64) -> Pad {
-        limbic::decay(
+        let decayed = limbic::decay(
             self.affect.pad,
             &self.limbic_config,
             minutes_between(self.affect.updated_at_ms, now_ms),
+        );
+        let inactive = self.inactive_hours(now_ms);
+        let stale_minutes = minutes_between(self.circadian.updated_at_ms, now_ms);
+        let factors = self.circadian.factors.decayed(stale_minutes, inactive);
+        circadian::modify_homeostatic(
+            decayed,
+            &self.circadian_config,
+            &self.factor_weights,
+            &factors,
+            self.local_hour(now_ms),
+            inactive,
         )
+    }
+
+    /// Feeds one circadian event (task completed, error, caffeine…)
+    /// into the rhythm: decays factors by the elapsed time, applies
+    /// the event, bumps the activity histogram (real interaction =
+    /// behavioural tz signal), and persists the state durably.
+    ///
+    /// # Errors
+    ///
+    /// Fails on storage failure.
+    pub fn record_circadian_event(
+        &mut self,
+        event: CircadianEvent,
+        now_ms: i64,
+    ) -> Result<(), MemoryEngineError> {
+        let inactive = self.inactive_hours(now_ms);
+        let stale_minutes = minutes_between(self.circadian.updated_at_ms, now_ms);
+        self.circadian.factors.decay(stale_minutes, inactive);
+        self.circadian.factors.record_event(event);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let bucket = (utc_hour(now_ms) as usize).min(23);
+        self.circadian.activity_histogram[bucket] =
+            self.circadian.activity_histogram[bucket].saturating_add(1);
+        self.circadian.last_interaction_ms = now_ms;
+        self.persist_circadian(now_ms)
+    }
+
+    /// Full circadian telemetry: effective timezone with provenance,
+    /// local hour, day phase, decayed factors, inferred rhythm.
+    pub fn circadian_status(&self, now_ms: i64) -> CircadianStatus {
+        let (offset_minutes, source) = self.effective_timezone();
+        let local_hour = self.local_hour(now_ms);
+        let inactive = self.inactive_hours(now_ms);
+        CircadianStatus {
+            offset_minutes,
+            source,
+            local_hour,
+            time_of_day: celiums_cognition::classify_time_of_day(local_hour),
+            factors: self.circadian.factors.decayed(
+                minutes_between(self.circadian.updated_at_ms, now_ms),
+                inactive,
+            ),
+            rhythm: self.activity_rhythm(),
+        }
+    }
+
+    /// Local hour under the effective timezone.
+    fn local_hour(&self, now_ms: i64) -> f64 {
+        let (offset_minutes, _source) = self.effective_timezone();
+        (utc_hour(now_ms) + f64::from(offset_minutes) / 60.0).rem_euclid(24.0)
+    }
+
+    fn persist_circadian(&mut self, now_ms: i64) -> Result<(), MemoryEngineError> {
+        self.circadian.updated_at_ms = now_ms;
+        self.hyphae
+            .put_record(Uuid::now_v7(), &self.circadian.to_record())?;
+        Ok(())
+    }
+
+    /// Hours since the last interaction; a fresh engine (no
+    /// interaction recorded) counts as just-constructed, not as idle
+    /// since 1970 — the TS constructor semantics.
+    fn inactive_hours(&self, now_ms: i64) -> f64 {
+        if self.circadian.last_interaction_ms == 0 {
+            0.0
+        } else {
+            hours_between(self.circadian.last_interaction_ms, now_ms)
+        }
     }
 
     /// Stores one memory: classifies importance, affect and type from
@@ -366,6 +523,32 @@ impl MemoryEngine {
     /// Fails on quantisation (including dimension mismatch) or storage
     /// failure. Nothing is stored when the embedding is invalid.
     pub fn remember(&mut self, request: RememberRequest) -> Result<Memory, MemoryEngineError> {
+        // The ethics write-gate runs before anything is stored — the
+        // TS incident lesson: gate on `enforcement_blocked`, never on
+        // a mode-dependent `passed`. Blocked content never reaches the
+        // log, the vectors or the entity index.
+        let evaluation = evaluate_ethics(&request.content, None);
+        if evaluation.enforcement_blocked {
+            let category = evaluation
+                .layer_a
+                .violations
+                .first()
+                .map(|violation| violation.category.as_str())
+                .or_else(|| {
+                    evaluation
+                        .layer_b
+                        .primary_risks
+                        .first()
+                        .map(|risk| risk.category.as_str())
+                })
+                .unwrap_or("catastrophic")
+                .to_owned();
+            return Err(MemoryEngineError::EthicsBlocked {
+                category,
+                violations: evaluation.layer_a.violations,
+            });
+        }
+
         let vector = quantize(&request.embedding, self.dimension)?;
 
         let (classified_importance, _signals) = classify_importance(&request.content);
@@ -397,6 +580,19 @@ impl MemoryEngine {
         // The stimulus moves the engine's own emotional state — the
         // amygdala pass of the TS pipeline (limbic.updateState on input).
         self.update_affect(memory.pad, &[], request.now_ms)?;
+
+        // And ticks the circadian rhythm: every remember is a session
+        // interaction; strong affect also spikes the accumulator.
+        self.record_circadian_event(CircadianEvent::SessionActive, request.now_ms)?;
+        let emotional_intensity = memory.pad.arousal.abs().max(memory.pad.pleasure.abs());
+        if emotional_intensity > 0.5 {
+            self.circadian
+                .factors
+                .record_event(CircadianEvent::EmotionalSpike {
+                    intensity: emotional_intensity,
+                });
+            self.persist_circadian(request.now_ms)?;
+        }
         Ok(memory)
     }
 
@@ -757,6 +953,10 @@ impl MemoryEngine {
                 }
             }
         }
+
+        // Consolidation is the engine's nap (circadian.ts:352-356):
+        // it pays down sleep debt and cognitive load.
+        self.record_circadian_event(CircadianEvent::Consolidation, now_ms)?;
         Ok(report)
     }
 
@@ -1132,13 +1332,25 @@ impl MemoryEngine {
 
     /// Applies one limbic update (decayed to `now_ms` first) and
     /// persists the new state durably.
+    ///
+    /// The update runs on the RAW limbic state — the circadian
+    /// modulation is applied only on read ([`Self::affect_state`]),
+    /// never baked into the stored snapshot. Mixing them was the TS
+    /// circadian-drift bug (`lastCircadianApplied` correction,
+    /// limbic.ts:202-284): a state stored at night carried the night
+    /// arousal into the next morning. Raw storage + fresh-on-read
+    /// modulation makes the drift impossible by construction.
     fn update_affect(
         &mut self,
         input: Pad,
         recalled: &[MemoryInfluence],
         now_ms: i64,
     ) -> Result<(), MemoryEngineError> {
-        let decayed = self.affect_state(now_ms);
+        let decayed = limbic::decay(
+            self.affect.pad,
+            &self.limbic_config,
+            minutes_between(self.affect.updated_at_ms, now_ms),
+        );
         let next = limbic::update(decayed, &self.limbic_config, input, recalled);
         self.affect = AffectState {
             pad: next,
@@ -1214,4 +1426,17 @@ fn minutes_between(earlier_ms: i64, later_ms: i64) -> f64 {
     #[allow(clippy::cast_precision_loss)]
     let elapsed = (later_ms.saturating_sub(earlier_ms)) as f64;
     f64::max(0.0, elapsed / MS_PER_MINUTE)
+}
+
+fn hours_between(earlier_ms: i64, later_ms: i64) -> f64 {
+    minutes_between(earlier_ms, later_ms) / 60.0
+}
+
+/// UTC hour-of-day (0-23.99…) of a Unix-milliseconds timestamp.
+fn utc_hour(now_ms: i64) -> f64 {
+    const MS_PER_DAY: i64 = 24 * 60 * 60 * 1000;
+    const MS_PER_HOUR: f64 = 60.0 * 60.0 * 1000.0;
+    #[allow(clippy::cast_precision_loss)]
+    let in_day = (now_ms.rem_euclid(MS_PER_DAY)) as f64;
+    in_day / MS_PER_HOUR
 }
