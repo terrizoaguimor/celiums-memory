@@ -14,6 +14,7 @@
 //! Hyphae's canonical Q15 domain and enforces the dimension guard.
 
 mod affect_state;
+mod capture;
 mod circadian_state;
 mod embed;
 mod embedding_space;
@@ -31,6 +32,7 @@ mod quantize;
 mod timetravel;
 
 pub use affect_state::AffectState;
+pub use capture::{CaptureAdapter, CaptureEvent};
 pub use circadian_state::CircadianState;
 pub use embed::deterministic_embed;
 pub use embedding_space::{EmbeddingNormalization, EmbeddingSpaceIdentity, InvalidEmbeddingSpace};

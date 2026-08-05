@@ -74,7 +74,7 @@ fn full_remember_recall_round_trip_over_mcp() {
             "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}
         }))
         .expect("tools list");
-    assert_eq!(tools["result"]["tools"].as_array().map(Vec::len), Some(17));
+    assert_eq!(tools["result"]["tools"].as_array().map(Vec::len), Some(18));
 
     let remembered = call(
         &mut session,
@@ -187,6 +187,39 @@ fn full_remember_recall_round_trip_over_mcp() {
     );
     assert_eq!(deleted["structuredContent"]["deleted"], true);
     assert!(results[0]["channels"]["semantic"].is_number(), "glass box");
+}
+
+#[test]
+fn capture_event_normalizes_all_adapter_namespaces_over_mcp() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut session = initialized_session(&dir);
+
+    for adapter in ["opencode_codex", "claude_code", "cursor", "mcp", "webhook"] {
+        let captured = call(
+            &mut session,
+            "capture_event",
+            json!({
+                "adapter": adapter,
+                "source_event_id": format!("{adapter}-1"),
+                "turn_id": "turn-1",
+                "source_kind": "user",
+                "content": format!("captured from {adapter}"),
+                "tenant_id": "local",
+                "user_id": "mario",
+                "scope": "global"
+            }),
+        );
+        assert_eq!(captured["isError"], false, "{adapter}: {captured}");
+        assert_eq!(
+            captured["structuredContent"]["source_namespace"],
+            match adapter {
+                "opencode_codex" => "opencode-codex",
+                "claude_code" => "claude-code",
+                value => value,
+            }
+        );
+        assert_eq!(captured["structuredContent"]["status"], "materialized");
+    }
 }
 
 #[test]

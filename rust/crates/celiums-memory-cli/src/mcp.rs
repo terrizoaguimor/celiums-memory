@@ -3,7 +3,7 @@
 
 //! MCP stdio server over the embedded memory engine.
 //!
-//! Newline-delimited JSON-RPC 2.0, MCP protocol `2025-11-25`, 17 tools:
+//! Newline-delimited JSON-RPC 2.0, MCP protocol `2025-11-25`, 18 tools:
 //! memory, journal, entity graph, consolidation, lifecycle, snapshots,
 //! time-travel recall and circadian status. The transport pattern
 //! follows Hyphae's bounded stdio adapter (`hyphae-cli/src/mcp.rs`);
@@ -17,11 +17,12 @@ use std::io::{self, BufRead, Write};
 
 use celiums_cognition::{EntityKind, JournalEntryType, Scope};
 use celiums_memory_engine::{
-    AgentId, BranchAbstention, ConversationId, EmbeddingNormalization, EmbeddingSpaceIdentity,
-    IdempotencyKey, JournalRecallRequest, JournalWriteRequest, ListMemoriesRequest, MemoryEngine,
-    MemoryIdentity, MemoryPatch, ProjectId, Provenance, RecallConfig, RecallRequest, RecallScope,
-    RememberContext, RememberRequest, ScoredMemory, SessionId, SourceKind, TenantId,
-    UpdateMemoryRequest, UserId, deterministic_embed, recall_at, snapshot_points,
+    AgentId, BranchAbstention, CaptureAdapter, CaptureEvent, ConversationId,
+    EmbeddingNormalization, EmbeddingSpaceIdentity, IdempotencyKey, JournalRecallRequest,
+    JournalWriteRequest, ListMemoriesRequest, MemoryEngine, MemoryIdentity, MemoryPatch, ProjectId,
+    Provenance, RecallConfig, RecallRequest, RecallScope, RememberContext, RememberRequest,
+    ScoredMemory, SessionId, SourceEventId, SourceKind, TenantId, TurnId, UpdateMemoryRequest,
+    UserId, deterministic_embed, recall_at, snapshot_points,
 };
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -175,6 +176,7 @@ impl Session {
             "memory_update" => self.tool_memory_update(&arguments),
             "memory_delete" => self.tool_memory_delete(&arguments),
             "remember_batch" => self.tool_remember_batch(&arguments),
+            "capture_event" => self.tool_capture_event(&arguments),
             "entity_lookup" => self.tool_entity_lookup(&arguments),
             "consolidate" => self.tool_consolidate(&arguments),
             "snapshot_now" => self.tool_snapshot_now(),
@@ -467,6 +469,45 @@ impl Session {
         }))
     }
 
+    fn tool_capture_event(&mut self, arguments: &Value) -> Result<Value, String> {
+        let content = required_string(arguments, "content")?;
+        let embedding = self.embedding_from(arguments, &content)?;
+        let adapter = parse_capture_adapter(arguments)?;
+        let now = now_ms();
+        let context = remember_context(arguments, &content, now)?;
+        let entry = self
+            .engine
+            .ingest_event(
+                CaptureEvent {
+                    adapter,
+                    source_event_id: SourceEventId::new(required_string(
+                        arguments,
+                        "source_event_id",
+                    )?)
+                    .map_err(|error| error.to_string())?,
+                    turn_id: optional_string(arguments, "turn_id")?
+                        .map(TurnId::new)
+                        .transpose()
+                        .map_err(|error| error.to_string())?,
+                    source_kind: context.provenance.source_kind,
+                    source_uri: context.provenance.source_uri,
+                    actor: context.provenance.actor,
+                    identity: context.identity,
+                    content,
+                    event_at_ms: context.event_at_ms,
+                    ingested_at_ms: now,
+                    embedding: Some(embedding),
+                    tags: string_array(arguments, "tags"),
+                    scope: optional_scope(arguments)?.unwrap_or_default(),
+                    content_role: parse_content_role(arguments)?,
+                    purpose: parse_memory_purpose(arguments, "purpose")?,
+                }
+                .into_ingest_request(),
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(ingestion_json(&entry))
+    }
+
     fn tool_entity_lookup(&mut self, arguments: &Value) -> Result<Value, String> {
         match arguments.get("name").and_then(Value::as_str) {
             Some(name) => {
@@ -688,6 +729,20 @@ fn abstention_str(reason: BranchAbstention) -> &'static str {
     }
 }
 
+fn ingestion_json(entry: &celiums_memory_engine::IngestionEntry) -> Value {
+    json!({
+        "event_id": entry.event_id.as_str(),
+        "source_namespace": entry.source_namespace.as_str(),
+        "source_event_id": entry.source_event_id.as_str(),
+        "turn_id": entry.turn_id.as_ref().map(TurnId::as_str),
+        "status": entry.status.as_str(),
+        "memory_id": entry.memory_id,
+        "error_code": entry.error_code,
+        "attempt_count": entry.attempt_count,
+        "conflict_count": entry.conflict_count,
+    })
+}
+
 fn tool_definitions() -> Vec<Value> {
     let text_schema = |description: &str| {
         json!({
@@ -801,6 +856,32 @@ fn tool_definitions() -> Vec<Value> {
                 "type":"object",
                 "properties":{"items":{"type":"array","maxItems":100,"items":text_schema("Text to remember")}},
                 "required":["items"]
+            }),
+            false,
+        ),
+        tool(
+            "capture_event",
+            "Capture one raw coding-agent, MCP, or webhook event with durable provenance.",
+            &json!({
+                "type":"object",
+                "properties": {
+                    "adapter":{"type":"string","enum":["opencode_codex","claude_code","cursor","mcp","webhook"]},
+                    "source_event_id":{"type":"string","minLength":1,"maxLength":255},
+                    "turn_id":{"type":"string","minLength":1,"maxLength":255},
+                    "content":{"type":"string"},
+                    "embedding":{"type":"array","items":{"type":"number"}},
+                    "tags":{"type":"array","items":{"type":"string"}},
+                    "scope":{"type":"string","enum":["session","project","global"]},
+                    "tenant_id":{"type":"string"},"user_id":{"type":"string"},
+                    "agent_id":{"type":"string"},"project_id":{"type":"string"},
+                    "conversation_id":{"type":"string"},"session_id":{"type":"string"},
+                    "source_kind":{"type":"string","enum":["user","assistant","tool","document","system","benchmark","legacy"]},
+                    "source_uri":{"type":"string"},"actor":{"type":"string"},
+                    "event_at_ms":{"type":"integer"},
+                    "content_role":{"type":"string","enum":["observation","description","operational_request"]},
+                    "purpose":{"type":"string","enum":["conversational_context","personalization","task_execution","safety_audit"]}
+                },
+                "required":["adapter","source_event_id","content"]
             }),
             false,
         ),
@@ -1023,6 +1104,17 @@ fn parse_disclosure_authority(
     }
 }
 
+fn parse_capture_adapter(arguments: &Value) -> Result<CaptureAdapter, String> {
+    match arguments.get("adapter").and_then(Value::as_str) {
+        Some("opencode_codex") => Ok(CaptureAdapter::OpenCodeCodex),
+        Some("claude_code") => Ok(CaptureAdapter::ClaudeCode),
+        Some("cursor") => Ok(CaptureAdapter::Cursor),
+        Some("mcp") => Ok(CaptureAdapter::Mcp),
+        Some("webhook") => Ok(CaptureAdapter::Webhook),
+        _ => Err("adapter must be opencode_codex|claude_code|cursor|mcp|webhook".to_owned()),
+    }
+}
+
 fn remember_context(
     arguments: &Value,
     content: &str,
@@ -1236,7 +1328,7 @@ mod tests {
     #[test]
     fn tool_definitions_are_valid_objects() {
         let tools = tool_definitions();
-        assert_eq!(tools.len(), 17);
+        assert_eq!(tools.len(), 18);
         assert!(tools.iter().all(|tool| tool["inputSchema"].is_object()));
         assert!(tools.iter().all(|tool| tool["name"].is_string()));
     }

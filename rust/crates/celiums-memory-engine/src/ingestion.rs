@@ -132,7 +132,8 @@ pub enum IngestionStatus {
 }
 
 impl IngestionStatus {
-    pub(crate) fn as_str(self) -> &'static str {
+    /// Stable serialized status name.
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Received => "received",
             Self::Materialized => "materialized",
