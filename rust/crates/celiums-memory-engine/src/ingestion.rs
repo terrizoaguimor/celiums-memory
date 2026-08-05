@@ -109,7 +109,7 @@ impl EventId {
         &self.0
     }
 
-    fn parse(value: String) -> Result<Self, IngestionDecodeError> {
+    pub(crate) fn parse(value: String) -> Result<Self, IngestionDecodeError> {
         Uuid::parse_str(&value).map_err(|_| IngestionDecodeError::Field { field: "event_id" })?;
         Ok(Self(value))
     }

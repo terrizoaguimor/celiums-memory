@@ -40,6 +40,9 @@ use uuid::Uuid;
 
 use crate::affect_state::{AFFECT_STATE_KEY, AffectState};
 use crate::circadian_state::{CIRCADIAN_STATE_KEY, CircadianState};
+use crate::claim::{
+    Claim, ClaimDecodeError, ClaimEvidence, ClaimId, CreateClaimRequest, InvalidClaim,
+};
 use crate::embedding_space::{EMBEDDING_SPACE_KEY, EmbeddingSpaceIdentity};
 use crate::entity_index::{EntityRecord, entity_key, entity_prefix};
 use crate::filter::authorization_filter;
@@ -207,6 +210,30 @@ pub enum MemoryEngineError {
     /// A durable ingestion ledger record was malformed.
     #[error(transparent)]
     IngestionDecode(#[from] IngestionDecodeError),
+    /// A claim request violated the canonical contract.
+    #[error(transparent)]
+    InvalidClaim(#[from] InvalidClaim),
+    /// A durable claim record could not be decoded.
+    #[error(transparent)]
+    ClaimDecode(#[from] ClaimDecodeError),
+    /// One requested source event was missing or outside the claim scope.
+    #[error("claim evidence event `{event_id}` was not found in the requested scope")]
+    ClaimEvidenceNotFound {
+        /// Missing event ID.
+        event_id: String,
+    },
+    /// A deterministic claim ID resolved to different immutable claim data.
+    #[error("claim `{claim_id}` already exists with different immutable data")]
+    ClaimConflict {
+        /// Stable claim ID in conflict.
+        claim_id: String,
+    },
+    /// An evidence excerpt did not occur in the immutable raw event.
+    #[error("claim evidence excerpt does not occur in event `{event_id}`")]
+    ClaimEvidenceExcerptMismatch {
+        /// Source event with the mismatched excerpt.
+        event_id: String,
+    },
     /// A canonical memory filter was invalid.
     #[error(transparent)]
     Filter(#[from] MemoryFilterError),
@@ -1299,6 +1326,91 @@ impl MemoryEngine {
     fn persist_ingestion_batch(&mut self, batch: &IngestionBatch) -> Result<(), MemoryEngineError> {
         self.hyphae.put_record(Uuid::now_v7(), &batch.to_record())?;
         Ok(())
+    }
+
+    /// Creates one atomic claim and its evidence links without mutating source episodes.
+    ///
+    /// # Errors
+    ///
+    /// Fails on invalid claim shape, scope/tenant mismatch, missing evidence, or storage.
+    pub fn create_claim(
+        &mut self,
+        request: CreateClaimRequest,
+    ) -> Result<Claim, MemoryEngineError> {
+        request.validate()?;
+        self.require_tenant(&request.scope.tenant_id)?;
+        for evidence in &request.evidence {
+            let episode = self
+                .get_ingestion(&evidence.event_id, &request.scope)?
+                .ok_or_else(|| MemoryEngineError::ClaimEvidenceNotFound {
+                    event_id: evidence.event_id.to_string(),
+                })?;
+            if evidence
+                .excerpt
+                .as_ref()
+                .is_some_and(|excerpt| !episode.content.contains(excerpt))
+            {
+                return Err(MemoryEngineError::ClaimEvidenceExcerptMismatch {
+                    event_id: evidence.event_id.to_string(),
+                });
+            }
+        }
+
+        let claim = Claim::from_request(&request);
+        if let Some(existing) = self.get_claim(&claim.id, &request.scope)? {
+            if existing != claim {
+                return Err(MemoryEngineError::ClaimConflict {
+                    claim_id: claim.id.to_string(),
+                });
+            }
+            return Ok(existing);
+        }
+        let mut records = Vec::with_capacity(request.evidence.len() + 1);
+        records.push(claim.to_record());
+        records.extend(request.evidence.iter().map(|evidence| {
+            ClaimEvidence::from_input(claim.id.clone(), evidence, request.recorded_at_ms)
+                .to_record()
+        }));
+        self.hyphae
+            .put_records(deterministic_claim_uuid(&claim.id, "create"), &records)?;
+        Ok(claim)
+    }
+
+    /// Gets one visible claim by ID.
+    ///
+    /// # Errors
+    ///
+    /// Fails on tenant mismatch, storage, or decode failure.
+    pub fn get_claim(
+        &self,
+        claim_id: &ClaimId,
+        scope: &RecallScope,
+    ) -> Result<Option<Claim>, MemoryEngineError> {
+        self.require_tenant(&scope.tenant_id)?;
+        let Some(record) = self.hyphae.get_record(&Claim::key(claim_id))? else {
+            return Ok(None);
+        };
+        let claim = Claim::from_record(&record)?;
+        Ok(claim_visible_to(&claim, scope).then_some(claim))
+    }
+
+    /// Lists visible immutable evidence links for one claim.
+    ///
+    /// # Errors
+    ///
+    /// Fails on tenant mismatch, storage, or decode failure.
+    pub fn claim_evidence(
+        &self,
+        claim_id: &ClaimId,
+        scope: &RecallScope,
+    ) -> Result<Vec<ClaimEvidence>, MemoryEngineError> {
+        if self.get_claim(claim_id, scope)?.is_none() {
+            return Ok(Vec::new());
+        }
+        self.scan_prefix(&ClaimEvidence::prefix(claim_id))?
+            .iter()
+            .map(|record| ClaimEvidence::from_record(record).map_err(Into::into))
+            .collect()
     }
 
     /// Stores one memory: classifies importance, affect and type from
@@ -2805,6 +2917,10 @@ fn ingestion_visible_to(entry: &IngestionEntry, scope: &RecallScope) -> bool {
     }
 }
 
+fn claim_visible_to(claim: &Claim, scope: &RecallScope) -> bool {
+    recall_scope_visible_to(&claim.scope, scope)
+}
+
 fn recall_scope_visible_to(owner: &RecallScope, requested: &RecallScope) -> bool {
     owner.tenant_id == requested.tenant_id
         && owner.user_id == requested.user_id
@@ -3076,6 +3192,20 @@ fn deterministic_ingestion_uuid(entry: &IngestionEntry) -> Uuid {
     if let Some(error_code) = &entry.error_code {
         hasher.update(error_code.as_bytes());
     }
+    let digest = hasher.finalize();
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest.as_bytes()[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(bytes)
+}
+
+fn deterministic_claim_uuid(claim_id: &ClaimId, phase: &str) -> Uuid {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"celiums-memory/claim-write/v1");
+    hasher.update(claim_id.as_str().as_bytes());
+    hasher.update(&[0]);
+    hasher.update(phase.as_bytes());
     let digest = hasher.finalize();
     let mut bytes = [0_u8; 16];
     bytes.copy_from_slice(&digest.as_bytes()[..16]);

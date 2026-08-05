@@ -16,6 +16,7 @@
 mod affect_state;
 mod capture;
 mod circadian_state;
+mod claim;
 mod embed;
 mod embedding_space;
 mod engine;
@@ -34,6 +35,10 @@ mod timetravel;
 pub use affect_state::AffectState;
 pub use capture::{CaptureAdapter, CaptureEvent};
 pub use circadian_state::CircadianState;
+pub use claim::{
+    Claim, ClaimDecodeError, ClaimEvidence, ClaimEvidenceInput, ClaimEvidenceRelation, ClaimId,
+    CreateClaimRequest, InvalidClaim,
+};
 pub use embed::deterministic_embed;
 pub use embedding_space::{EmbeddingNormalization, EmbeddingSpaceIdentity, InvalidEmbeddingSpace};
 pub use engine::{
