@@ -34,10 +34,12 @@ pub fn scope() -> celiums_memory_engine::RecallScope {
     }
 }
 
+#[allow(dead_code)]
 pub fn episode(engine: &mut MemoryEngine, source_event_id: &str, content: &str) -> IngestionEntry {
     episode_at(engine, source_event_id, content, NOW_MS)
 }
 
+#[allow(dead_code)]
 pub fn episode_at(
     engine: &mut MemoryEngine,
     source_event_id: &str,

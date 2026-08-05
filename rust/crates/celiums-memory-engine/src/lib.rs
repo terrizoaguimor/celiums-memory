@@ -17,6 +17,7 @@ mod affect_state;
 mod capture;
 mod circadian_state;
 mod claim;
+mod derived;
 mod embed;
 mod embedding_space;
 mod engine;
@@ -41,6 +42,10 @@ pub use claim::{
     Claim, ClaimContradiction, ClaimContradictionKind, ClaimDecodeError, ClaimEvidence,
     ClaimEvidenceInput, ClaimEvidenceRelation, ClaimId, ClaimPropertyQuery, ClaimSupersession,
     ClaimSupersessionRelation, CreateClaimRequest, InvalidClaim, SupersedeClaimRequest,
+};
+pub use derived::{
+    ConsolidateTurnRequest, DerivedDecodeError, DerivedId, DerivedKind, DerivedMemory,
+    DerivedSource, DerivedStatus, InvalidDerived,
 };
 pub use embed::deterministic_embed;
 pub use embedding_space::{EmbeddingNormalization, EmbeddingSpaceIdentity, InvalidEmbeddingSpace};

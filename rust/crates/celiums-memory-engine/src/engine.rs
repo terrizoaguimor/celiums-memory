@@ -45,6 +45,11 @@ use crate::claim::{
     ClaimPropertyQuery, ClaimSupersession, ClaimSupersessionRelation, CreateClaimRequest,
     InvalidClaim, SupersedeClaimRequest, validity_overlap,
 };
+use crate::derived::{
+    ConsolidateTurnRequest, DerivedDecodeError, DerivedId, DerivedKind, DerivedMemory,
+    DerivedSource, InvalidDerived, NewDerivedMemory, source_digest,
+    validate_text as validate_derived_text,
+};
 use crate::embedding_space::{EMBEDDING_SPACE_KEY, EmbeddingSpaceIdentity};
 use crate::entity_index::{EntityRecord, entity_key, entity_prefix};
 use crate::filter::authorization_filter;
@@ -306,6 +311,15 @@ pub enum MemoryEngineError {
         /// Missing relation type ID.
         relation_type: String,
     },
+    /// A derived-memory request violated validation.
+    #[error(transparent)]
+    InvalidDerived(#[from] InvalidDerived),
+    /// Durable derived state was malformed.
+    #[error(transparent)]
+    DerivedDecode(#[from] DerivedDecodeError),
+    /// No visible source matched a consolidation request.
+    #[error("consolidation request has no visible source records")]
+    ConsolidationSourcesEmpty,
     /// A canonical memory filter was invalid.
     #[error(transparent)]
     Filter(#[from] MemoryFilterError),
@@ -3550,6 +3564,96 @@ impl MemoryEngine {
             return Ok(None);
         }
         Ok(Some(Memory::from_record(&record)?))
+    }
+
+    /// Consolidates all visible events carrying one explicit turn ID into an episode.
+    pub fn consolidate_turn(
+        &mut self,
+        request: ConsolidateTurnRequest,
+    ) -> Result<DerivedMemory, MemoryEngineError> {
+        self.require_tenant(&request.scope.tenant_id)?;
+        validate_derived_text(&request.algorithm_version, "algorithm_version")?;
+        let mut events = self
+            .ingestion_entries(&request.scope)?
+            .into_iter()
+            .filter(|event| event.turn_id.as_ref() == Some(&request.turn_id))
+            .collect::<Vec<_>>();
+        if events.is_empty() {
+            return Err(MemoryEngineError::ConsolidationSourcesEmpty);
+        }
+        events.sort_by(|left, right| {
+            left.event_at_ms
+                .unwrap_or(left.first_ingested_at_ms)
+                .cmp(&right.event_at_ms.unwrap_or(right.first_ingested_at_ms))
+                .then_with(|| left.event_id.cmp(&right.event_id))
+        });
+        let immediate_sources = events
+            .iter()
+            .map(|event| DerivedSource::Event(event.event_id.clone()))
+            .collect::<Vec<_>>();
+        let root_event_ids = events
+            .iter()
+            .map(|event| event.event_id.clone())
+            .collect::<Vec<_>>();
+        let root_hashes = events
+            .iter()
+            .map(|event| (event.event_id.clone(), event.content_hash.clone()))
+            .collect::<Vec<_>>();
+        let content = events
+            .iter()
+            .map(|event| format!("{}: {}", event.source_kind.as_str(), event.content.trim()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let digest = source_digest(&immediate_sources, &root_hashes);
+        let derived = DerivedMemory::build(NewDerivedMemory {
+            kind: DerivedKind::Episode,
+            scope: request.scope.clone(),
+            hierarchy_key: request.turn_id.to_string(),
+            content,
+            immediate_sources,
+            root_event_ids,
+            source_digest: digest,
+            algorithm_version: request.algorithm_version,
+            recorded_at_ms: request.recorded_at_ms,
+            period: None,
+        });
+        if let Some(existing) = self.get_derived(&derived.id, &request.scope)? {
+            return Ok(existing);
+        }
+        self.hyphae
+            .put_record(Uuid::now_v7(), &derived.to_record())?;
+        Ok(derived)
+    }
+
+    /// Gets one visible derived artifact.
+    pub fn get_derived(
+        &self,
+        derived_id: &DerivedId,
+        scope: &RecallScope,
+    ) -> Result<Option<DerivedMemory>, MemoryEngineError> {
+        self.require_tenant(&scope.tenant_id)?;
+        let Some(record) = self.hyphae.get_record(&DerivedMemory::key(derived_id))? else {
+            return Ok(None);
+        };
+        let derived = DerivedMemory::from_record(&record)?;
+        Ok(recall_scope_visible_to(&derived.scope, scope).then_some(derived))
+    }
+
+    /// Lists visible derived artifacts in deterministic ID order.
+    pub fn derived_memories(
+        &self,
+        scope: &RecallScope,
+    ) -> Result<Vec<DerivedMemory>, MemoryEngineError> {
+        self.require_tenant(&scope.tenant_id)?;
+        let derived = self
+            .scan_prefix(DerivedMemory::prefix())?
+            .iter()
+            .map(DerivedMemory::from_record)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(derived
+            .into_iter()
+            .filter(|entry| recall_scope_visible_to(&entry.scope, scope))
+            .collect())
     }
 
     /// Consolidates a block of conversation text into memories

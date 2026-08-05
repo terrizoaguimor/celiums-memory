@@ -57,7 +57,7 @@ impl ClaimId {
         &self.0
     }
 
-    fn parse(value: String) -> Result<Self, ClaimDecodeError> {
+    pub(crate) fn parse(value: String) -> Result<Self, ClaimDecodeError> {
         Uuid::parse_str(&value).map_err(|_| ClaimDecodeError::Field { field: "claim_id" })?;
         Ok(Self(value))
     }
