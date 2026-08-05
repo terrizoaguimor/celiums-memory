@@ -24,6 +24,7 @@ mod entity_index;
 mod filter;
 mod governance_audit;
 mod governance_state;
+mod graph;
 mod idempotency;
 mod identity;
 mod ingestion;
@@ -59,6 +60,11 @@ pub use governance_audit::{
     FeedbackResolution, GovernedOperation, ReviewDisposition, ReviewState, verify_audit_chain,
 };
 pub use governance_state::MemoryGovernance;
+pub use graph::{
+    CanonicalEntity, CreateEntityRequest, DefineEntityTypeRequest, EntityAlias, EntityAliasRequest,
+    EntityId, EntityLineage, EntityLineageRequest, EntityLineageType, EntityResolution,
+    EntityTypeDefinition, GraphDecodeError, GraphEvidenceInput, InvalidGraph, normalize_label,
+};
 pub use idempotency::{IdempotencyDecodeError, IdempotencyKey, InvalidIdempotencyKey};
 pub use identity::{
     AgentId, ConversationId, InvalidIdentity, MemoryIdentity, ProjectId, Provenance, RecallScope,

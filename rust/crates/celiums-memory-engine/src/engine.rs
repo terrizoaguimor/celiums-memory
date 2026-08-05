@@ -54,6 +54,12 @@ use crate::governance_audit::{
     GovernedOperation, ReviewDisposition, ReviewState, audit_prefix, feedback_prefix,
 };
 use crate::governance_state::MemoryGovernance;
+use crate::graph::{
+    CanonicalEntity, CreateEntityRequest, DefineEntityTypeRequest, EntityAlias, EntityAliasRequest,
+    EntityId, EntityLineage, EntityLineageRequest, EntityLineageType, EntityResolution,
+    EntityTypeDefinition, GraphDecodeError, InvalidGraph, built_in_entity_type, normalize_label,
+    scope_visible as graph_scope_visible, validate_interval, validate_text as validate_graph_text,
+};
 use crate::idempotency::{
     IdempotencyDecodeError, IdempotencyKey, RememberIdempotencyRecord, canonical_remember_hash,
     deterministic_remember_uuid,
@@ -252,6 +258,39 @@ pub enum MemoryEngineError {
         /// Missing claim ID.
         claim_id: String,
     },
+    /// A graph request violated canonical validation.
+    #[error(transparent)]
+    InvalidGraph(#[from] InvalidGraph),
+    /// A durable graph record was malformed.
+    #[error(transparent)]
+    GraphDecode(#[from] GraphDecodeError),
+    /// One graph entity was missing or hidden.
+    #[error("graph entity `{entity_id}` was not found in the requested scope")]
+    GraphEntityNotFound {
+        /// Missing entity ID.
+        entity_id: String,
+    },
+    /// An ontology entity type is unknown.
+    #[error("graph entity type `{entity_type}` is not defined")]
+    GraphEntityTypeNotFound {
+        /// Missing type ID.
+        entity_type: String,
+    },
+    /// A graph evidence event was missing or hidden.
+    #[error("graph evidence event `{event_id}` was not found in the requested scope")]
+    GraphEvidenceNotFound {
+        /// Missing event ID.
+        event_id: String,
+    },
+    /// A graph evidence excerpt did not occur in the immutable raw event.
+    #[error("graph evidence excerpt does not occur in event `{event_id}`")]
+    GraphEvidenceExcerptMismatch {
+        /// Source event ID.
+        event_id: String,
+    },
+    /// Entity lineage would form a redirect cycle.
+    #[error("entity lineage would create a cycle")]
+    GraphLineageCycle,
     /// A canonical memory filter was invalid.
     #[error(transparent)]
     Filter(#[from] MemoryFilterError),
@@ -1889,6 +1928,308 @@ impl MemoryEngine {
             .collect()
     }
 
+    /// Defines one configurable entity type in a versioned ontology.
+    pub fn define_entity_type(
+        &mut self,
+        request: DefineEntityTypeRequest,
+    ) -> Result<EntityTypeDefinition, MemoryEngineError> {
+        self.require_tenant(&request.scope.tenant_id)?;
+        validate_graph_text(&request.type_id, "type_id")?;
+        validate_graph_text(&request.ontology_version, "ontology_version")?;
+        let definition = EntityTypeDefinition::from_request(request);
+        self.hyphae
+            .put_record(Uuid::now_v7(), &definition.to_record())?;
+        Ok(definition)
+    }
+
+    /// Lists visible ontology entity type definitions.
+    pub fn entity_types(
+        &self,
+        scope: &RecallScope,
+    ) -> Result<Vec<EntityTypeDefinition>, MemoryEngineError> {
+        self.require_tenant(&scope.tenant_id)?;
+        let definitions = self
+            .scan_prefix(EntityTypeDefinition::prefix())?
+            .iter()
+            .map(EntityTypeDefinition::from_record)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(definitions
+            .into_iter()
+            .filter(|definition| graph_scope_visible(&definition.scope, scope))
+            .collect())
+    }
+
+    /// Creates a stable canonical entity and its exact canonical-label alias.
+    pub fn create_entity(
+        &mut self,
+        request: CreateEntityRequest,
+    ) -> Result<CanonicalEntity, MemoryEngineError> {
+        self.require_tenant(&request.scope.tenant_id)?;
+        validate_graph_text(&request.entity_type, "entity_type")?;
+        validate_graph_text(&request.canonical_label, "canonical_label")?;
+        if request.evidence.is_empty() {
+            return Err(InvalidGraph::Evidence.into());
+        }
+        self.require_entity_type(&request.scope, &request.entity_type)?;
+        self.validate_graph_evidence(&request.scope, &request.evidence)?;
+        let entity = CanonicalEntity::from_request(&request);
+        if let Some(existing) = self.get_entity(&entity.id, &request.scope)? {
+            return Ok(existing);
+        }
+        let alias = EntityAlias::from_request(&EntityAliasRequest {
+            scope: request.scope.clone(),
+            entity_id: entity.id.clone(),
+            alias: request.canonical_label,
+            valid_from_ms: None,
+            valid_to_ms: None,
+            recorded_at_ms: request.recorded_at_ms,
+            evidence: Vec::new(),
+        });
+        self.hyphae.put_records(
+            Uuid::now_v7(),
+            &[
+                entity.to_record(),
+                alias.to_record(&entity.scope, &entity.entity_type),
+            ],
+        )?;
+        Ok(entity)
+    }
+
+    /// Gets one visible canonical entity.
+    pub fn get_entity(
+        &self,
+        entity_id: &EntityId,
+        scope: &RecallScope,
+    ) -> Result<Option<CanonicalEntity>, MemoryEngineError> {
+        self.require_tenant(&scope.tenant_id)?;
+        let Some(record) = self.hyphae.get_record(&CanonicalEntity::key(entity_id))? else {
+            return Ok(None);
+        };
+        let entity = CanonicalEntity::from_record(&record)?;
+        Ok(graph_scope_visible(&entity.scope, scope).then_some(entity))
+    }
+
+    /// Adds one temporal alias to a visible entity.
+    pub fn add_entity_alias(
+        &mut self,
+        request: EntityAliasRequest,
+    ) -> Result<EntityAlias, MemoryEngineError> {
+        validate_graph_text(&request.alias, "alias")?;
+        validate_interval(request.valid_from_ms, request.valid_to_ms)?;
+        self.validate_graph_evidence(&request.scope, &request.evidence)?;
+        let entity = self
+            .get_entity(&request.entity_id, &request.scope)?
+            .ok_or_else(|| MemoryEngineError::GraphEntityNotFound {
+                entity_id: request.entity_id.to_string(),
+            })?;
+        let alias = EntityAlias::from_request(&request);
+        self.hyphae.put_record(
+            Uuid::now_v7(),
+            &alias.to_record(&request.scope, &entity.entity_type),
+        )?;
+        Ok(alias)
+    }
+
+    /// Resolves an exact normalized alias, surfacing ambiguity explicitly.
+    pub fn resolve_entity_alias(
+        &self,
+        scope: &RecallScope,
+        entity_type: &str,
+        alias: &str,
+        valid_at_ms: i64,
+        known_at_ms: i64,
+    ) -> Result<EntityResolution, MemoryEngineError> {
+        self.require_tenant(&scope.tenant_id)?;
+        let normalized = normalize_label(alias);
+        let aliases = self
+            .scan_prefix(EntityAlias::prefix())?
+            .iter()
+            .map(EntityAlias::from_record)
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut matches = Vec::new();
+        for (candidate, owner, candidate_type) in aliases {
+            if candidate_type == entity_type
+                && candidate.normalized_alias == normalized
+                && candidate.valid_at(valid_at_ms, known_at_ms)
+                && graph_scope_visible(&owner, scope)
+            {
+                matches.push(candidate.entity_id);
+            }
+        }
+        matches.sort();
+        matches.dedup();
+        Ok(resolution(matches))
+    }
+
+    /// Records an append-only merge or split event.
+    pub fn record_entity_lineage(
+        &mut self,
+        request: EntityLineageRequest,
+    ) -> Result<EntityLineage, MemoryEngineError> {
+        let expected_targets = match request.lineage_type {
+            EntityLineageType::MergedInto => 1,
+            EntityLineageType::SplitInto => 2,
+        };
+        if request.target_entity_ids.len() < expected_targets {
+            return Err(InvalidGraph::LineageTargets.into());
+        }
+        if request.evidence.is_empty() {
+            return Err(InvalidGraph::Evidence.into());
+        }
+        let source = self
+            .get_entity(&request.source_entity_id, &request.scope)?
+            .ok_or_else(|| MemoryEngineError::GraphEntityNotFound {
+                entity_id: request.source_entity_id.to_string(),
+            })?;
+        for target_id in &request.target_entity_ids {
+            let target = self.get_entity(target_id, &request.scope)?.ok_or_else(|| {
+                MemoryEngineError::GraphEntityNotFound {
+                    entity_id: target_id.to_string(),
+                }
+            })?;
+            if source.entity_type != target.entity_type {
+                return Err(MemoryEngineError::GraphEntityTypeNotFound {
+                    entity_type: target.entity_type,
+                });
+            }
+            if self.entity_reaches(target_id, &source.id, &request.scope)? {
+                return Err(MemoryEngineError::GraphLineageCycle);
+            }
+        }
+        self.validate_graph_evidence(&request.scope, &request.evidence)?;
+        let lineage = EntityLineage::from_request(&request);
+        self.hyphae
+            .put_record(Uuid::now_v7(), &lineage.to_record(&request.scope))?;
+        Ok(lineage)
+    }
+
+    /// Resolves visible merge/split lineage at valid and transaction time.
+    pub fn resolve_entity_id(
+        &self,
+        entity_id: &EntityId,
+        scope: &RecallScope,
+        valid_at_ms: i64,
+        known_at_ms: i64,
+    ) -> Result<EntityResolution, MemoryEngineError> {
+        if self.get_entity(entity_id, scope)?.is_none() {
+            return Ok(EntityResolution::NotFound);
+        }
+        let lineages = self.visible_entity_lineages(scope)?;
+        let mut current = vec![entity_id.clone()];
+        let mut visited = std::collections::BTreeSet::new();
+        loop {
+            let mut next = Vec::new();
+            let mut changed = false;
+            for id in current {
+                if !visited.insert(id.clone()) {
+                    return Err(MemoryEngineError::GraphLineageCycle);
+                }
+                let applicable = lineages.iter().find(|lineage| {
+                    lineage.source_entity_id == id
+                        && lineage.effective_at_ms <= valid_at_ms
+                        && lineage.recorded_at_ms <= known_at_ms
+                });
+                match applicable {
+                    Some(lineage) => {
+                        next.extend(lineage.target_entity_ids.clone());
+                        changed = true;
+                    }
+                    None => next.push(id),
+                }
+            }
+            next.sort();
+            next.dedup();
+            if !changed {
+                return Ok(resolution(next));
+            }
+            current = next;
+        }
+    }
+
+    fn require_entity_type(
+        &self,
+        scope: &RecallScope,
+        entity_type: &str,
+    ) -> Result<(), MemoryEngineError> {
+        if built_in_entity_type(entity_type)
+            || self
+                .entity_types(scope)?
+                .iter()
+                .any(|definition| definition.type_id == entity_type)
+        {
+            return Ok(());
+        }
+        Err(MemoryEngineError::GraphEntityTypeNotFound {
+            entity_type: entity_type.to_owned(),
+        })
+    }
+
+    fn validate_graph_evidence(
+        &self,
+        scope: &RecallScope,
+        evidence: &[crate::GraphEvidenceInput],
+    ) -> Result<(), MemoryEngineError> {
+        for item in evidence {
+            let event = self.get_ingestion(&item.event_id, scope)?.ok_or_else(|| {
+                MemoryEngineError::GraphEvidenceNotFound {
+                    event_id: item.event_id.to_string(),
+                }
+            })?;
+            if item
+                .excerpt
+                .as_ref()
+                .is_some_and(|excerpt| !event.content.contains(excerpt))
+            {
+                return Err(MemoryEngineError::GraphEvidenceExcerptMismatch {
+                    event_id: item.event_id.to_string(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn visible_entity_lineages(
+        &self,
+        scope: &RecallScope,
+    ) -> Result<Vec<EntityLineage>, MemoryEngineError> {
+        let decoded = self
+            .scan_prefix(EntityLineage::prefix())?
+            .iter()
+            .map(EntityLineage::from_record)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(decoded
+            .into_iter()
+            .filter(|(_, owner)| graph_scope_visible(owner, scope))
+            .map(|(lineage, _)| lineage)
+            .collect())
+    }
+
+    fn entity_reaches(
+        &self,
+        start: &EntityId,
+        target: &EntityId,
+        scope: &RecallScope,
+    ) -> Result<bool, MemoryEngineError> {
+        let lineages = self.visible_entity_lineages(scope)?;
+        let mut pending = vec![start.clone()];
+        let mut visited = std::collections::BTreeSet::new();
+        while let Some(current) = pending.pop() {
+            if &current == target {
+                return Ok(true);
+            }
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            pending.extend(
+                lineages
+                    .iter()
+                    .filter(|lineage| lineage.source_entity_id == current)
+                    .flat_map(|lineage| lineage.target_entity_ids.clone()),
+            );
+        }
+        Ok(false)
+    }
+
     fn index_entities(&mut self, memory: &Memory) -> Result<(), MemoryEngineError> {
         for extracted in &memory.entities {
             let key = entity_key(extracted.kind, &extracted.name);
@@ -3180,6 +3521,16 @@ fn ingestion_visible_to(entry: &IngestionEntry, scope: &RecallScope) -> bool {
 
 fn claim_visible_to(claim: &Claim, scope: &RecallScope) -> bool {
     recall_scope_visible_to(&claim.scope, scope)
+}
+
+fn resolution(mut entity_ids: Vec<EntityId>) -> EntityResolution {
+    entity_ids.sort();
+    entity_ids.dedup();
+    match entity_ids.len() {
+        0 => EntityResolution::NotFound,
+        1 => EntityResolution::Resolved(entity_ids.remove(0)),
+        _ => EntityResolution::Ambiguous(entity_ids),
+    }
 }
 
 fn recall_scope_visible_to(owner: &RecallScope, requested: &RecallScope) -> bool {

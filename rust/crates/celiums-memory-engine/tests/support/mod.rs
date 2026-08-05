@@ -9,6 +9,7 @@ use celiums_memory_engine::{
 };
 
 pub const NOW_MS: i64 = 1_770_000_000_000;
+#[allow(dead_code)]
 pub const DAY_MS: i64 = 24 * 60 * 60 * 1_000;
 const DIMENSION: u16 = 4;
 
@@ -20,6 +21,17 @@ pub fn open(dir: &tempfile::TempDir) -> MemoryEngine {
         TenantId::new("tenant-a").expect("tenant"),
     )
     .expect("open")
+}
+
+#[allow(dead_code)]
+pub fn scope() -> celiums_memory_engine::RecallScope {
+    celiums_memory_engine::RecallScope {
+        tenant_id: TenantId::new("tenant-a").expect("tenant"),
+        user_id: UserId::new("mario").expect("user"),
+        project_id: None,
+        conversation_id: None,
+        session_id: None,
+    }
 }
 
 pub fn episode(engine: &mut MemoryEngine, source_event_id: &str, content: &str) -> IngestionEntry {
@@ -62,6 +74,7 @@ pub fn episode_at(
         .expect("episode")
 }
 
+#[allow(dead_code)]
 pub fn claim_request(
     episode: &IngestionEntry,
     subject: &str,

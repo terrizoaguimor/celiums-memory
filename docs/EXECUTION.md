@@ -21,7 +21,7 @@ evidence and why the next action follows.
 | Field | Value |
 |---|---|
 | Active phase | Phase 5 - Embedded context graph |
-| Active item | P5.1 - Canonical entities and aliases |
+| Active item | P5.1 - Phase close (commit/push/CI) |
 | Branch | `dev` |
 | Baseline commit | `a2ebae4` |
 | Canonical implementation | `rust/` |
@@ -152,6 +152,7 @@ stable and an isolated immutable server exists.
 | 2026-08-05 | Phase 4 GitHub CI | passed | run `31048701559`; MSRV/stable Rust, Node tests, lint, typecheck, build, Trivy and secret scan green |
 | 2026-08-05 | P3 throughput CI hardening | passed locally | release-only explicit gate 18.10x; debug workspace suite no longer carries a noisy timing assertion |
 | 2026-08-05 | Post-close Phase 4 CI | passed | run `31049022086`; explicit release throughput gate and complete CI green |
+| 2026-08-05 | P5.1 canonical entities | passed | 4 tests: durable ID/alias, ambiguity/scope, custom ontology, merge/split resolution; clippy green |
 
 ## Phase 3 checklist
 
@@ -177,7 +178,7 @@ stable and an isolated immutable server exists.
 
 | ID | Work item | Status | Evidence / exit condition |
 |---|---|---|---|
-| P5.1 | Canonical entities and aliases | active | merge/split and ontology preserve provenance |
+| P5.1 | Canonical entities and aliases | verified locally | stable IDs; exact temporal aliases; ambiguity explicit; versioned custom types; append-only merge/split with evidence; journal `019fd416f0ee7ddc97212acfc7ade639` |
 | P5.2 | Temporal typed relations | pending | every edge has validity and evidence |
 | P5.3 | Bounded graph traversal | pending | traversal is scoped and cost-bounded |
 | P5.4 | Graph-assisted recall | pending | measured quality improves without leakage |
