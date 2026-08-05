@@ -21,7 +21,7 @@ evidence and why the next action follows.
 | Field | Value |
 |---|---|
 | Active phase | Phase 4 - Temporal claims and contradictions |
-| Active item | P4.4 - Phase close (commit/push/CI) |
+| Active item | P4.5 - Phase close and temporal gates |
 | Branch | `dev` |
 | Baseline commit | `aaa29ae` |
 | Canonical implementation | `rust/` |
@@ -148,6 +148,7 @@ stable and an isolated immutable server exists.
 | 2026-08-05 | P4.2 validity and contradictions | passed | 5 tests: overlap conflict, sequential change, append-only reopen, property guard, cycle guard; clippy green |
 | 2026-08-05 | P4.3 bitemporal queries | passed | 4 tests: latest omits retired, historical proof, unresolved conflict preservation, transaction-time cutoff; clippy green |
 | 2026-08-05 | P4.4 temporal tools | passed | 4 tests: EN/ES relative time, explicit uncertainty/basis, event sequence, semantic claim diff; clippy green |
+| 2026-08-05 | P4.5 phase gate | passed | knowledge update omits retired current claim; historical query preserves prior claim/evidence; half-open boundary verified; full workspace green |
 
 ## Phase 3 checklist
 
@@ -166,8 +167,8 @@ stable and an isolated immutable server exists.
 | P4.1 | Claims separated from raw episodes | closed | `a24a96b`; CI `31047382692` green; journal `019fd3c18faa790aa63830a0f1a7eb9c` |
 | P4.2 | Validity and contradiction model | closed | `5fd7182`; CI `31047740288` green; journal `019fd3c6193f772dbda7d53c3a771f94` |
 | P4.3 | Temporal queries | closed | `00b4dae`; CI `31048037491` green; journal `019fd3c9b0d47d91bbdf5d5bea40e366` |
-| P4.4 | Relative time and semantic diff | verified locally | bounded EN/ES grammar; basis/confidence explicit; event-time sequence; property/evidence semantic diff; journal `019fd3ce088472b4a79a35a29ff6fe5e` |
-| P4.5 | Phase close | pending | temporal suites preserve prior truth and current validity |
+| P4.4 | Relative time and semantic diff | closed | `87e892f`; CI `31048375610` green; journal `019fd3ce088472b4a79a35a29ff6fe5e` |
+| P4.5 | Phase close | verified locally | 19 Phase 4 integration/gate tests; current omits invalidated; history preserves proof; full fmt/clippy/test green; journal `019fd3d2580777a4927d6a2c25c55af1` |
 
 ## Update protocol
 

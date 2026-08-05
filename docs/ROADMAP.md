@@ -100,11 +100,11 @@ events and can resume safely.
 
 **Goal:** represent what is true, when it is true and what changed.
 
-- Claims separated from raw episodes.
-- Validity windows, supersession and contradiction detection.
-- Latest-known-value and historical-at-time queries.
-- Relative-time parsing, event sequences and temporal uncertainty.
-- Semantic diff between snapshots.
+- [x] Claims separated from raw episodes.
+- [x] Validity windows, supersession and contradiction detection.
+- [x] Latest-known-value and historical-at-time queries.
+- [x] Relative-time parsing, event sequences and temporal uncertainty.
+- [x] Semantic diff between snapshots.
 
 **Exit gate:** knowledge-update and temporal suites pass; current recall omits
 invalidated claims while historical recall preserves prior truth and proof.

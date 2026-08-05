@@ -242,6 +242,19 @@ Roadmap Phase 3 ingestion begins with a durable raw-event boundary:
   and webhook inputs. Optional provider enrichment records durable failures
   and can only materialize the original authorized raw event.
 
+Roadmap Phase 4 adds temporal knowledge without rewriting source history:
+
+- `Claim` stores one atomic subject/predicate/value assertion separately from
+  `IngestionEntry`; append-only `ClaimEvidence` links preserve the raw proof.
+- Half-open validity windows and explicit recorded time support bitemporal
+  `claims_at` and `latest_claims`. Superseded or recanted claims leave current
+  results while remaining queryable historically with evidence.
+- Typed contradiction detection reports only incompatible values whose valid
+  intervals overlap. Non-overlapping values are temporal change, not conflict.
+- Relative EN/ES time resolution returns interval, precision, time basis and
+  confidence. Event sequences expose source-time vs ingestion fallback, and
+  semantic claim snapshots diff values/evidence without cognitive metadata.
+
 The ordered platform plan and its mechanical exit gates live in
 [`docs/ROADMAP.md`](../docs/ROADMAP.md); execution evidence and the current
 work anchor live in [`docs/EXECUTION.md`](../docs/EXECUTION.md). Public
