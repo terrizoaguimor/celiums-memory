@@ -62,6 +62,7 @@ fn recall_request(query: &str, embedding: Vec<f32>) -> RecallRequest {
         embedding_space: None,
         disclosure_authority: celiums_cognition::DisclosureAuthority::Agent,
         disclosure_purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
+        options: celiums_memory_engine::RecallOptions::default(),
     }
 }
 
@@ -161,7 +162,7 @@ fn identity_provenance_and_source_time_survive_reopen_and_recall() {
             .expect("remember");
     }
 
-    let mut engine = MemoryEngine::open_for_tenant(
+    let engine = MemoryEngine::open_for_tenant(
         dir.path(),
         DIMENSION,
         RecallConfig::default(),
@@ -178,8 +179,12 @@ fn identity_provenance_and_source_time_survive_reopen_and_recall() {
     });
     let response = engine.recall(request).expect("recall");
     let recalled = &response.results[0].memory;
-    assert_eq!(recalled.identity, identity);
-    assert_eq!(recalled.provenance, provenance);
+    assert!(response.results[0].citations[0].source_id.is_none());
+    assert_eq!(
+        response.results[0].citations[0].content_hash,
+        provenance.content_hash
+    );
+    assert_eq!(recalled.id.len(), 36);
     assert_eq!(recalled.event_at_ms, Some(NOW_MS - DAY_MS));
     assert_eq!(recalled.ingested_at_ms, NOW_MS);
 }
@@ -362,7 +367,7 @@ fn recall_scope_enforces_user_project_and_session_visibility() {
 }
 
 #[test]
-fn recall_reactivates_top_results_spaced_repetition() {
+fn recall_is_read_only_for_spaced_repetition_state() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut engine =
         MemoryEngine::open(dir.path(), DIMENSION, RecallConfig::default()).expect("open");
@@ -374,23 +379,20 @@ fn recall_reactivates_top_results_spaced_repetition() {
         NOW_MS - DAY_MS,
     );
     assert_eq!(stored.retrieval_count, 0);
-    let initial_importance = stored.importance;
-
     let response = engine
         .recall(recall_request("rust data races", embed(1.0, 0.0, 0.0, 0.0)))
         .expect("recall");
     let recalled = &response.results[0].memory;
 
-    assert_eq!(recalled.retrieval_count, 1);
-    assert!(recalled.importance > initial_importance);
-    assert!(recalled.strength > 1.0);
-    assert_eq!(recalled.last_retrieved_at_ms, NOW_MS);
+    assert_eq!(recalled.retrieval_count, 0);
+    assert_eq!(recalled.importance, stored.importance);
+    assert_eq!(recalled.strength, stored.strength);
+    assert_eq!(recalled.last_retrieved_at_ms, stored.last_retrieved_at_ms);
 
-    // The reactivation must be durable, not just in the response.
     let second = engine
         .recall(recall_request("rust data races", embed(1.0, 0.0, 0.0, 0.0)))
         .expect("second recall");
-    assert_eq!(second.results[0].memory.retrieval_count, 2);
+    assert_eq!(second.results[0].memory.retrieval_count, 0);
 }
 
 fn embedding_space(model: &str, revision: &str) -> EmbeddingSpaceIdentity {
@@ -731,8 +733,7 @@ fn dimension_guard_fails_loud_never_degrades() {
 #[test]
 fn empty_store_reports_abstentions_not_empty_silence() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut engine =
-        MemoryEngine::open(dir.path(), DIMENSION, RecallConfig::default()).expect("open");
+    let engine = MemoryEngine::open(dir.path(), DIMENSION, RecallConfig::default()).expect("open");
 
     let response = engine
         .recall(recall_request("anything at all", embed(1.0, 0.0, 0.0, 0.0)))
@@ -763,7 +764,7 @@ fn memories_survive_reopen() {
         );
     }
 
-    let mut engine =
+    let engine =
         MemoryEngine::open(dir.path(), DIMENSION, RecallConfig::default()).expect("reopen");
     assert_eq!(engine.count().expect("count"), 1);
 

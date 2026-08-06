@@ -31,9 +31,9 @@ use hyphae_core::{Q15Vector, VectorSpaceDefinition, VectorSpaceName, VectorValue
 use hyphae_engine::{EngineError as HyphaeError, HyphaeEngine};
 use hyphae_query::FieldPath;
 use hyphae_retrieval::{
-    ExactAbstentionReason, ExactRetrievalLimits, ExactRetrievalOutcome, ExactRetrievalRequest,
-    LexicalAbstentionReason, LexicalField, LexicalIndexDefinition, LexicalLimits, LexicalOutcome,
-    LexicalRequest,
+    DurableVectorRecord, ExactAbstentionReason, ExactRetrievalLimits, ExactRetrievalOutcome,
+    ExactRetrievalRequest, LexicalField, LexicalIndexDefinition, LexicalLimits, LexicalOutcome,
+    LexicalRequest, retrieve_exact, retrieve_lexical,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -88,6 +88,14 @@ use crate::journal::{
 };
 use crate::memory::{Memory, MemoryDecodeError};
 use crate::quantize::{QuantizeError, quantize};
+use crate::recall_pipeline::{
+    BranchAbstention, Citation, CompactSearchRequest, CompactSearchResponse, CompactSearchResult,
+    ContextComposeRequest, ContextComposition, ContextSection, ContextSectionKind,
+    DisclosedMemoryRequest, GraphRecallRequest, GraphRecallResponse, GraphScoredMemory,
+    HydrateRequest, HydratedMemory, HydratedMemoryPage, RecallAbstention, RecallFeedbackReport,
+    RecallFeedbackRequest, RecallReason, RecallRequest, RecallResponse, RecalledMemory,
+    RerankerInput, RerankerStatus, ScoredMemory, SearchBranch,
+};
 use crate::temporal::{ClaimSnapshot, EventTimeBasis, SequencedEvent, snapshot_entry};
 
 /// Named vector space holding memory embeddings.
@@ -100,8 +108,6 @@ const CANDIDATE_SCORE_NANOS: i64 = 200_000_000;
 /// Candidate over-fetch factor: fetch more, filter after cognitive
 /// scoring (recall.ts:130).
 const CANDIDATE_FACTOR: usize = 2;
-/// How many top results are reactivated per recall (recall.ts:271).
-const REACTIVATION_TOP: usize = 10;
 /// Cosine similarity above which two memories are duplicates
 /// (consolidate.ts:52 `deduplicationThreshold: 0.92`), in nanos.
 const DEDUP_SCORE_NANOS: i64 = 920_000_000;
@@ -124,6 +130,7 @@ const MIN_IMPORTANCE: f64 = 0.01;
 const LIFECYCLE_BATCH: usize = 200;
 /// Transparent graph contribution for graph-derived candidates.
 const GRAPH_CANDIDATE_WEIGHT: f64 = 1.0;
+const TENANT_BINDING_KEY: &[u8] = b"__celiums/tenant_binding";
 
 /// Failure while operating the memory engine.
 #[derive(Debug, Error)]
@@ -327,6 +334,12 @@ pub enum MemoryEngineError {
     /// A supplied plan no longer matches its immutable source set.
     #[error("consolidation plan no longer matches its source records")]
     ConsolidationPlanConflict,
+    /// External reranker scores were malformed or incomplete.
+    #[error("invalid external reranker scores: {detail}")]
+    InvalidRerankerScores {
+        /// Actionable validation detail.
+        detail: &'static str,
+    },
     /// A canonical memory filter was invalid.
     #[error(transparent)]
     Filter(#[from] MemoryFilterError),
@@ -361,7 +374,7 @@ pub struct RecallConfig {
     pub score_threshold: f64,
     /// Maximum memories returned.
     pub max_results: usize,
-    /// Whether recalled memories are reactivated (spaced repetition).
+    /// Legacy compatibility flag; Phase 7 recall is always read-only.
     pub enable_reactivation: bool,
 }
 
@@ -477,118 +490,6 @@ pub struct EnrichEventRequest {
     pub embedding_space: Option<EmbeddingSpaceIdentity>,
     /// Attempt time.
     pub now_ms: i64,
-}
-
-/// A recall query.
-#[derive(Clone, Debug)]
-pub struct RecallRequest {
-    /// Query text (drives the lexical branch).
-    pub query_text: String,
-    /// Caller-provided embedding of the query (drives the semantic
-    /// branch), unit-normalised floats.
-    pub embedding: Vec<f32>,
-    /// Maximum results wanted.
-    pub limit: usize,
-    /// Explicit PAD state override. `None` uses the engine's own
-    /// durable limbic state (decayed to `now_ms`), which is the normal
-    /// mode; an override supports per-request states, e.g. one state
-    /// per conversation.
-    pub current_state: Option<Pad>,
-    /// Current time, Unix milliseconds. Explicit for determinism.
-    pub now_ms: i64,
-    /// Mandatory identity boundary. Local scope is used when absent.
-    pub scope: Option<RecallScope>,
-    /// Space that produced the query embedding. Engine default is used when absent.
-    pub embedding_space: Option<EmbeddingSpaceIdentity>,
-    /// Authority used to derive the disclosed view.
-    pub disclosure_authority: celiums_cognition::DisclosureAuthority,
-    /// Purpose used to derive the disclosed view.
-    pub disclosure_purpose: MemoryPurpose,
-}
-
-/// One recalled memory with its full score breakdown — glass-box
-/// scoring in the spirit of Hyphae's `HybridExplanation`.
-#[derive(Clone, Debug)]
-pub struct ScoredMemory {
-    /// The recalled memory.
-    pub memory: Memory,
-    /// Per-channel scores that produced `final_score`.
-    pub channels: ChannelScores,
-    /// Final cognitive score.
-    pub final_score: f64,
-    /// Policy-safe content view; raw content remains internal to `memory`.
-    pub disclosed_content: Option<String>,
-    /// Disclosure decision applied to this result.
-    pub disclosure: celiums_cognition::DisclosureClass,
-}
-
-/// Why one retrieval branch produced no candidates.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BranchAbstention {
-    /// The branch had no candidates at all.
-    NoCandidates,
-    /// Best semantic score was below the candidate threshold.
-    BelowThreshold,
-    /// Semantic best/runner-up margin was ambiguous.
-    Ambiguous,
-}
-
-/// Complete recall response with preserved branch evidence.
-#[derive(Clone, Debug)]
-pub struct RecallResponse {
-    /// Ranked memories above the score threshold.
-    pub results: Vec<ScoredMemory>,
-    /// Lexical branch abstention, when it produced nothing.
-    pub lexical_abstention: Option<BranchAbstention>,
-    /// Semantic branch abstention, when it produced nothing.
-    pub semantic_abstention: Option<BranchAbstention>,
-}
-
-/// Recall request augmented with bounded graph candidate generation.
-#[derive(Clone, Debug)]
-pub struct GraphRecallRequest {
-    /// Standard hybrid recall request.
-    pub recall: RecallRequest,
-    /// Graph depth budget.
-    pub max_depth: usize,
-    /// Graph edge budget.
-    pub max_edges: usize,
-    /// Graph entity budget.
-    pub max_entities: usize,
-    /// Graph-derived memory candidate budget.
-    pub max_memories: usize,
-}
-
-/// One graph-assisted recalled memory with path evidence.
-#[derive(Clone, Debug)]
-pub struct GraphScoredMemory {
-    /// Recalled memory.
-    pub memory: Memory,
-    /// Standard cognitive channels.
-    pub channels: ChannelScores,
-    /// Final score with a transparent graph candidate floor.
-    pub final_score: f64,
-    /// Explicit graph-path score (`1 / path length`), zero for direct candidates.
-    pub graph_score: f64,
-    /// Policy-safe content.
-    pub disclosed_content: Option<String>,
-    /// Disclosure decision.
-    pub disclosure: celiums_cognition::DisclosureClass,
-    /// Entity IDs explaining graph retrieval; empty for direct candidates.
-    pub graph_path: Vec<EntityId>,
-}
-
-/// Complete graph-assisted recall response.
-#[derive(Clone, Debug)]
-pub struct GraphRecallResponse {
-    /// Ranked results.
-    pub results: Vec<GraphScoredMemory>,
-    /// Whether graph generation truncated.
-    pub graph_truncated: bool,
-    /// Graph truncation reason.
-    pub graph_truncation_reason: Option<GraphTruncationReason>,
-    /// Visible edges inspected.
-    pub graph_inspected_edges: usize,
 }
 
 /// Policy-safe entity lookup result.
@@ -761,6 +662,16 @@ pub struct JournalRecallRequest {
 /// abstention when it produced nothing.
 type BranchCandidates = (Vec<(Vec<u8>, f64)>, Option<BranchAbstention>);
 
+#[derive(Clone, Debug, Default)]
+struct UnifiedCandidate {
+    semantic: f64,
+    lexical: f64,
+    graph: f64,
+    temporal: f64,
+    graph_path: Vec<EntityId>,
+    claim_ids: Vec<String>,
+}
+
 /// Durable cognitive memory engine over Hyphae.
 ///
 /// The engine carries its own limbic (PAD) state, persisted in the
@@ -839,6 +750,7 @@ impl MemoryEngine {
         let dimension = embedding_space.dimension;
         let opened = HyphaeEngine::open(path)?;
         let mut hyphae = opened.engine;
+        ensure_tenant_binding(&mut hyphae, &tenant_id)?;
         match hyphae.get_record(EMBEDDING_SPACE_KEY)? {
             Some(record) => {
                 let stored = EmbeddingSpaceIdentity::from_record(&record)?;
@@ -859,6 +771,20 @@ impl MemoryEngine {
         )
         .map_err(HyphaeError::from)?;
         hyphae.define_lexical_index(Uuid::now_v7(), index)?;
+        let snapshot = hyphae.snapshot()?;
+        let snapshot_contents = hyphae_storage::load_snapshot(
+            &snapshot.path,
+            &hyphae_storage::SnapshotReadLimits::default(),
+        )
+        .map_err(|error| MemoryEngineError::Snapshot {
+            detail: error.to_string(),
+        })?;
+        let durable_vectors = snapshot_contents
+            .vectors
+            .into_iter()
+            .filter(|entry| entry.space == memory_space())
+            .map(|entry| (entry.key, entry.vector))
+            .collect::<BTreeMap<_, _>>();
 
         let limbic_config = LimbicConfig::default();
         let affect = match hyphae.get_record(AFFECT_STATE_KEY)? {
@@ -874,7 +800,7 @@ impl MemoryEngine {
             Some(record) => CircadianState::from_record(&record)?,
             None => CircadianState::new(None),
         };
-        migrate_legacy_memories(&mut hyphae, &tenant_id, &embedding_space)?;
+        migrate_legacy_memories(&mut hyphae, &tenant_id, &embedding_space, &durable_vectors)?;
         Ok(Self {
             hyphae,
             tenant_id,
@@ -959,6 +885,11 @@ impl MemoryEngine {
             self.local_hour(now_ms),
             inactive,
         )
+    }
+
+    /// Returns the durable, unmodulated affect snapshot for verification.
+    pub fn affect_snapshot(&self) -> AffectState {
+        self.affect
     }
 
     /// Feeds one circadian event (task completed, error, caffeine…)
@@ -1897,11 +1828,12 @@ impl MemoryEngine {
         );
         let memory = Memory {
             id: memory_id,
-            schema_version: 2,
+            schema_version: 3,
             revision: 1,
             identity: context.identity,
             provenance: context.provenance,
             embedding_space: Some(self.embedding_space.clone()),
+            vector: Some(vector.clone()),
             governance: Some(MemoryGovernance(governance.clone())),
             importance: request
                 .importance
@@ -2229,9 +2161,12 @@ impl MemoryEngine {
         request: GraphTraversalRequest,
     ) -> Result<GraphTraversalResult, MemoryEngineError> {
         self.require_tenant(&request.scope.tenant_id)?;
-        let max_depth = request.max_depth.clamp(1, 8);
-        let max_edges = request.max_edges.clamp(1, 1_000);
-        let max_entities = request.max_entities.clamp(1, 1_000);
+        if request.max_depth == 0 || request.max_edges == 0 || request.max_entities == 0 {
+            return Err(InvalidGraph::TraversalBudget.into());
+        }
+        let max_depth = request.max_depth.min(8);
+        let max_edges = request.max_edges.min(1_000);
+        let max_entities = request.max_entities.min(1_000);
         let mut seeds = request.seeds;
         seeds.sort();
         seeds.dedup();
@@ -2353,130 +2288,45 @@ impl MemoryEngine {
         Ok(binding)
     }
 
-    /// Runs standard recall plus bounded graph candidate generation.
+    /// Compatibility wrapper over the unified read-only recall pipeline.
     pub fn recall_with_graph(
-        &mut self,
-        request: GraphRecallRequest,
+        &self,
+        mut request: GraphRecallRequest,
     ) -> Result<GraphRecallResponse, MemoryEngineError> {
-        let scope = request
-            .recall
-            .scope
-            .clone()
-            .unwrap_or_else(RecallScope::local);
-        let direct = self.recall(request.recall.clone())?;
-        let mut paths: BTreeMap<String, Vec<EntityId>> = BTreeMap::new();
-        let mut seeds =
-            self.graph_query_seeds(&scope, &request.recall.query_text, request.recall.now_ms)?;
-        for scored in &direct.results {
-            seeds.extend(self.bound_entity_ids(&scored.memory.id, &scope)?);
-        }
-        seeds.sort();
-        seeds.dedup();
-        let traversal = if seeds.is_empty() {
-            GraphTraversalResult {
-                entities: Vec::new(),
-                edges: Vec::new(),
-                inspected_edges: 0,
-                truncated: false,
-                truncation_reason: None,
-            }
-        } else {
-            self.traverse_graph(GraphTraversalRequest {
-                scope: scope.clone(),
-                seeds: seeds.clone(),
-                relation_types: Vec::new(),
-                valid_at_ms: request.recall.now_ms,
-                known_at_ms: request.recall.now_ms,
-                max_depth: request.max_depth,
-                max_edges: request.max_edges,
-                max_entities: request.max_entities,
-            })?
-        };
-        for entity_id in traversal.entities.iter().take(request.max_entities) {
-            for binding in self.memory_bindings(entity_id, &scope)? {
-                paths
-                    .entry(binding.memory_id)
-                    .or_insert_with(|| graph_path(&seeds, entity_id, &traversal));
-                if paths.len() >= request.max_memories {
-                    break;
-                }
-            }
-        }
-
-        let mut results: BTreeMap<String, GraphScoredMemory> = direct
+        request.recall.options.branches.graph = true;
+        request.recall.options.branches.graph_max_depth = request.max_depth;
+        request.recall.options.branches.graph_max_edges = request.max_edges;
+        request.recall.options.branches.graph_max_entities = request.max_entities;
+        request.recall.options.branches.graph_max_memories = request.max_memories;
+        let response = self.recall(request.recall)?;
+        let results = response
             .results
             .into_iter()
-            .map(|scored| {
-                (
-                    scored.memory.id.clone(),
-                    GraphScoredMemory {
-                        memory: scored.memory,
-                        channels: scored.channels,
-                        final_score: scored.final_score,
-                        graph_score: 0.0,
-                        disclosed_content: scored.disclosed_content,
-                        disclosure: scored.disclosure,
-                        graph_path: Vec::new(),
-                    },
-                )
+            .map(|scored| GraphScoredMemory {
+                graph_score: scored
+                    .why_recalled
+                    .iter()
+                    .find(|reason| reason.branch == SearchBranch::Graph)
+                    .map_or(0.0, |reason| reason.score),
+                graph_path: scored.citations.first().map_or_else(Vec::new, |citation| {
+                    citation
+                        .graph_path
+                        .iter()
+                        .filter_map(|id| EntityId::parse(id.clone()).ok())
+                        .collect()
+                }),
+                memory: scored.memory,
+                channels: scored.channels,
+                final_score: scored.final_score,
+                disclosed_content: scored.disclosed_content,
+                disclosure: scored.disclosure,
             })
             .collect();
-        for (memory_id, path) in paths {
-            if results.contains_key(&memory_id) {
-                continue;
-            }
-            let Some(memory) = self.get_memory(&memory_id, &scope)? else {
-                continue;
-            };
-            if memory.state == MemoryState::Archived {
-                continue;
-            }
-            let channels = graph_candidate_channels(&memory, request.recall.now_ms);
-            let current_state = request
-                .recall
-                .current_state
-                .unwrap_or_else(|| self.affect_state(request.recall.now_ms));
-            let cognitive = recall::score(&self.config.weights, &channels, current_state.arousal);
-            let graph_score = 1.0 / path.len().saturating_sub(1).max(1) as f64;
-            let final_score = cognitive + GRAPH_CANDIDATE_WEIGHT * graph_score;
-            let (disclosure, disclosed_content) = disclose_memory(
-                &memory,
-                request.recall.disclosure_authority,
-                request.recall.disclosure_purpose,
-            );
-            if disclosure == celiums_cognition::DisclosureClass::Abstain {
-                continue;
-            }
-            if final_score < self.config.score_threshold {
-                continue;
-            }
-            results.insert(
-                memory_id,
-                GraphScoredMemory {
-                    memory,
-                    channels,
-                    final_score,
-                    graph_score,
-                    disclosed_content,
-                    disclosure,
-                    graph_path: path,
-                },
-            );
-        }
-        let mut results: Vec<GraphScoredMemory> = results.into_values().collect();
-        results.sort_by(|left, right| {
-            right
-                .final_score
-                .partial_cmp(&left.final_score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| left.memory.id.cmp(&right.memory.id))
-        });
-        results.truncate(request.recall.limit.max(1));
         Ok(GraphRecallResponse {
             results,
-            graph_truncated: traversal.truncated,
-            graph_truncation_reason: traversal.truncation_reason,
-            graph_inspected_edges: traversal.inspected_edges,
+            graph_truncated: response.graph_truncated,
+            graph_truncation_reason: response.graph_truncation_reason,
+            graph_inspected_edges: response.graph_inspected_edges,
         })
     }
 
@@ -2986,54 +2836,83 @@ impl MemoryEngine {
         Ok(maximum)
     }
 
-    /// Recalls memories for a query: hybrid candidate retrieval,
-    /// cognitive re-ranking, then spaced-repetition reactivation of the
-    /// top results.
+    /// Recalls from one authorized corpus without mutating memory or affect state.
     ///
     /// # Errors
     ///
     /// Fails on quantisation, retrieval, or decoding failure. A store
     /// whose index disagrees with its log surfaces
     /// [`MemoryEngineError::MissingCandidate`] instead of skipping.
-    pub fn recall(&mut self, request: RecallRequest) -> Result<RecallResponse, MemoryEngineError> {
+    pub fn recall(&self, request: RecallRequest) -> Result<RecallResponse, MemoryEngineError> {
         let scope = request.scope.clone().unwrap_or_else(RecallScope::local);
         self.require_tenant(&scope.tenant_id)?;
+        if request.options.branches.max_union_candidates == 0 {
+            return Err(MemoryEngineError::InvalidRerankerScores {
+                detail: "candidate union budget must be nonzero",
+            });
+        }
         let requested_space = request
             .embedding_space
             .as_ref()
             .unwrap_or(&self.embedding_space);
         ensure_embedding_space(&self.embedding_space, requested_space)?;
         let query_vector = quantize(&request.embedding, self.dimension)?;
-        let candidate_limit = request.limit.max(1).saturating_mul(CANDIDATE_FACTOR);
+        let candidate_limit = self
+            .config
+            .max_results
+            .max(request.limit.max(1))
+            .saturating_mul(CANDIDATE_FACTOR)
+            .clamp(1, 1_000);
+        let mut authorized =
+            self.authorized_recall_records(&scope, request.options.filter.as_ref())?;
+        let retired_events =
+            self.retired_claim_events_for_query(&scope, &request.query_text, request.now_ms)?;
+        authorized.retain(|_, memory| {
+            memory
+                .provenance
+                .event_id
+                .as_deref()
+                .is_none_or(|event_id| !retired_events.contains(event_id))
+        });
+        let (semantic_scores, semantic_abstention) = if request.options.branches.semantic {
+            filtered_semantic_candidates(&authorized, query_vector.clone(), candidate_limit)?
+        } else {
+            (Vec::new(), Some(BranchAbstention::Disabled))
+        };
+        let (lexical_scores, lexical_abstention) = if request.options.branches.lexical {
+            filtered_lexical_candidates(&authorized, &request.query_text, candidate_limit)?
+        } else {
+            (Vec::new(), Some(BranchAbstention::Disabled))
+        };
 
-        let (semantic_scores, semantic_abstention) =
-            self.semantic_candidates(query_vector, candidate_limit)?;
-        let (lexical_scores, lexical_abstention) =
-            self.lexical_candidates(&request.query_text, candidate_limit)?;
-
-        let mut candidates: BTreeMap<Vec<u8>, (f64, f64)> = BTreeMap::new();
+        let mut candidates: BTreeMap<Vec<u8>, UnifiedCandidate> = BTreeMap::new();
         for (key, semantic) in semantic_scores {
-            candidates.entry(key).or_insert((0.0, 0.0)).0 = semantic;
+            candidates.entry(key).or_default().semantic = semantic;
         }
         for (key, lexical) in lexical_scores {
-            candidates.entry(key).or_insert((0.0, 0.0)).1 = lexical;
+            candidates.entry(key).or_default().lexical = lexical;
         }
+        let (graph_abstention, graph_truncated, graph_inspected_edges, graph_truncation_reason) =
+            self.add_graph_candidates(&request, &scope, &authorized, &mut candidates)?;
+        let temporal_abstention =
+            self.add_temporal_candidates(&request, &scope, &authorized, &mut candidates)?;
+        let union_budget = request.options.branches.max_union_candidates.min(10_000);
+        let union_truncated = truncate_candidate_union(&mut candidates, union_budget);
+        let candidate_count = candidates.len();
 
         let current_state = request
             .current_state
             .unwrap_or_else(|| self.affect_state(request.now_ms));
 
         let mut scored = Vec::with_capacity(candidates.len());
-        for (key, (semantic, text_match)) in candidates {
-            let Some(memory) = self.load_recall_candidate(&key)? else {
-                continue;
-            };
-            if memory.state == MemoryState::Archived || !memory_visible_to(&memory, &scope) {
-                continue;
-            }
+        for (key, candidate) in candidates {
+            let memory = authorized
+                .get(&key)
+                .expect("candidate originated from authorized corpus")
+                .clone();
             let channels = ChannelScores {
-                semantic,
-                text_match,
+                semantic: candidate.semantic,
+                text_match: candidate.lexical,
                 importance: memory.importance,
                 retrievability: retrievability(
                     days_between(memory.last_retrieved_at_ms, request.now_ms),
@@ -3042,14 +2921,20 @@ impl MemoryEngine {
                 emotional: emotional_weight(memory.pad.pleasure, memory.pad.arousal),
                 resonance: resonance(current_state, memory.pad),
             };
-            let final_score = recall::score(&self.config.weights, &channels, current_state.arousal);
+            let graph_temporal = GRAPH_CANDIDATE_WEIGHT * candidate.graph + candidate.temporal;
+            let final_score = recall::score(&self.config.weights, &channels, current_state.arousal)
+                + graph_temporal;
             let (disclosure, disclosed_content) = disclose_memory(
                 &memory,
                 request.disclosure_authority,
                 request.disclosure_purpose,
             );
+            let recalled = recalled_memory(&memory, disclosed_content.as_deref());
             scored.push(ScoredMemory {
-                memory,
+                branches: candidate_branches(&candidate),
+                why_recalled: recall_reasons(&candidate),
+                citations: vec![candidate_citation(&memory, &candidate)],
+                memory: recalled,
                 channels,
                 final_score,
                 disclosed_content,
@@ -3057,10 +2942,13 @@ impl MemoryEngine {
             });
         }
 
-        scored.retain(|entry| {
-            entry.final_score >= self.config.score_threshold
-                && entry.disclosure != celiums_cognition::DisclosureClass::Abstain
-        });
+        let had_scored_candidates = !scored.is_empty();
+        let had_policy_visible = scored
+            .iter()
+            .any(|entry| entry.disclosure != celiums_cognition::DisclosureClass::Abstain);
+        scored.retain(|entry| entry.disclosure != celiums_cognition::DisclosureClass::Abstain);
+        let reranker_status = apply_reranker(&mut scored, &request.options.reranker)?;
+        scored.retain(|entry| entry.final_score >= self.config.score_threshold);
         scored.sort_by(|left, right| {
             right
                 .final_score
@@ -3068,32 +2956,473 @@ impl MemoryEngine {
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| left.memory.id.cmp(&right.memory.id))
         });
-        scored.truncate(self.config.max_results.min(request.limit.max(1)));
-
-        if self.config.enable_reactivation {
-            self.reactivate_top(&mut scored, request.now_ms)?;
-        }
-
-        // Hippocampal feedback: recalled memories pull the engine's
-        // emotional state (the γ term of the limbic update). The input
-        // term is zero here; `remember` covers the stimulus side.
-        if request.current_state.is_none() && !scored.is_empty() {
-            let influences: Vec<MemoryInfluence> = scored
-                .iter()
-                .take(REACTIVATION_TOP)
-                .map(|entry| MemoryInfluence {
-                    pad: entry.memory.pad,
-                    weight: entry.memory.importance,
-                })
-                .collect();
-            self.update_affect(Pad::default(), &influences, request.now_ms)?;
-        }
+        scored = merge_disclosed_duplicates(scored);
+        let target = self.config.max_results.min(request.limit.max(1));
+        let scored = diversify(scored, target, request.options.diversity.relevance_weight);
+        let overall_abstention = if !scored.is_empty() {
+            None
+        } else if candidate_count == 0 {
+            Some(RecallAbstention::NoVisibleCandidates)
+        } else if had_scored_candidates && !had_policy_visible {
+            Some(RecallAbstention::PolicyRestricted)
+        } else {
+            Some(RecallAbstention::BelowThreshold)
+        };
 
         Ok(RecallResponse {
             results: scored,
             lexical_abstention,
             semantic_abstention,
+            graph_abstention,
+            temporal_abstention,
+            overall_abstention,
+            candidate_count,
+            reranker_status,
+            graph_truncated,
+            graph_inspected_edges,
+            graph_truncation_reason,
+            union_truncated,
         })
+    }
+
+    /// Returns ID/score/provenance rows without hydrating content.
+    pub fn search_compact(
+        &self,
+        mut request: CompactSearchRequest,
+    ) -> Result<CompactSearchResponse, MemoryEngineError> {
+        request.recall.limit = request.limit.max(1);
+        let response = self.recall(request.recall)?;
+        Ok(CompactSearchResponse {
+            results: response
+                .results
+                .into_iter()
+                .map(|result| CompactSearchResult {
+                    id: result.memory.id,
+                    score: result.final_score,
+                    branches: result.branches,
+                    why_recalled: result.why_recalled,
+                    citations: result.citations,
+                    content: None,
+                })
+                .collect(),
+            abstention: response.overall_abstention,
+            reranker_status: response.reranker_status,
+        })
+    }
+
+    /// Hydrates policy-safe memory views in caller order.
+    pub fn hydrate(
+        &self,
+        request: HydrateRequest,
+    ) -> Result<Vec<HydratedMemory>, MemoryEngineError> {
+        self.require_tenant(&request.scope.tenant_id)?;
+        let mut hydrated = Vec::new();
+        for id in request.ids.iter().take(200) {
+            let Some(memory) = self.get_memory(id, &request.scope)? else {
+                continue;
+            };
+            let (disclosure, content) = disclose_memory(
+                &memory,
+                request.disclosure_authority,
+                request.disclosure_purpose,
+            );
+            if let Some(content) = content {
+                hydrated.push(HydratedMemory {
+                    id: memory.id.clone(),
+                    revision: memory.revision,
+                    content,
+                    disclosure,
+                    tags: Vec::new(),
+                    importance: memory.importance,
+                    memory_type: memory.memory_type,
+                    created_at_ms: memory.created_at_ms,
+                    citation: candidate_citation(&memory, &UnifiedCandidate::default()),
+                });
+            }
+        }
+        Ok(hydrated)
+    }
+
+    /// Gets one policy-safe memory view for MCP resources and hydrate-by-ID.
+    pub fn get_disclosed_memory(
+        &self,
+        request: DisclosedMemoryRequest,
+    ) -> Result<Option<HydratedMemory>, MemoryEngineError> {
+        Ok(self
+            .hydrate(HydrateRequest {
+                ids: vec![request.id],
+                scope: request.scope,
+                disclosure_authority: request.disclosure_authority,
+                disclosure_purpose: request.disclosure_purpose,
+            })?
+            .into_iter()
+            .next())
+    }
+
+    /// Composes deterministic policy-safe sections under estimator-v1 budget.
+    pub fn compose_context(
+        &self,
+        request: ContextComposeRequest,
+    ) -> Result<ContextComposition, MemoryEngineError> {
+        let budget = request.token_budget;
+        if budget == 0 {
+            return Ok(ContextComposition {
+                sections: Vec::new(),
+                estimated_tokens: 0,
+                truncated: true,
+                rendered: String::new(),
+                abstention: Some(RecallAbstention::BudgetExhausted),
+                evidence_density_milli: 0,
+            });
+        }
+        let response = self.recall(request.recall)?;
+        let result_count = response.results.len();
+        let mut remaining = budget;
+        let mut sections = Vec::new();
+        let mut results = response.results;
+        results.sort_by_key(|result| {
+            if result.branches.contains(&SearchBranch::Temporal) {
+                0
+            } else if result.branches.contains(&SearchBranch::Graph) {
+                1
+            } else {
+                2
+            }
+        });
+        for result in results {
+            let Some(content) = result.disclosed_content else {
+                continue;
+            };
+            if remaining == 0 {
+                break;
+            }
+            let (content, estimated_tokens, was_truncated) =
+                truncate_to_token_budget(&content, remaining);
+            if estimated_tokens == 0 {
+                continue;
+            }
+            let kind = if result.branches.contains(&SearchBranch::Temporal) {
+                ContextSectionKind::CurrentTruth
+            } else if result.branches.contains(&SearchBranch::Graph) {
+                ContextSectionKind::RelatedEvidence
+            } else {
+                ContextSectionKind::Evidence
+            };
+            remaining = remaining.saturating_sub(estimated_tokens);
+            sections.push(ContextSection {
+                kind,
+                content,
+                estimated_tokens,
+                citations: result.citations,
+                why_recalled: result.why_recalled,
+            });
+            if was_truncated {
+                break;
+            }
+        }
+        let estimated_tokens = budget.saturating_sub(remaining);
+        let rendered = sections
+            .iter()
+            .map(|section| section.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let truncated = sections.len() < result_count;
+        let abstention = if sections.is_empty() && result_count > 0 {
+            Some(RecallAbstention::BudgetExhausted)
+        } else {
+            response.overall_abstention
+        };
+        let cited_evidence = sections
+            .iter()
+            .flat_map(|section| section.citations.iter())
+            .map(|citation| citation.memory_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len() as u64;
+        let evidence_density_milli = cited_evidence
+            .saturating_mul(1_000)
+            .checked_div(estimated_tokens.max(1) as u64)
+            .unwrap_or(0);
+        Ok(ContextComposition {
+            sections,
+            estimated_tokens,
+            truncated,
+            rendered,
+            abstention,
+            evidence_density_milli,
+        })
+    }
+
+    /// Explicitly records successful recall use without making reads impure.
+    pub fn record_recall_feedback(
+        &mut self,
+        request: RecallFeedbackRequest,
+    ) -> Result<RecallFeedbackReport, MemoryEngineError> {
+        self.require_tenant(&request.scope.tenant_id)?;
+        let mut reactivated = 0;
+        for id in request.ids.iter().take(100) {
+            let Some(mut memory) = self.get_memory(id, &request.scope)? else {
+                continue;
+            };
+            let outcome =
+                retention::reactivate(memory.importance, memory.strength, memory.retrieval_count);
+            memory.importance = outcome.importance;
+            memory.strength = outcome.strength;
+            memory.retrieval_count = outcome.retrieval_count;
+            memory.last_retrieved_at_ms = request.now_ms;
+            self.hyphae
+                .put_record(Uuid::now_v7(), &memory.to_record())?;
+            reactivated += 1;
+        }
+        Ok(RecallFeedbackReport { reactivated })
+    }
+
+    fn authorized_recall_records(
+        &self,
+        scope: &RecallScope,
+        requested: Option<&MemoryFilter>,
+    ) -> Result<BTreeMap<Vec<u8>, Memory>, MemoryEngineError> {
+        use hyphae_query::{CompareOperator, ExecutionLimits, Filter, Query, Value};
+        let authorization = Filter::All(vec![
+            Filter::Compare {
+                path: FieldPath::field("kind"),
+                operator: CompareOperator::Equal,
+                value: Value::String(crate::memory::MEMORY_KIND.to_owned()),
+            },
+            Filter::Compare {
+                path: FieldPath::field("tenant_id"),
+                operator: CompareOperator::Equal,
+                value: Value::String(scope.tenant_id.to_string()),
+            },
+            Filter::Compare {
+                path: FieldPath::field("user_id"),
+                operator: CompareOperator::Equal,
+                value: Value::String(scope.user_id.to_string()),
+            },
+        ]);
+        let filter = match requested {
+            Some(filter) => Filter::All(vec![authorization, filter.compile()?]),
+            None => authorization,
+        };
+        let mut memories = BTreeMap::new();
+        let mut cursor = None;
+        loop {
+            let result = self.hyphae.query(
+                &Query {
+                    filter: filter.clone(),
+                    sort: Vec::new(),
+                    cursor,
+                    limit: LIFECYCLE_BATCH,
+                    aggregation: None,
+                },
+                &ExecutionLimits::default(),
+            )?;
+            for record in &result.rows {
+                let memory = Memory::from_record(record)?;
+                if memory_visible_to(&memory, scope)
+                    && memory.state != MemoryState::Archived
+                    && memory
+                        .governance
+                        .as_ref()
+                        .is_some_and(|governance| governance.0.treatment != Treatment::Quarantined)
+                {
+                    memories.insert(memory.key(), memory);
+                }
+            }
+            match result.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        Ok(memories)
+    }
+
+    fn add_graph_candidates(
+        &self,
+        request: &RecallRequest,
+        scope: &RecallScope,
+        authorized: &BTreeMap<Vec<u8>, Memory>,
+        candidates: &mut BTreeMap<Vec<u8>, UnifiedCandidate>,
+    ) -> Result<
+        (
+            Option<BranchAbstention>,
+            bool,
+            usize,
+            Option<GraphTruncationReason>,
+        ),
+        MemoryEngineError,
+    > {
+        if !request.options.branches.graph {
+            return Ok((Some(BranchAbstention::Disabled), false, 0, None));
+        }
+        if request.options.branches.graph_max_memories == 0 {
+            return Ok((Some(BranchAbstention::Disabled), false, 0, None));
+        }
+        let mut seeds = self.graph_query_seeds(scope, &request.query_text, request.now_ms)?;
+        let direct_keys = candidates.keys().cloned().collect::<Vec<_>>();
+        for key in direct_keys {
+            seeds.extend(self.bound_entity_ids(&String::from_utf8_lossy(&key), scope)?);
+        }
+        seeds.sort();
+        seeds.dedup();
+        if seeds.is_empty() {
+            return Ok((Some(BranchAbstention::NoCandidates), false, 0, None));
+        }
+        let traversal = self.traverse_graph(GraphTraversalRequest {
+            scope: scope.clone(),
+            seeds: seeds.clone(),
+            relation_types: Vec::new(),
+            valid_at_ms: request.now_ms,
+            known_at_ms: request.now_ms,
+            max_depth: request.options.branches.graph_max_depth,
+            max_edges: request.options.branches.graph_max_edges,
+            max_entities: request.options.branches.graph_max_entities,
+        })?;
+        let max_memories = request.options.branches.graph_max_memories.min(10_000);
+        let mut added_ids = std::collections::BTreeSet::new();
+        for entity_id in traversal
+            .entities
+            .iter()
+            .take(request.options.branches.graph_max_entities)
+        {
+            let path = graph_path(&seeds, entity_id, &traversal);
+            let score = 1.0 / path.len().saturating_sub(1).max(1) as f64;
+            for binding in self.memory_bindings(entity_id, scope)? {
+                let key = binding.memory_id.as_bytes().to_vec();
+                if !authorized.contains_key(&key) {
+                    continue;
+                }
+                let candidate = candidates.entry(key).or_default();
+                if score > candidate.graph {
+                    candidate.graph = score;
+                    candidate.graph_path = path.clone();
+                }
+                added_ids.insert(binding.memory_id);
+                if added_ids.len() >= max_memories {
+                    break;
+                }
+            }
+            if added_ids.len() >= max_memories {
+                break;
+            }
+        }
+        Ok((
+            added_ids
+                .is_empty()
+                .then_some(BranchAbstention::NoCandidates),
+            traversal.truncated,
+            traversal.inspected_edges,
+            traversal.truncation_reason,
+        ))
+    }
+
+    fn add_temporal_candidates(
+        &self,
+        request: &RecallRequest,
+        scope: &RecallScope,
+        authorized: &BTreeMap<Vec<u8>, Memory>,
+        candidates: &mut BTreeMap<Vec<u8>, UnifiedCandidate>,
+    ) -> Result<Option<BranchAbstention>, MemoryEngineError> {
+        if !request.options.branches.temporal {
+            return Ok(Some(BranchAbstention::Disabled));
+        }
+        let query_tokens = normalized_query_tokens(&request.query_text);
+        if query_tokens.is_empty() {
+            return Ok(Some(BranchAbstention::NoCandidates));
+        }
+        let mut claims = self.visible_claims(scope)?;
+        let supersessions = self.claim_supersessions(scope)?;
+        claims.retain(|claim| {
+            claim.recorded_at_ms <= request.now_ms
+                && claim.valid_at(request.now_ms)
+                && !supersessions.iter().any(|link| {
+                    link.original_claim_id == claim.id
+                        && link.relation.retires_original()
+                        && link.effective_at_ms <= request.now_ms
+                        && link.recorded_at_ms <= request.now_ms
+                })
+        });
+        let max_memories = request.options.branches.temporal_max_memories.min(10_000);
+        if max_memories == 0 {
+            return Ok(Some(BranchAbstention::Disabled));
+        }
+        let mut added_ids = std::collections::BTreeSet::new();
+        for claim in claims {
+            let property_tokens = normalized_query_tokens(&format!(
+                "{} {} {}",
+                claim.subject, claim.predicate, claim.value
+            ));
+            let overlap = query_tokens.intersection(&property_tokens).count();
+            if overlap == 0 {
+                continue;
+            }
+            let score = overlap as f64 / query_tokens.len().max(1) as f64;
+            for evidence in self
+                .active_claim_evidence(&claim.id, scope)?
+                .into_iter()
+                .filter(|evidence| evidence.relation == crate::ClaimEvidenceRelation::Supports)
+            {
+                for memory in authorized.values().filter(|memory| {
+                    memory.provenance.event_id.as_deref() == Some(evidence.event_id.as_str())
+                }) {
+                    let candidate = candidates.entry(memory.key()).or_default();
+                    candidate.temporal = candidate.temporal.max(score);
+                    candidate.claim_ids.push(claim.id.to_string());
+                    candidate.claim_ids.sort();
+                    candidate.claim_ids.dedup();
+                    added_ids.insert(memory.id.clone());
+                    if added_ids.len() >= max_memories {
+                        break;
+                    }
+                }
+                if added_ids.len() >= max_memories {
+                    break;
+                }
+            }
+            if added_ids.len() >= max_memories {
+                break;
+            }
+        }
+        Ok(added_ids
+            .is_empty()
+            .then_some(BranchAbstention::NoCandidates))
+    }
+
+    fn retired_claim_events_for_query(
+        &self,
+        scope: &RecallScope,
+        query: &str,
+        now_ms: i64,
+    ) -> Result<std::collections::BTreeSet<String>, MemoryEngineError> {
+        let query_tokens = normalized_query_tokens(query);
+        let claims = self.visible_claims(scope)?;
+        let supersessions = self.claim_supersessions(scope)?;
+        let mut retired = std::collections::BTreeSet::new();
+        let mut current = std::collections::BTreeSet::new();
+        for claim in claims {
+            let property = normalized_query_tokens(&format!(
+                "{} {} {}",
+                claim.subject, claim.predicate, claim.value
+            ));
+            if query_tokens.is_disjoint(&property) {
+                continue;
+            }
+            let is_retired = supersessions.iter().any(|link| {
+                link.original_claim_id == claim.id
+                    && link.relation.retires_original()
+                    && link.effective_at_ms <= now_ms
+                    && link.recorded_at_ms <= now_ms
+            });
+            let target = if is_retired {
+                &mut retired
+            } else {
+                &mut current
+            };
+            for evidence in self.active_claim_evidence(&claim.id, scope)? {
+                target.insert(evidence.event_id.to_string());
+            }
+        }
+        retired.retain(|event_id| !current.contains(event_id));
+        Ok(retired)
     }
 
     fn require_tenant(&self, requested: &TenantId) -> Result<(), MemoryEngineError> {
@@ -3379,6 +3708,48 @@ impl MemoryEngine {
         })
     }
 
+    /// Lists policy-safe visible memories, excluding archived and quarantined rows.
+    pub fn list_disclosed_memories(
+        &self,
+        scope: &RecallScope,
+        limit: usize,
+        authority: celiums_cognition::DisclosureAuthority,
+        purpose: MemoryPurpose,
+    ) -> Result<Vec<HydratedMemory>, MemoryEngineError> {
+        Ok(self
+            .list_disclosed_memory_page(scope, limit, 0, authority, purpose)?
+            .memories)
+    }
+
+    /// Paginates policy-safe visible memories by deterministic memory ID.
+    pub fn list_disclosed_memory_page(
+        &self,
+        scope: &RecallScope,
+        limit: usize,
+        offset: usize,
+        authority: celiums_cognition::DisclosureAuthority,
+        purpose: MemoryPurpose,
+    ) -> Result<HydratedMemoryPage, MemoryEngineError> {
+        let authorized = self.authorized_recall_records(scope, None)?;
+        let all_ids = authorized
+            .values()
+            .map(|memory| memory.id.clone())
+            .collect::<Vec<_>>();
+        let limit = limit.clamp(1, 200);
+        let ids = all_ids.iter().skip(offset).take(limit).cloned().collect();
+        let memories = self.hydrate(HydrateRequest {
+            ids,
+            scope: scope.clone(),
+            disclosure_authority: authority,
+            disclosure_purpose: purpose,
+        })?;
+        Ok(HydratedMemoryPage {
+            memories,
+            next_offset: (offset.saturating_add(limit) < all_ids.len())
+                .then_some(offset.saturating_add(limit)),
+        })
+    }
+
     /// Updates mutable metadata using optimistic concurrency.
     ///
     /// # Errors
@@ -3488,85 +3859,6 @@ impl MemoryEngine {
             .collect()
     }
 
-    fn semantic_candidates(
-        &self,
-        query: Q15Vector,
-        limit: usize,
-    ) -> Result<BranchCandidates, MemoryEngineError> {
-        let outcome = self.hyphae.retrieve_exact(
-            &ExactRetrievalRequest {
-                vector_space: memory_space(),
-                query,
-                limit,
-                minimum_score_nanos: CANDIDATE_SCORE_NANOS,
-                minimum_margin_nanos: 0,
-            },
-            &ExactRetrievalLimits::default(),
-        )?;
-        Ok(match outcome {
-            ExactRetrievalOutcome::Matches { matches, .. } => (
-                matches
-                    .into_iter()
-                    // Cosine nanos map to the [0, 1] channel like the
-                    // TS Qdrant scores: negatives carry no signal.
-                    .map(|matched| {
-                        (
-                            matched.key,
-                            (matched.score_nanos as f64 / 1e9).clamp(0.0, 1.0),
-                        )
-                    })
-                    .collect(),
-                None,
-            ),
-            ExactRetrievalOutcome::Abstained(abstention) => (
-                Vec::new(),
-                Some(match abstention.reason {
-                    ExactAbstentionReason::NoCandidates => BranchAbstention::NoCandidates,
-                    ExactAbstentionReason::BelowThreshold => BranchAbstention::BelowThreshold,
-                    ExactAbstentionReason::Ambiguous => BranchAbstention::Ambiguous,
-                }),
-            ),
-        })
-    }
-
-    fn lexical_candidates(
-        &self,
-        query_text: &str,
-        limit: usize,
-    ) -> Result<BranchCandidates, MemoryEngineError> {
-        let outcome = self.hyphae.retrieve_lexical(
-            &LexicalRequest {
-                index: content_index(),
-                query: query_text.to_owned(),
-                limit,
-            },
-            &LexicalLimits::default(),
-        )?;
-        Ok(match outcome {
-            LexicalOutcome::Matches { matches, .. } => {
-                // BM25F is unbounded; the TS channel (pg_trgm) was
-                // [0, 1]. Normalise by the best score so the top
-                // lexical hit contributes 1.0 and the rest scale.
-                let best = matches
-                    .first()
-                    .map_or(1.0, |matched| (matched.score_nanos as f64).max(1.0));
-                (
-                    matches
-                        .into_iter()
-                        .map(|matched| (matched.key, (matched.score_nanos as f64 / best).max(0.0)))
-                        .collect(),
-                    None,
-                )
-            }
-            LexicalOutcome::Abstained(abstention) => (
-                Vec::new(),
-                Some(match abstention.reason {
-                    LexicalAbstentionReason::NoCandidates => BranchAbstention::NoCandidates,
-                }),
-            ),
-        })
-    }
-
     fn load_memory(&self, key: &[u8]) -> Result<Memory, MemoryEngineError> {
         let record =
             self.hyphae
@@ -3575,26 +3867,6 @@ impl MemoryEngine {
                     id: String::from_utf8_lossy(key).into_owned(),
                 })?;
         Ok(Memory::from_record(&record)?)
-    }
-
-    fn load_recall_candidate(&self, key: &[u8]) -> Result<Option<Memory>, MemoryEngineError> {
-        let record =
-            self.hyphae
-                .get_record(key)?
-                .ok_or_else(|| MemoryEngineError::MissingCandidate {
-                    id: String::from_utf8_lossy(key).into_owned(),
-                })?;
-        let hyphae_query::Value::Object(fields) = &record.value else {
-            return Ok(Some(Memory::from_record(&record)?));
-        };
-        if fields.get("kind")
-            != Some(&hyphae_query::Value::String(
-                crate::memory::MEMORY_KIND.to_owned(),
-            ))
-        {
-            return Ok(None);
-        }
-        Ok(Some(Memory::from_record(&record)?))
     }
 
     /// Consolidates all visible events carrying one explicit turn ID into an episode.
@@ -4979,34 +5251,13 @@ impl MemoryEngine {
             .put_record(Uuid::now_v7(), &self.affect.to_record())?;
         Ok(())
     }
-
-    fn reactivate_top(
-        &mut self,
-        scored: &mut [ScoredMemory],
-        now_ms: i64,
-    ) -> Result<(), MemoryEngineError> {
-        for entry in scored.iter_mut().take(REACTIVATION_TOP) {
-            let outcome = retention::reactivate(
-                entry.memory.importance,
-                entry.memory.strength,
-                entry.memory.retrieval_count,
-            );
-            entry.memory.importance = outcome.importance;
-            entry.memory.strength = outcome.strength;
-            entry.memory.retrieval_count = outcome.retrieval_count;
-            entry.memory.state = MemoryState::Active;
-            entry.memory.last_retrieved_at_ms = now_ms;
-            self.hyphae
-                .put_record(Uuid::now_v7(), &entry.memory.to_record())?;
-        }
-        Ok(())
-    }
 }
 
 fn migrate_legacy_memories(
     hyphae: &mut HyphaeEngine,
     tenant_id: &TenantId,
     embedding_space: &EmbeddingSpaceIdentity,
+    durable_vectors: &BTreeMap<Vec<u8>, Q15Vector>,
 ) -> Result<(), MemoryEngineError> {
     use hyphae_query::{CompareOperator, Cursor, ExecutionLimits, Filter, Query, Value};
     let mut cursor: Option<Cursor> = None;
@@ -5028,15 +5279,22 @@ fn migrate_legacy_memories(
         let mut migrated = Vec::new();
         for record in &result.rows {
             let mut memory = Memory::from_record(record)?;
-            if memory.schema_version >= 2
+            let quarantined = memory
+                .governance
+                .as_ref()
+                .is_some_and(|governance| governance.0.treatment == Treatment::Quarantined);
+            if memory.schema_version >= 3
                 && memory.embedding_space.is_some()
+                && (memory.vector.is_some() || quarantined)
                 && memory.governance.is_some()
             {
                 continue;
             }
-            memory.schema_version = 2;
             memory.identity.tenant_id = tenant_id.clone();
             memory.embedding_space = Some(embedding_space.clone());
+            if memory.vector.is_none() {
+                memory.vector = durable_vectors.get(&memory.key()).cloned();
+            }
             if memory.governance.is_none() {
                 let evaluation = evaluate_ethics(&memory.content, None);
                 memory.governance = Some(MemoryGovernance(classify_governance(
@@ -5048,6 +5306,16 @@ fn migrate_legacy_memories(
                     &evaluation,
                 )));
             }
+            let quarantined = memory
+                .governance
+                .as_ref()
+                .is_some_and(|governance| governance.0.treatment == Treatment::Quarantined);
+            if memory.vector.is_none() && !quarantined {
+                return Err(MemoryEngineError::MissingCandidate {
+                    id: format!("{} (durable vector required for schema v3)", memory.id),
+                });
+            }
+            memory.schema_version = 3;
             memory.updated_at_ms = memory.updated_at_ms.max(memory.created_at_ms);
             migrated.push(memory.to_record());
         }
@@ -5241,20 +5509,6 @@ fn graph_path(
     path
 }
 
-fn graph_candidate_channels(memory: &Memory, now_ms: i64) -> ChannelScores {
-    ChannelScores {
-        semantic: 0.0,
-        text_match: 0.0,
-        importance: memory.importance,
-        retrievability: retrievability(
-            days_between(memory.last_retrieved_at_ms, now_ms),
-            memory.strength,
-        ),
-        emotional: emotional_weight(memory.pad.pleasure, memory.pad.arousal),
-        resonance: 0.5,
-    }
-}
-
 fn structured_summary(sources: &[DerivedMemory]) -> String {
     let mut done = Vec::new();
     let mut open = Vec::new();
@@ -5287,6 +5541,415 @@ fn combine_confidence(confidences: impl IntoIterator<Item = i64>) -> i64 {
         remaining = remaining.saturating_mul(SCALE - confidence) / SCALE;
     }
     i64::try_from(SCALE - remaining).unwrap_or(1_000_000_000)
+}
+
+fn filtered_semantic_candidates(
+    authorized: &BTreeMap<Vec<u8>, Memory>,
+    query: Q15Vector,
+    limit: usize,
+) -> Result<BranchCandidates, MemoryEngineError> {
+    let candidates = authorized
+        .iter()
+        .filter_map(|(key, memory)| {
+            memory.vector.clone().map(|vector| DurableVectorRecord {
+                key: key.clone(),
+                vector,
+            })
+        })
+        .collect::<Vec<_>>();
+    let outcome = retrieve_exact(
+        &candidates,
+        &ExactRetrievalRequest {
+            vector_space: memory_space(),
+            query,
+            limit,
+            minimum_score_nanos: CANDIDATE_SCORE_NANOS,
+            minimum_margin_nanos: 0,
+        },
+        &ExactRetrievalLimits::default(),
+    )
+    .map_err(HyphaeError::from)?;
+    Ok(match outcome {
+        ExactRetrievalOutcome::Matches { matches, .. } => (
+            matches
+                .into_iter()
+                .map(|matched| {
+                    (
+                        matched.key,
+                        (matched.score_nanos as f64 / 1e9).clamp(0.0, 1.0),
+                    )
+                })
+                .collect(),
+            None,
+        ),
+        ExactRetrievalOutcome::Abstained(abstention) => (
+            Vec::new(),
+            Some(match abstention.reason {
+                ExactAbstentionReason::NoCandidates => BranchAbstention::NoCandidates,
+                ExactAbstentionReason::BelowThreshold => BranchAbstention::BelowThreshold,
+                ExactAbstentionReason::Ambiguous => BranchAbstention::Ambiguous,
+            }),
+        ),
+    })
+}
+
+fn truncate_candidate_union(
+    candidates: &mut BTreeMap<Vec<u8>, UnifiedCandidate>,
+    budget: usize,
+) -> bool {
+    if candidates.len() <= budget {
+        return false;
+    }
+    let mut ranked = candidates
+        .iter()
+        .map(|(key, candidate)| {
+            (
+                key.clone(),
+                candidate
+                    .semantic
+                    .max(candidate.lexical)
+                    .max(candidate.graph)
+                    .max(candidate.temporal),
+            )
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    let retained = ranked
+        .into_iter()
+        .take(budget)
+        .map(|(key, _)| key)
+        .collect::<std::collections::BTreeSet<_>>();
+    candidates.retain(|key, _| retained.contains(key));
+    true
+}
+
+fn filtered_lexical_candidates(
+    authorized: &BTreeMap<Vec<u8>, Memory>,
+    query: &str,
+    limit: usize,
+) -> Result<BranchCandidates, MemoryEngineError> {
+    if query.trim().is_empty() {
+        return Ok((Vec::new(), Some(BranchAbstention::NoCandidates)));
+    }
+    let records = authorized
+        .values()
+        .map(Memory::to_record)
+        .collect::<Vec<_>>();
+    let outcome = retrieve_lexical(
+        &records,
+        &memory_lexical_definition()?,
+        &LexicalRequest {
+            index: content_index(),
+            query: query.to_owned(),
+            limit,
+        },
+        &LexicalLimits::default(),
+    )
+    .map_err(HyphaeError::from)?;
+    Ok(match outcome {
+        LexicalOutcome::Matches { matches, .. } => {
+            let best = matches
+                .first()
+                .map_or(1.0, |matched| (matched.score_nanos as f64).max(1.0));
+            (
+                matches
+                    .into_iter()
+                    .map(|matched| (matched.key, (matched.score_nanos as f64 / best).max(0.0)))
+                    .collect(),
+                None,
+            )
+        }
+        LexicalOutcome::Abstained(_) => (Vec::new(), Some(BranchAbstention::NoCandidates)),
+    })
+}
+
+fn memory_lexical_definition() -> Result<LexicalIndexDefinition, MemoryEngineError> {
+    LexicalIndexDefinition::new(
+        content_index(),
+        vec![LexicalField {
+            path: FieldPath::field("content"),
+            weight_micros: 1_000_000,
+        }],
+    )
+    .map_err(HyphaeError::from)
+    .map_err(Into::into)
+}
+
+fn candidate_branches(candidate: &UnifiedCandidate) -> Vec<SearchBranch> {
+    let mut branches = Vec::new();
+    if candidate.semantic > 0.0 {
+        branches.push(SearchBranch::Semantic);
+    }
+    if candidate.lexical > 0.0 {
+        branches.push(SearchBranch::Lexical);
+    }
+    if candidate.graph > 0.0 {
+        branches.push(SearchBranch::Graph);
+    }
+    if candidate.temporal > 0.0 {
+        branches.push(SearchBranch::Temporal);
+    }
+    branches
+}
+
+fn recall_reasons(candidate: &UnifiedCandidate) -> Vec<RecallReason> {
+    [
+        (
+            SearchBranch::Semantic,
+            candidate.semantic,
+            "exact cosine match",
+        ),
+        (SearchBranch::Lexical, candidate.lexical, "BM25F term match"),
+        (SearchBranch::Graph, candidate.graph, "bounded graph path"),
+        (
+            SearchBranch::Temporal,
+            candidate.temporal,
+            "current claim evidence",
+        ),
+    ]
+    .into_iter()
+    .filter(|(_, score, _)| *score > 0.0)
+    .map(|(branch, score, detail)| RecallReason {
+        branch,
+        score,
+        detail: detail.to_owned(),
+    })
+    .collect()
+}
+
+fn candidate_citation(memory: &Memory, candidate: &UnifiedCandidate) -> Citation {
+    Citation {
+        memory_id: memory.id.clone(),
+        source_id: None,
+        source_uri: None,
+        event_id: memory.provenance.event_id.clone(),
+        content_hash: memory.provenance.content_hash.clone(),
+        claim_ids: candidate.claim_ids.clone(),
+        graph_path: candidate
+            .graph_path
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+    }
+}
+
+fn recalled_memory(memory: &Memory, disclosed_content: Option<&str>) -> RecalledMemory {
+    RecalledMemory {
+        id: memory.id.clone(),
+        content: disclosed_content.unwrap_or_default().to_owned(),
+        importance: memory.importance,
+        memory_type: memory.memory_type,
+        state: memory.state,
+        scope: memory.scope,
+        event_at_ms: memory.event_at_ms,
+        ingested_at_ms: memory.ingested_at_ms,
+        retrieval_count: memory.retrieval_count,
+        strength: memory.strength,
+        last_retrieved_at_ms: memory.last_retrieved_at_ms,
+        consolidation_count: memory.consolidation_count,
+        tags: Vec::new(),
+        vector: memory.vector.clone(),
+    }
+}
+
+fn apply_reranker(
+    scored: &mut [ScoredMemory],
+    input: &RerankerInput,
+) -> Result<RerankerStatus, MemoryEngineError> {
+    match input {
+        RerankerInput::Deterministic => Ok(RerankerStatus::DeterministicFallback),
+        RerankerInput::Unavailable(identity) => Ok(RerankerStatus::ExternalUnavailableFallback(
+            identity.clone(),
+        )),
+        RerankerInput::External(external) => {
+            if external.identity.provider.trim().is_empty()
+                || external.identity.model.trim().is_empty()
+                || external.identity.revision.trim().is_empty()
+            {
+                return Err(MemoryEngineError::InvalidRerankerScores {
+                    detail: "identity fields must be non-empty",
+                });
+            }
+            if external
+                .scores_nanos
+                .values()
+                .any(|score| !(0..=1_000_000_000).contains(score))
+            {
+                return Err(MemoryEngineError::InvalidRerankerScores {
+                    detail: "scores must be in 0..=1e9",
+                });
+            }
+            let candidate_ids = scored
+                .iter()
+                .map(|result| result.memory.id.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            let supplied_ids = external
+                .scores_nanos
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>();
+            if candidate_ids != supplied_ids {
+                return Ok(RerankerStatus::ExternalUnavailableFallback(
+                    external.identity.clone(),
+                ));
+            }
+            for result in scored {
+                if let Some(score) = external.scores_nanos.get(&result.memory.id) {
+                    result.final_score =
+                        result.final_score * 0.7 + (*score as f64 / 1_000_000_000.0) * 0.3;
+                }
+            }
+            Ok(RerankerStatus::ExternalApplied(external.identity.clone()))
+        }
+    }
+}
+
+fn diversify(
+    mut ranked: Vec<ScoredMemory>,
+    limit: usize,
+    relevance_weight: f64,
+) -> Vec<ScoredMemory> {
+    let weight = relevance_weight.clamp(0.0, 1.0);
+    let mut selected: Vec<ScoredMemory> = Vec::new();
+    while !ranked.is_empty() && selected.len() < limit {
+        let next = ranked
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| {
+                let redundancy = selected
+                    .iter()
+                    .map(|picked| memory_similarity(&candidate.memory, &picked.memory))
+                    .fold(0.0, f64::max);
+                let mmr = weight * candidate.final_score - (1.0 - weight) * redundancy;
+                (index, mmr, candidate.memory.id.as_str())
+            })
+            .max_by(|left, right| {
+                left.1
+                    .partial_cmp(&right.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| right.2.cmp(left.2))
+            })
+            .map(|(index, _, _)| index)
+            .expect("ranked is non-empty");
+        selected.push(ranked.remove(next));
+    }
+    selected
+}
+
+fn merge_disclosed_duplicates(ranked: Vec<ScoredMemory>) -> Vec<ScoredMemory> {
+    let mut merged: BTreeMap<String, ScoredMemory> = BTreeMap::new();
+    for mut result in ranked {
+        let key = result
+            .disclosed_content
+            .as_deref()
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        match merged.get_mut(&key) {
+            Some(existing) => {
+                existing.citations.append(&mut result.citations);
+                existing.why_recalled.append(&mut result.why_recalled);
+                existing.branches.append(&mut result.branches);
+                existing
+                    .citations
+                    .sort_by(|left, right| left.memory_id.cmp(&right.memory_id));
+                existing
+                    .citations
+                    .dedup_by(|left, right| left.memory_id == right.memory_id);
+                existing.branches.sort();
+                existing.branches.dedup();
+                existing.why_recalled.sort_by_key(|reason| reason.branch);
+                existing
+                    .why_recalled
+                    .dedup_by(|left, right| left.branch == right.branch);
+            }
+            None => {
+                merged.insert(key, result);
+            }
+        }
+    }
+    let mut merged = merged.into_values().collect::<Vec<_>>();
+    merged.sort_by(|left, right| {
+        right
+            .final_score
+            .partial_cmp(&left.final_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.memory.id.cmp(&right.memory.id))
+    });
+    merged
+}
+
+fn memory_similarity(left: &RecalledMemory, right: &RecalledMemory) -> f64 {
+    let (Some(left), Some(right)) = (&left.vector, &right.vector) else {
+        return 0.0;
+    };
+    cosine_q15(left, right)
+}
+
+fn cosine_q15(left: &Q15Vector, right: &Q15Vector) -> f64 {
+    if left.dimension() != right.dimension() {
+        return 0.0;
+    }
+    let dot = left
+        .as_slice()
+        .iter()
+        .zip(right.as_slice())
+        .map(|(left, right)| f64::from(*left) * f64::from(*right))
+        .sum::<f64>();
+    let left_norm = left
+        .as_slice()
+        .iter()
+        .map(|value| f64::from(*value).powi(2))
+        .sum::<f64>()
+        .sqrt();
+    let right_norm = right
+        .as_slice()
+        .iter()
+        .map(|value| f64::from(*value).powi(2))
+        .sum::<f64>()
+        .sqrt();
+    (dot / (left_norm * right_norm)).clamp(-1.0, 1.0)
+}
+
+fn normalized_query_tokens(text: &str) -> std::collections::BTreeSet<String> {
+    text.split(|character: char| !character.is_alphanumeric())
+        .filter(|token| token.len() > 1)
+        .map(str::to_lowercase)
+        .collect()
+}
+
+fn estimate_tokens(text: &str) -> usize {
+    text.split_whitespace()
+        .map(|word| word.len().div_ceil(4).max(1))
+        .sum()
+}
+
+fn truncate_to_token_budget(content: &str, budget: usize) -> (String, usize, bool) {
+    if estimate_tokens(content) <= budget {
+        return (content.to_owned(), estimate_tokens(content), false);
+    }
+    let mut output = String::new();
+    let mut used = 0_usize;
+    for word in content.split_whitespace() {
+        let cost = word.len().div_ceil(4).max(1);
+        if used.saturating_add(cost) > budget {
+            break;
+        }
+        if !output.is_empty() {
+            output.push(' ');
+        }
+        output.push_str(word);
+        used += cost;
+    }
+    (output, used, true)
 }
 
 fn push_derived_issue(issues: &mut Vec<DerivedIntegrityIssue>, kind: &str, derived_id: &DerivedId) {
@@ -5824,6 +6487,90 @@ fn ensure_embedding_space(
         expected: embedding_space_label(expected),
         received: embedding_space_label(received),
     })
+}
+
+fn ensure_tenant_binding(
+    hyphae: &mut HyphaeEngine,
+    tenant_id: &TenantId,
+) -> Result<(), MemoryEngineError> {
+    use hyphae_query::{Record, Value};
+    match hyphae.get_record(TENANT_BINDING_KEY)? {
+        Some(record) => {
+            let Value::Object(fields) = record.value else {
+                return Err(MemoryEngineError::TenantMismatch {
+                    requested: tenant_id.to_string(),
+                    engine: "invalid durable tenant binding".to_owned(),
+                });
+            };
+            let Some(Value::String(stored)) = fields.get("tenant_id") else {
+                return Err(MemoryEngineError::TenantMismatch {
+                    requested: tenant_id.to_string(),
+                    engine: "invalid durable tenant binding".to_owned(),
+                });
+            };
+            if stored != tenant_id.as_str() {
+                return Err(MemoryEngineError::TenantMismatch {
+                    requested: tenant_id.to_string(),
+                    engine: stored.clone(),
+                });
+            }
+        }
+        None => {
+            let existing_tenants = existing_memory_tenants(hyphae)?;
+            if existing_tenants
+                .iter()
+                .any(|stored| stored != tenant_id.as_str() && stored != "local")
+            {
+                return Err(MemoryEngineError::TenantMismatch {
+                    requested: tenant_id.to_string(),
+                    engine: existing_tenants.into_iter().next().unwrap_or_default(),
+                });
+            }
+            hyphae.put_record(
+                Uuid::now_v7(),
+                &Record::new(
+                    TENANT_BINDING_KEY,
+                    Value::Object(BTreeMap::from([
+                        (
+                            "kind".to_owned(),
+                            Value::String("tenant_binding".to_owned()),
+                        ),
+                        ("tenant_id".to_owned(), Value::String(tenant_id.to_string())),
+                    ])),
+                ),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn existing_memory_tenants(hyphae: &HyphaeEngine) -> Result<Vec<String>, MemoryEngineError> {
+    use hyphae_query::{CompareOperator, ExecutionLimits, Filter, Query, Value};
+    let result = hyphae.query(
+        &Query {
+            filter: Filter::Compare {
+                path: FieldPath::field("kind"),
+                operator: CompareOperator::Equal,
+                value: Value::String(crate::memory::MEMORY_KIND.to_owned()),
+            },
+            sort: Vec::new(),
+            cursor: None,
+            limit: 1_000,
+            aggregation: None,
+        },
+        &ExecutionLimits::default(),
+    )?;
+    let mut tenants = result
+        .rows
+        .iter()
+        .map(Memory::from_record)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|memory| memory.identity.tenant_id.to_string())
+        .collect::<Vec<_>>();
+    tenants.sort();
+    tenants.dedup();
+    Ok(tenants)
 }
 
 fn embedding_space_label(space: &EmbeddingSpaceIdentity) -> String {

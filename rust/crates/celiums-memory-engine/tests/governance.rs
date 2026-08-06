@@ -86,6 +86,7 @@ fn recall(
             embedding_space: None,
             disclosure_authority: authority,
             disclosure_purpose: purpose,
+            options: celiums_memory_engine::RecallOptions::default(),
         })
         .expect("recall")
 }

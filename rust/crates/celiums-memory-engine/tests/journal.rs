@@ -290,6 +290,7 @@ fn journal_entries_never_leak_into_memory_recall_or_count() {
             embedding_space: None,
             disclosure_authority: celiums_cognition::DisclosureAuthority::Agent,
             disclosure_purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
+            options: celiums_memory_engine::RecallOptions::default(),
         })
         .expect("memory recall");
     assert!(response.results.is_empty());

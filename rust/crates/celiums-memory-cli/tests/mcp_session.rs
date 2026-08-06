@@ -31,6 +31,10 @@ fn initialized_session(dir: &tempfile::TempDir) -> Session {
         }))
         .expect("initialize response");
     assert_eq!(init["result"]["serverInfo"]["name"], "celiums-memory");
+    assert_eq!(
+        init["result"]["capabilities"]["resources"]["subscribe"],
+        true
+    );
     assert!(
         session
             .handle(&json!({
@@ -153,10 +157,9 @@ fn full_remember_recall_round_trip_over_mcp() {
             .unwrap_or_default()
             .contains("Rust")
     );
-    assert_eq!(results[0]["identity"]["tenant_id"], "local");
-    assert_eq!(results[0]["provenance"]["source_kind"], "user");
+    assert!(results[0]["citations"][0]["source_id"].is_null());
     assert_eq!(results[0]["event_at_ms"], 1_770_000_000_000_i64);
-    assert_eq!(results[0]["embedding_space"]["revision"], "v1");
+    assert!(results[0]["citations"][0]["content_hash"].is_string());
 
     let id = remembered["structuredContent"]["id"].as_str().expect("id");
     let got = call(
@@ -331,6 +334,31 @@ fn tool_errors_are_reported_not_crashed() {
         }))
         .expect("response");
     assert_eq!(unknown["error"]["code"], -32602);
+
+    let elevated = call(
+        &mut session,
+        "recall",
+        json!({"query":"anything","disclosure_authority":"owner"}),
+    );
+    assert_eq!(elevated["isError"], true);
+
+    let remembered = call(
+        &mut session,
+        "remember",
+        json!({"content":"authority update guard","scope":"global"}),
+    );
+    let id = remembered["structuredContent"]["id"].as_str().expect("id");
+    let rejected_update = call(
+        &mut session,
+        "memory_update",
+        json!({
+            "id":id,"if_revision":1,"patch":{"importance":0.1},
+            "disclosure_authority":"owner"
+        }),
+    );
+    assert_eq!(rejected_update["isError"], true);
+    let got = call(&mut session, "memory_get", json!({"id":id}));
+    assert_eq!(got["structuredContent"]["memory"]["revision"], 1);
 }
 
 #[test]
@@ -428,4 +456,66 @@ fn stdio_loop_answers_over_buffered_transport() {
     assert_eq!(lines[0]["id"], 1);
     assert_eq!(lines[1]["id"], 2);
     assert!(lines[1]["result"]["tools"].is_array());
+}
+
+#[test]
+fn resources_read_and_subscriptions_are_policy_safe() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut session = initialized_session(&dir);
+    let remembered = call(
+        &mut session,
+        "remember",
+        json!({
+            "content":"Cloudflare Durable Objects isolate tenant memory",
+            "tenant_id":"local",
+            "user_id":"mario",
+            "scope":"global"
+        }),
+    );
+    let id = remembered["structuredContent"]["id"].as_str().expect("id");
+    session.drain_notifications();
+
+    let listed = session
+        .handle(&json!({
+            "jsonrpc":"2.0","id":10,"method":"resources/list",
+            "params":{"tenant_id":"local","user_id":"mario"}
+        }))
+        .expect("list");
+    assert_eq!(
+        listed["result"]["resources"].as_array().map(Vec::len),
+        Some(1)
+    );
+    let uri = format!("celiums-memory://memories/{id}?tenant_id=local&user_id=mario");
+    let read = session
+        .handle(&json!({
+            "jsonrpc":"2.0","id":11,"method":"resources/read","params":{"uri":uri}
+        }))
+        .expect("read");
+    let text = read["result"]["contents"][0]["text"]
+        .as_str()
+        .expect("text");
+    assert!(text.contains("Cloudflare"));
+    assert!(text.contains("citation"));
+
+    session
+        .handle(&json!({
+            "jsonrpc":"2.0","id":12,"method":"resources/subscribe","params":{"uri":uri}
+        }))
+        .expect("subscribe");
+    call(
+        &mut session,
+        "remember",
+        json!({"content":"A second memory changes the resource list"}),
+    );
+    let notifications = session.drain_notifications();
+    assert!(
+        notifications
+            .iter()
+            .any(|message| { message["method"] == "notifications/resources/updated" })
+    );
+    assert!(
+        notifications
+            .iter()
+            .any(|message| { message["method"] == "notifications/resources/list_changed" })
+    );
 }

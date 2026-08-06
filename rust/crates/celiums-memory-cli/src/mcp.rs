@@ -13,6 +13,7 @@
 //! `remember`/`recall`; without one the engine's deterministic offline
 //! embedder is used, so the binary works with zero providers.
 
+use std::collections::{BTreeSet, VecDeque};
 use std::io::{self, BufRead, Write};
 
 use celiums_cognition::{EntityKind, JournalEntryType, Scope};
@@ -41,6 +42,8 @@ pub struct Session {
     data_dir: PathBuf,
     initialize_seen: bool,
     initialized: bool,
+    subscriptions: BTreeSet<String>,
+    pending_notifications: VecDeque<Value>,
 }
 
 impl Session {
@@ -53,6 +56,8 @@ impl Session {
             data_dir,
             initialize_seen: false,
             initialized: false,
+            subscriptions: BTreeSet::new(),
+            pending_notifications: VecDeque::new(),
         }
     }
 
@@ -79,8 +84,13 @@ impl Session {
                 serde_json::to_writer(&mut *output, &response)
                     .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
                 output.write_all(b"\n")?;
-                output.flush()?;
             }
+            while let Some(notification) = self.pending_notifications.pop_front() {
+                serde_json::to_writer(&mut *output, &notification)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+                output.write_all(b"\n")?;
+            }
+            output.flush()?;
         }
     }
 
@@ -120,8 +130,18 @@ impl Session {
             _ if !self.initialized => Some(rpc_error(&id, -32002, "Server not initialized")),
             "tools/list" => Some(rpc_result(&id, &json!({ "tools": tool_definitions() }))),
             "tools/call" => Some(self.call_tool(&id, &params)),
+            "resources/list" => Some(self.list_resources(&id, &params)),
+            "resources/templates/list" => Some(self.list_resource_templates(&id)),
+            "resources/read" => Some(self.read_resource(&id, &params)),
+            "resources/subscribe" => Some(self.subscribe_resource(&id, &params)),
+            "resources/unsubscribe" => Some(self.unsubscribe_resource(&id, &params)),
             _ => Some(rpc_error(&id, -32601, "Method not found")),
         }
+    }
+
+    /// Drains server-initiated notifications produced by the last request.
+    pub fn drain_notifications(&mut self) -> Vec<Value> {
+        self.pending_notifications.drain(..).collect()
     }
 
     fn initialize(&mut self, id: &Value, params: &Value) -> Value {
@@ -140,7 +160,10 @@ impl Session {
             id,
             &json!({
                 "protocolVersion": MCP_PROTOCOL,
-                "capabilities": { "tools": { "listChanged": false } },
+                "capabilities": {
+                    "tools": { "listChanged": false },
+                    "resources": { "subscribe": true, "listChanged": true }
+                },
                 "serverInfo": {
                     "name": "celiums-memory",
                     "title": "Celiums Memory cognitive engine",
@@ -186,9 +209,156 @@ impl Session {
             _ => return rpc_error(id, -32602, "Unknown tool"),
         };
         match result {
-            Ok(value) => rpc_result(id, &tool_success(&value)),
+            Ok(value) => {
+                if is_mutating_tool(name) {
+                    self.notify_resource_changes();
+                }
+                rpc_result(id, &tool_success(&value))
+            }
             Err(message) => rpc_result(id, &tool_error(&message)),
         }
+    }
+
+    fn list_resources(&self, id: &Value, params: &Value) -> Value {
+        let scope = match recall_scope(params) {
+            Ok(scope) => scope,
+            Err(error) => return rpc_error(id, -32602, &error),
+        };
+        let offset = match params.get("cursor").and_then(Value::as_str) {
+            Some(cursor) => match cursor.parse::<usize>() {
+                Ok(offset) => offset,
+                Err(_) => return rpc_error(id, -32602, "Invalid resource cursor"),
+            },
+            None => 0,
+        };
+        let page = match self.engine.list_disclosed_memory_page(
+            &scope,
+            200,
+            offset,
+            celiums_cognition::DisclosureAuthority::Agent,
+            celiums_cognition::MemoryPurpose::ConversationalContext,
+        ) {
+            Ok(page) => page,
+            Err(error) => return rpc_error(id, -32002, &error.to_string()),
+        };
+        rpc_result(
+            id,
+            &json!({
+                "resources": page.memories.iter().map(|memory| json!({
+                    "uri": memory_resource_uri(&memory.id, &scope),
+                    "name": format!("Memory {}", memory.id),
+                    "title": "Policy-safe memory",
+                    "mimeType": "application/json"
+                })).collect::<Vec<_>>(),
+                "nextCursor": page.next_offset.map(|offset| offset.to_string())
+            }),
+        )
+    }
+
+    fn list_resource_templates(&self, id: &Value) -> Value {
+        rpc_result(
+            id,
+            &json!({
+                "resourceTemplates": [{
+                    "uriTemplate": "celiums-memory://memories/{id}{?tenant_id,user_id,project_id,conversation_id,session_id}",
+                    "name": "Policy-safe memory",
+                    "mimeType": "application/json"
+                }]
+            }),
+        )
+    }
+
+    fn read_resource(&self, id: &Value, params: &Value) -> Value {
+        let Some(uri) = params.get("uri").and_then(Value::as_str) else {
+            return rpc_error(id, -32602, "Resource URI is required");
+        };
+        let (memory_id, arguments) = match parse_memory_resource_uri(uri) {
+            Ok(parsed) => parsed,
+            Err(error) => return rpc_error(id, -32602, &error),
+        };
+        let scope = match recall_scope(&arguments) {
+            Ok(scope) => scope,
+            Err(error) => return rpc_error(id, -32602, &error),
+        };
+        let memory =
+            match self
+                .engine
+                .get_disclosed_memory(celiums_memory_engine::DisclosedMemoryRequest {
+                    id: memory_id,
+                    scope,
+                    disclosure_authority: celiums_cognition::DisclosureAuthority::Agent,
+                    disclosure_purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
+                }) {
+                Ok(Some(memory)) => memory,
+                Ok(None) => return rpc_error(id, -32002, "Resource not found"),
+                Err(error) => return rpc_error(id, -32002, &error.to_string()),
+            };
+        let text = serde_json::to_string(&json!({
+            "id": memory.id,
+            "content": memory.content,
+            "disclosure": format!("{:?}", memory.disclosure).to_lowercase(),
+            "tags": memory.tags,
+            "created_at_ms": memory.created_at_ms,
+            "citation": citation_json(&memory.citation),
+        }))
+        .unwrap_or_else(|_| "null".to_owned());
+        rpc_result(
+            id,
+            &json!({"contents":[{"uri":uri,"mimeType":"application/json","text":text}]}),
+        )
+    }
+
+    fn subscribe_resource(&mut self, id: &Value, params: &Value) -> Value {
+        let Some(uri) = params.get("uri").and_then(Value::as_str) else {
+            return rpc_error(id, -32602, "Resource URI is required");
+        };
+        let (memory_id, arguments) = match parse_memory_resource_uri(uri) {
+            Ok(parsed) => parsed,
+            Err(_) => return rpc_error(id, -32602, "Invalid memory resource URI"),
+        };
+        if self.subscriptions.len() >= 1_000 && !self.subscriptions.contains(uri) {
+            return rpc_error(id, -32002, "Subscription limit reached");
+        }
+        let scope = match recall_scope(&arguments) {
+            Ok(scope) => scope,
+            Err(error) => return rpc_error(id, -32602, &error),
+        };
+        match self
+            .engine
+            .get_disclosed_memory(celiums_memory_engine::DisclosedMemoryRequest {
+                id: memory_id,
+                scope,
+                disclosure_authority: celiums_cognition::DisclosureAuthority::Agent,
+                disclosure_purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
+            }) {
+            Ok(Some(_)) => {}
+            Ok(None) => return rpc_error(id, -32002, "Resource not found"),
+            Err(error) => return rpc_error(id, -32002, &error.to_string()),
+        }
+        self.subscriptions.insert(uri.to_owned());
+        rpc_result(id, &json!({}))
+    }
+
+    fn unsubscribe_resource(&mut self, id: &Value, params: &Value) -> Value {
+        let Some(uri) = params.get("uri").and_then(Value::as_str) else {
+            return rpc_error(id, -32602, "Resource URI is required");
+        };
+        self.subscriptions.remove(uri);
+        rpc_result(id, &json!({}))
+    }
+
+    fn notify_resource_changes(&mut self) {
+        for uri in &self.subscriptions {
+            self.pending_notifications.push_back(json!({
+                "jsonrpc":"2.0",
+                "method":"notifications/resources/updated",
+                "params":{"uri":uri}
+            }));
+        }
+        self.pending_notifications.push_back(json!({
+            "jsonrpc":"2.0",
+            "method":"notifications/resources/list_changed"
+        }));
     }
 
     fn tool_remember(&mut self, arguments: &Value) -> Result<Value, String> {
@@ -251,14 +421,20 @@ impl Session {
                 now_ms: now_ms(),
                 scope: Some(scope),
                 embedding_space: Some(embedding_space),
-                disclosure_authority: parse_disclosure_authority(arguments)?,
+                disclosure_authority: session_disclosure_authority(arguments)?,
                 disclosure_purpose: parse_memory_purpose(arguments, "disclosure_purpose")?,
+                options: celiums_memory_engine::RecallOptions::default(),
             })
             .map_err(|error| error.to_string())?;
         Ok(json!({
             "results": response.results.iter().map(scored_json).collect::<Vec<_>>(),
             "semantic_abstention": response.semantic_abstention.map(abstention_str),
             "lexical_abstention": response.lexical_abstention.map(abstention_str),
+            "graph_abstention": response.graph_abstention.map(abstention_str),
+            "temporal_abstention": response.temporal_abstention.map(abstention_str),
+            "overall_abstention": response.overall_abstention.map(|reason| format!("{reason:?}").to_lowercase()),
+            "candidate_count": response.candidate_count,
+            "reranker_status": format!("{:?}", response.reranker_status),
         }))
     }
 
@@ -365,30 +541,49 @@ impl Session {
     fn tool_memory_get(&self, arguments: &Value) -> Result<Value, String> {
         let memory = self
             .engine
-            .get_memory(
-                &required_string(arguments, "id")?,
-                &recall_scope(arguments)?,
-            )
+            .get_disclosed_memory(celiums_memory_engine::DisclosedMemoryRequest {
+                id: required_string(arguments, "id")?,
+                scope: recall_scope(arguments)?,
+                disclosure_authority: session_disclosure_authority(arguments)?,
+                disclosure_purpose: parse_memory_purpose(arguments, "disclosure_purpose")?,
+            })
             .map_err(|error| error.to_string())?;
-        Ok(json!({ "memory": memory.as_ref().map(memory_json) }))
+        Ok(json!({ "memory": memory.as_ref().map(hydrated_json) }))
     }
 
     fn tool_memory_list(&self, arguments: &Value) -> Result<Value, String> {
+        let scope = recall_scope(arguments)?;
         let page = self
             .engine
             .list_memories(&ListMemoriesRequest {
-                scope: recall_scope(arguments)?,
+                scope: scope.clone(),
                 filter: None,
                 limit: arguments.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize,
             })
             .map_err(|error| error.to_string())?;
+        let hydrated = self
+            .engine
+            .hydrate(celiums_memory_engine::HydrateRequest {
+                ids: page
+                    .memories
+                    .iter()
+                    .map(|memory| memory.id.clone())
+                    .collect(),
+                scope,
+                disclosure_authority: session_disclosure_authority(arguments)?,
+                disclosure_purpose: parse_memory_purpose(arguments, "disclosure_purpose")?,
+            })
+            .map_err(|error| error.to_string())?;
         Ok(json!({
-            "memories": page.memories.iter().map(memory_json).collect::<Vec<_>>(),
+            "memories": hydrated.iter().map(hydrated_json).collect::<Vec<_>>(),
             "matched": page.matched,
         }))
     }
 
     fn tool_memory_update(&mut self, arguments: &Value) -> Result<Value, String> {
+        let scope = recall_scope(arguments)?;
+        let authority = session_disclosure_authority(arguments)?;
+        let purpose = parse_memory_purpose(arguments, "disclosure_purpose")?;
         let patch_value = arguments.get("patch").ok_or("`patch` is required")?;
         let patch = MemoryPatch {
             importance: patch_value.get("importance").and_then(Value::as_f64),
@@ -409,7 +604,7 @@ impl Session {
             .engine
             .update_memory(UpdateMemoryRequest {
                 id: required_string(arguments, "id")?,
-                scope: recall_scope(arguments)?,
+                scope: scope.clone(),
                 patch,
                 if_revision: arguments
                     .get("if_revision")
@@ -418,7 +613,19 @@ impl Session {
                 now_ms: now_ms(),
             })
             .map_err(|error| error.to_string())?;
-        Ok(json!({ "memory": memory.as_ref().map(memory_json) }))
+        let hydrated = match memory {
+            Some(memory) => self
+                .engine
+                .get_disclosed_memory(celiums_memory_engine::DisclosedMemoryRequest {
+                    id: memory.id,
+                    scope,
+                    disclosure_authority: authority,
+                    disclosure_purpose: purpose,
+                })
+                .map_err(|error| error.to_string())?,
+            None => None,
+        };
+        Ok(json!({ "memory": hydrated.as_ref().map(hydrated_json) }))
     }
 
     fn tool_memory_delete(&mut self, arguments: &Value) -> Result<Value, String> {
@@ -463,7 +670,7 @@ impl Session {
         let outcomes = self.engine.remember_batch(requests);
         Ok(json!({
             "results": outcomes.into_iter().map(|outcome| match outcome.result {
-                Ok(memory) => json!({"index": outcome.index, "memory": memory_json(&memory)}),
+                Ok(memory) => json!({"index": outcome.index, "id": memory.id}),
                 Err(error) => json!({"index": outcome.index, "error": error}),
             }).collect::<Vec<_>>()
         }))
@@ -522,7 +729,7 @@ impl Session {
                         kind,
                         name,
                         &recall_scope(arguments)?,
-                        parse_disclosure_authority(arguments)?,
+                        session_disclosure_authority(arguments)?,
                         parse_memory_purpose(arguments, "disclosure_purpose")?,
                     )
                     .map_err(|error| error.to_string())?;
@@ -536,13 +743,29 @@ impl Session {
                 }))
             }
             None => {
-                let entities = self.engine.entities().map_err(|error| error.to_string())?;
+                let scope = recall_scope(arguments)?;
+                let mut entities = Vec::new();
+                for entity in self.engine.entities().map_err(|error| error.to_string())? {
+                    let visible = self
+                        .engine
+                        .entity_memories_scoped(
+                            entity.kind,
+                            &entity.name,
+                            &scope,
+                            session_disclosure_authority(arguments)?,
+                            parse_memory_purpose(arguments, "disclosure_purpose")?,
+                        )
+                        .map_err(|error| error.to_string())?;
+                    if !visible.is_empty() {
+                        entities.push((entity, visible.len()));
+                    }
+                }
                 Ok(json!({
-                    "entities": entities.iter().map(|entity| json!({
+                    "entities": entities.iter().map(|(entity, visible_count)| json!({
                         "name": entity.name,
                         "entity_kind": entity.kind.as_str(),
                         "salience": entity.salience,
-                        "memory_count": entity.memory_ids.len(),
+                        "memory_count": visible_count,
                     })).collect::<Vec<_>>(),
                 }))
             }
@@ -597,8 +820,9 @@ impl Session {
                 now_ms: now_ms(),
                 scope: Some(recall_scope(arguments)?),
                 embedding_space: Some(self.embedding_space_from(arguments)?),
-                disclosure_authority: parse_disclosure_authority(arguments)?,
+                disclosure_authority: session_disclosure_authority(arguments)?,
                 disclosure_purpose: parse_memory_purpose(arguments, "disclosure_purpose")?,
+                options: snapshot_recall_options(),
             },
         )
         .map_err(|error| error.to_string())?;
@@ -690,9 +914,6 @@ fn scored_json(scored: &ScoredMemory) -> Value {
         "importance": scored.memory.importance,
         "memory_type": scored.memory.memory_type.as_str(),
         "tags": scored.memory.tags,
-        "identity": identity_json(&scored.memory.identity),
-        "provenance": provenance_json(&scored.memory.provenance),
-        "embedding_space": scored.memory.embedding_space.as_ref().map(embedding_space_json),
         "event_at_ms": scored.memory.event_at_ms,
         "ingested_at_ms": scored.memory.ingested_at_ms,
         "channels": {
@@ -703,28 +924,105 @@ fn scored_json(scored: &ScoredMemory) -> Value {
             "emotional": scored.channels.emotional,
             "resonance": scored.channels.resonance,
         },
+        "branches": scored.branches.iter().map(|branch| format!("{branch:?}").to_lowercase()).collect::<Vec<_>>(),
+        "why_recalled": scored.why_recalled.iter().map(|reason| json!({
+            "branch": format!("{:?}", reason.branch).to_lowercase(),
+            "score": reason.score,
+            "detail": reason.detail,
+        })).collect::<Vec<_>>(),
+        "citations": scored.citations.iter().map(citation_json).collect::<Vec<_>>(),
     })
 }
 
-fn memory_json(memory: &celiums_memory_engine::Memory) -> Value {
+fn citation_json(citation: &celiums_memory_engine::Citation) -> Value {
+    json!({
+        "memory_id": citation.memory_id,
+        "source_id": Value::Null,
+        "source_uri": Value::Null,
+        "event_id": citation.event_id,
+        "content_hash": citation.content_hash,
+        "claim_ids": citation.claim_ids,
+        "graph_path": citation.graph_path,
+    })
+}
+
+fn is_mutating_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "remember"
+            | "journal_write"
+            | "memory_update"
+            | "memory_delete"
+            | "remember_batch"
+            | "capture_event"
+            | "consolidate"
+            | "snapshot_now"
+            | "run_lifecycle"
+    )
+}
+
+fn memory_resource_uri(id: &str, scope: &RecallScope) -> String {
+    let mut parameters = vec![
+        format!("tenant_id={}", scope.tenant_id),
+        format!("user_id={}", scope.user_id),
+    ];
+    for (name, value) in [
+        (
+            "project_id",
+            scope.project_id.as_ref().map(ProjectId::as_str),
+        ),
+        (
+            "conversation_id",
+            scope.conversation_id.as_ref().map(ConversationId::as_str),
+        ),
+        (
+            "session_id",
+            scope.session_id.as_ref().map(SessionId::as_str),
+        ),
+    ] {
+        if let Some(value) = value {
+            parameters.push(format!("{name}={value}"));
+        }
+    }
+    format!("celiums-memory://memories/{id}?{}", parameters.join("&"))
+}
+
+fn parse_memory_resource_uri(uri: &str) -> Result<(String, Value), String> {
+    let Some(rest) = uri.strip_prefix("celiums-memory://memories/") else {
+        return Err("unsupported resource URI".to_owned());
+    };
+    let (id, query) = rest.split_once('?').unwrap_or((rest, ""));
+    if id.is_empty() || id.contains('/') {
+        return Err("invalid memory resource ID".to_owned());
+    }
+    let mut arguments = serde_json::Map::new();
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or("invalid resource query parameter")?;
+        if !matches!(
+            key,
+            "tenant_id" | "user_id" | "project_id" | "conversation_id" | "session_id"
+        ) || value.is_empty()
+        {
+            return Err("invalid resource query parameter".to_owned());
+        }
+        arguments.insert(key.to_owned(), Value::String(value.to_owned()));
+    }
+    Ok((id.to_owned(), Value::Object(arguments)))
+}
+
+fn hydrated_json(memory: &celiums_memory_engine::HydratedMemory) -> Value {
     json!({
         "id": memory.id,
-        "content": memory.content,
-        "schema_version": memory.schema_version,
         "revision": memory.revision,
+        "content": memory.content,
+        "disclosure": format!("{:?}", memory.disclosure).to_lowercase(),
+        "tags": memory.tags,
         "importance": memory.importance,
         "memory_type": memory.memory_type.as_str(),
-        "state": memory.state.as_str(),
-        "scope": memory.scope.as_str(),
-        "tags": memory.tags,
-        "identity": identity_json(&memory.identity),
-        "provenance": provenance_json(&memory.provenance),
-        "embedding_space": memory.embedding_space.as_ref().map(embedding_space_json),
         "created_at_ms": memory.created_at_ms,
-        "updated_at_ms": memory.updated_at_ms,
-        "event_at_ms": memory.event_at_ms,
-        "ingested_at_ms": memory.ingested_at_ms,
-        "governance": memory.governance.as_ref().map(governance_json),
+        "citation": citation_json(&memory.citation),
     })
 }
 
@@ -733,6 +1031,7 @@ fn abstention_str(reason: BranchAbstention) -> &'static str {
         BranchAbstention::NoCandidates => "no_candidates",
         BranchAbstention::BelowThreshold => "below_threshold",
         BranchAbstention::Ambiguous => "ambiguous",
+        BranchAbstention::Disabled => "disabled",
     }
 }
 
@@ -820,7 +1119,7 @@ fn tool_definitions() -> Vec<Value> {
         ),
         tool(
             "memory_list",
-            "List visible memories, newest first, including archived memories.",
+            "List visible policy-safe memories, newest first.",
             &scope_schema(true),
             true,
         ),
@@ -952,7 +1251,10 @@ fn tool_definitions() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "name": { "type": "string" },
-                    "entity_kind": { "type": "string", "enum": ["person","technology","project"] }
+                    "entity_kind": { "type": "string", "enum": ["person","technology","project"] },
+                    "tenant_id": { "type": "string" }, "user_id": { "type": "string" },
+                    "project_id": { "type": "string" }, "conversation_id": { "type": "string" },
+                    "session_id": { "type": "string" }
                 }
             }),
             true,
@@ -1036,14 +1338,19 @@ fn scoped_id_schema() -> Value {
 }
 
 fn tool(name: &str, description: &str, input_schema: &Value, read_only: bool) -> Value {
+    let destructive = name == "memory_delete";
+    let idempotent = matches!(
+        name,
+        "memory_delete" | "memory_get" | "memory_list" | "recall"
+    );
     json!({
         "name": name,
         "description": description,
         "inputSchema": input_schema,
         "annotations": {
             "readOnlyHint": read_only,
-            "destructiveHint": false,
-            "idempotentHint": false,
+            "destructiveHint": destructive,
+            "idempotentHint": idempotent,
             "openWorldHint": false
         }
     })
@@ -1111,6 +1418,23 @@ fn parse_disclosure_authority(
     }
 }
 
+fn session_disclosure_authority(
+    arguments: &Value,
+) -> Result<celiums_cognition::DisclosureAuthority, String> {
+    match parse_disclosure_authority(arguments)? {
+        celiums_cognition::DisclosureAuthority::Agent => {
+            Ok(celiums_cognition::DisclosureAuthority::Agent)
+        }
+        celiums_cognition::DisclosureAuthority::ThirdParty => {
+            Ok(celiums_cognition::DisclosureAuthority::ThirdParty)
+        }
+        celiums_cognition::DisclosureAuthority::Owner
+        | celiums_cognition::DisclosureAuthority::Auditor => {
+            Err("stdio MCP session cannot elevate disclosure authority".to_owned())
+        }
+    }
+}
+
 fn parse_capture_adapter(arguments: &Value) -> Result<CaptureAdapter, String> {
     match arguments.get("adapter").and_then(Value::as_str) {
         Some("opencode_codex") => Ok(CaptureAdapter::OpenCodeCodex),
@@ -1174,6 +1498,13 @@ fn recall_scope(arguments: &Value) -> Result<RecallScope, String> {
     })
 }
 
+fn snapshot_recall_options() -> celiums_memory_engine::RecallOptions {
+    let mut options = celiums_memory_engine::RecallOptions::default();
+    options.branches.graph = false;
+    options.branches.temporal = false;
+    options
+}
+
 fn optional_identity<T>(
     arguments: &Value,
     field: &str,
@@ -1230,22 +1561,6 @@ fn embedding_space_json(space: &EmbeddingSpaceIdentity) -> Value {
         "revision": space.revision,
         "dimension": space.dimension,
         "normalization": space.normalization.as_str(),
-    })
-}
-
-fn governance_json(governance: &celiums_memory_engine::MemoryGovernance) -> Value {
-    let classification = &governance.0;
-    json!({
-        "policy_id": classification.trace.policy_id,
-        "policy_version": classification.trace.policy_version,
-        "policy_hash": classification.trace.policy_hash,
-        "role": format!("{:?}", classification.role).to_lowercase(),
-        "purpose": format!("{:?}", classification.purpose).to_lowercase(),
-        "trust": format!("{:?}", classification.trust).to_lowercase(),
-        "sensitivity": format!("{:?}", classification.sensitivity).to_lowercase(),
-        "poisoning_risk": format!("{:?}", classification.poisoning_risk).to_lowercase(),
-        "treatment": format!("{:?}", classification.treatment).to_lowercase(),
-        "enforcement": format!("{:?}", classification.enforcement).to_lowercase(),
     })
 }
 

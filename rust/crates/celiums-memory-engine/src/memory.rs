@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 
 use celiums_cognition::{EntityKind, ExtractedEntity, MemoryState, MemoryType, Pad, Scope};
+use hyphae_core::Q15Vector;
 use hyphae_query::{Record, Value};
 use thiserror::Error;
 
@@ -38,6 +39,8 @@ pub struct Memory {
     pub provenance: Provenance,
     /// Embedding space used by this memory's vector.
     pub embedding_space: Option<EmbeddingSpaceIdentity>,
+    /// Canonical vector copied into the document for filtered retrieval and MMR.
+    pub vector: Option<Q15Vector>,
     /// Durable policy classification and disclosure treatment.
     pub governance: Option<MemoryGovernance>,
     /// Raw remembered text.
@@ -171,6 +174,18 @@ impl Memory {
             );
         }
         fields.insert(
+            "embedding_vector".to_owned(),
+            self.vector.as_ref().map_or(Value::Null, |vector| {
+                Value::Array(
+                    vector
+                        .as_slice()
+                        .iter()
+                        .map(|value| Value::Integer(i64::from(*value)))
+                        .collect(),
+                )
+            }),
+        );
+        fields.insert(
             "governance".to_owned(),
             self.governance
                 .as_ref()
@@ -274,6 +289,7 @@ impl Memory {
             identity: identity_fields(fields)?,
             provenance: provenance_fields(fields, &content)?,
             embedding_space: embedding_space_fields(fields)?,
+            vector: vector_field(fields)?,
             governance: governance_field(fields)?,
             content,
             importance: nanos_field(fields, "importance")?,
@@ -427,6 +443,36 @@ fn embedding_space_fields(
         })
 }
 
+fn vector_field(fields: &BTreeMap<String, Value>) -> Result<Option<Q15Vector>, MemoryDecodeError> {
+    let Some(value) = fields.get("embedding_vector") else {
+        return Ok(None);
+    };
+    let Value::Array(values) = value else {
+        return match value {
+            Value::Null => Ok(None),
+            _ => Err(MemoryDecodeError::Field {
+                field: "embedding_vector",
+            }),
+        };
+    };
+    let vector = values
+        .iter()
+        .map(|value| match value {
+            Value::Integer(value) => i16::try_from(*value).map_err(|_| MemoryDecodeError::Field {
+                field: "embedding_vector",
+            }),
+            _ => Err(MemoryDecodeError::Field {
+                field: "embedding_vector",
+            }),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Q15Vector::new(vector)
+        .map(Some)
+        .map_err(|_| MemoryDecodeError::Field {
+            field: "embedding_vector",
+        })
+}
+
 fn governance_field(
     fields: &BTreeMap<String, Value>,
 ) -> Result<Option<MemoryGovernance>, MemoryDecodeError> {
@@ -562,6 +608,7 @@ mod tests {
                 )
                 .expect("embedding identity"),
             ),
+            vector: Some(Q15Vector::new(vec![32_767, 1, 1, 1]).expect("vector")),
             governance: None,
             content: "We decided to port the engine to Rust".to_owned(),
             importance: 0.85,

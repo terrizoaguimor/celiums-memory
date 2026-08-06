@@ -22,14 +22,17 @@ use celiums_cognition::{
 use hyphae_query::Record;
 use hyphae_retrieval::{
     DurableVectorRecord, ExactRetrievalLimits, ExactRetrievalOutcome, ExactRetrievalRequest,
-    LexicalLimits, LexicalOutcome, LexicalRequest, retrieve_exact, retrieve_lexical,
+    LexicalIndexDefinition, LexicalLimits, LexicalOutcome, LexicalRequest, retrieve_exact,
+    retrieve_lexical,
 };
 use hyphae_storage::{SnapshotContents, SnapshotReadLimits, load_snapshot_with_timeout};
 
-use crate::engine::{RecallConfig, RecallRequest, RecallResponse, ScoredMemory, memory_visible_to};
+use crate::engine::{RecallConfig, memory_visible_to};
 use crate::memory::Memory;
 use crate::quantize::quantize;
-use crate::{BranchAbstention, MemoryEngineError, RecallScope};
+use crate::{
+    BranchAbstention, MemoryEngineError, RecallRequest, RecallResponse, RecallScope, ScoredMemory,
+};
 
 /// Snapshot load timeout.
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -94,6 +97,18 @@ pub fn recall_at(
     config: &RecallConfig,
     request: &RecallRequest,
 ) -> Result<RecallResponse, MemoryEngineError> {
+    if request.options.branches.graph
+        || request.options.branches.temporal
+        || !matches!(
+            request.options.reranker,
+            crate::RerankerInput::Deterministic
+        )
+    {
+        return Err(MemoryEngineError::Snapshot {
+            detail: "snapshot recall supports semantic/lexical deterministic branches only"
+                .to_owned(),
+        });
+    }
     let contents = load_snapshot_with_timeout(
         snapshot_path.as_ref(),
         &SnapshotReadLimits::default(),
@@ -104,6 +119,29 @@ pub fn recall_at(
     })?;
 
     let memory_space = crate::engine::memory_space();
+    let snapshot_embedding = snapshot_embedding_identity(&contents)?;
+    if let Some(requested) = &request.embedding_space
+        && requested != &snapshot_embedding
+    {
+        return Err(MemoryEngineError::EmbeddingSpaceMismatch {
+            expected: format!(
+                "{}/{}/{}:{}:{}",
+                snapshot_embedding.provider,
+                snapshot_embedding.model,
+                snapshot_embedding.revision,
+                snapshot_embedding.dimension,
+                snapshot_embedding.normalization.as_str()
+            ),
+            received: format!(
+                "{}/{}/{}:{}:{}",
+                requested.provider,
+                requested.model,
+                requested.revision,
+                requested.dimension,
+                requested.normalization.as_str()
+            ),
+        });
+    }
     let dimension = contents
         .vector_spaces
         .iter()
@@ -115,11 +153,24 @@ pub fn recall_at(
 
     let query_vector = quantize(&request.embedding, dimension)?;
     let candidate_limit = request.limit.max(1).saturating_mul(2);
-
-    let (semantic_scores, semantic_abstention) =
-        semantic_candidates(&contents, &memory_space, query_vector, candidate_limit)?;
-    let (lexical_scores, lexical_abstention) =
-        lexical_candidates(&contents, &request.query_text, candidate_limit)?;
+    let scope = request.scope.clone().unwrap_or_else(RecallScope::local);
+    let records = snapshot_visible_memories(&contents, &scope, request.options.filter.as_ref())?;
+    let (semantic_scores, semantic_abstention) = if request.options.branches.semantic {
+        semantic_candidates(
+            &contents,
+            &records,
+            &memory_space,
+            query_vector,
+            candidate_limit,
+        )?
+    } else {
+        (Vec::new(), Some(BranchAbstention::Disabled))
+    };
+    let (lexical_scores, lexical_abstention) = if request.options.branches.lexical {
+        lexical_candidates(&records, &request.query_text, candidate_limit)?
+    } else {
+        (Vec::new(), Some(BranchAbstention::Disabled))
+    };
 
     let mut candidates: std::collections::BTreeMap<Vec<u8>, (f64, f64)> = Default::default();
     for (key, semantic) in semantic_scores {
@@ -130,19 +181,16 @@ pub fn recall_at(
     }
 
     let current_state = request.current_state.unwrap_or_default();
-    let scope = request.scope.clone().unwrap_or_else(RecallScope::local);
     let current_arousal = request
         .current_state
         .map_or_else(recall::neutral_arousal, |state| state.arousal);
 
-    let mut scored = Vec::with_capacity(candidates.len());
+    let candidate_count = candidates.len();
+    let mut scored = Vec::with_capacity(candidate_count);
     for (key, (semantic, text_match)) in candidates {
-        let Some(memory) = snapshot_memory(&contents, &key)? else {
+        let Some(memory) = records.get(&key).cloned() else {
             continue;
         };
-        if memory.state == MemoryState::Archived || !memory_visible_to(&memory, &scope) {
-            continue;
-        }
         let channels = ChannelScores {
             semantic,
             text_match,
@@ -165,7 +213,33 @@ pub fn recall_at(
             request.disclosure_purpose,
         );
         scored.push(ScoredMemory {
-            memory,
+            branches: snapshot_branches(semantic, text_match),
+            why_recalled: snapshot_reasons(semantic, text_match),
+            citations: vec![crate::Citation {
+                memory_id: memory.id.clone(),
+                source_id: memory.provenance.source_id.clone(),
+                source_uri: memory.provenance.source_uri.clone(),
+                event_id: memory.provenance.event_id.clone(),
+                content_hash: memory.provenance.content_hash.clone(),
+                claim_ids: Vec::new(),
+                graph_path: Vec::new(),
+            }],
+            memory: crate::RecalledMemory {
+                id: memory.id,
+                content: disclosed_content.clone().unwrap_or_default(),
+                importance: memory.importance,
+                memory_type: memory.memory_type,
+                state: memory.state,
+                scope: memory.scope,
+                event_at_ms: memory.event_at_ms,
+                ingested_at_ms: memory.ingested_at_ms,
+                retrieval_count: memory.retrieval_count,
+                strength: memory.strength,
+                last_retrieved_at_ms: memory.last_retrieved_at_ms,
+                consolidation_count: memory.consolidation_count,
+                tags: Vec::new(),
+                vector: memory.vector,
+            },
             channels,
             final_score,
             disclosed_content,
@@ -186,17 +260,60 @@ pub fn recall_at(
     });
     scored.truncate(config.max_results.min(request.limit.max(1)));
 
+    let overall_abstention = scored
+        .is_empty()
+        .then_some(crate::RecallAbstention::NoVisibleCandidates);
     Ok(RecallResponse {
         results: scored,
         lexical_abstention,
         semantic_abstention,
+        graph_abstention: Some(BranchAbstention::Disabled),
+        temporal_abstention: Some(BranchAbstention::Disabled),
+        overall_abstention,
+        candidate_count,
+        reranker_status: crate::RerankerStatus::DeterministicFallback,
+        graph_truncated: false,
+        graph_inspected_edges: 0,
+        graph_truncation_reason: None,
+        union_truncated: false,
     })
+}
+
+fn snapshot_branches(semantic: f64, lexical: f64) -> Vec<crate::SearchBranch> {
+    let mut branches = Vec::new();
+    if semantic > 0.0 {
+        branches.push(crate::SearchBranch::Semantic);
+    }
+    if lexical > 0.0 {
+        branches.push(crate::SearchBranch::Lexical);
+    }
+    branches
+}
+
+fn snapshot_reasons(semantic: f64, lexical: f64) -> Vec<crate::RecallReason> {
+    [
+        (
+            crate::SearchBranch::Semantic,
+            semantic,
+            "snapshot exact cosine",
+        ),
+        (crate::SearchBranch::Lexical, lexical, "snapshot BM25F"),
+    ]
+    .into_iter()
+    .filter(|(_, score, _)| *score > 0.0)
+    .map(|(branch, score, detail)| crate::RecallReason {
+        branch,
+        score,
+        detail: detail.to_owned(),
+    })
+    .collect()
 }
 
 type BranchScores = (Vec<(Vec<u8>, f64)>, Option<BranchAbstention>);
 
 fn semantic_candidates(
     contents: &SnapshotContents,
+    records: &std::collections::BTreeMap<Vec<u8>, Memory>,
     space: &hyphae_core::VectorSpaceName,
     query: hyphae_core::Q15Vector,
     limit: usize,
@@ -204,7 +321,7 @@ fn semantic_candidates(
     let candidates: Vec<DurableVectorRecord> = contents
         .vectors
         .iter()
-        .filter(|vector| &vector.space == space)
+        .filter(|vector| &vector.space == space && records.contains_key(&vector.key))
         .map(|vector| DurableVectorRecord {
             key: vector.key.clone(),
             vector: vector.vector.clone(),
@@ -251,33 +368,24 @@ fn semantic_candidates(
 }
 
 fn lexical_candidates(
-    contents: &SnapshotContents,
+    records: &std::collections::BTreeMap<Vec<u8>, Memory>,
     query_text: &str,
     limit: usize,
 ) -> Result<BranchScores, MemoryEngineError> {
     let index_name = crate::engine::content_index();
-    let Some(definition) = contents
-        .lexical_indexes
-        .iter()
-        .find(|index| index.name == index_name)
-    else {
-        return Ok((Vec::new(), Some(BranchAbstention::NoCandidates)));
-    };
-
-    let mut records = Vec::new();
-    for entry in &contents.entries {
-        // Only memory records participate; other kinds (journal,
-        // entities, affect state) have no `content` field and score
-        // nothing, but skipping non-documents loudly matters here:
-        // a snapshot entry that fails to decode is corruption.
-        let value = hyphae_engine::decode_document(&entry.value)
-            .map_err(hyphae_engine::EngineError::from)?;
-        records.push(Record::new(entry.key.clone(), value));
-    }
+    let definition = LexicalIndexDefinition::new(
+        index_name.clone(),
+        vec![hyphae_retrieval::LexicalField {
+            path: hyphae_query::FieldPath::field("content"),
+            weight_micros: 1_000_000,
+        }],
+    )
+    .map_err(hyphae_engine::EngineError::from)?;
+    let records = records.values().map(Memory::to_record).collect::<Vec<_>>();
 
     let outcome = retrieve_lexical(
         &records,
-        definition,
+        &definition,
         &LexicalRequest {
             index: index_name,
             query: query_text.to_owned(),
@@ -303,31 +411,74 @@ fn lexical_candidates(
     })
 }
 
-fn snapshot_memory(
+fn snapshot_visible_memories(
     contents: &SnapshotContents,
-    key: &[u8],
-) -> Result<Option<Memory>, MemoryEngineError> {
+    scope: &RecallScope,
+    filter: Option<&crate::MemoryFilter>,
+) -> Result<std::collections::BTreeMap<Vec<u8>, Memory>, MemoryEngineError> {
+    use hyphae_query::{ExecutionLimits, Filter, Query};
+    let mut records = Vec::new();
+    for entry in &contents.entries {
+        let value = hyphae_engine::decode_document(&entry.value)
+            .map_err(hyphae_engine::EngineError::from)?;
+        let record = Record::new(entry.key.clone(), value);
+        let hyphae_query::Value::Object(fields) = &record.value else {
+            continue;
+        };
+        if fields.get("kind")
+            != Some(&hyphae_query::Value::String(
+                crate::memory::MEMORY_KIND.to_owned(),
+            ))
+        {
+            continue;
+        }
+        let memory = Memory::from_record(&record)?;
+        if memory_visible_to(&memory, scope) && memory.state != MemoryState::Archived {
+            records.push(record);
+        }
+    }
+    let compiled_filter = match filter {
+        Some(filter) => filter.compile()?,
+        None => Filter::MatchAll,
+    };
+    let mut memories = std::collections::BTreeMap::new();
+    let mut cursor = None;
+    loop {
+        let query = Query {
+            filter: compiled_filter.clone(),
+            sort: Vec::new(),
+            cursor,
+            limit: 1_000,
+            aggregation: None,
+        };
+        let result =
+            hyphae_query::execute(&[records.as_slice()], &query, &ExecutionLimits::default())
+                .map_err(hyphae_engine::EngineError::from)?;
+        for record in &result.rows {
+            memories.insert(record.key.clone(), Memory::from_record(record)?);
+        }
+        match result.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    Ok(memories)
+}
+
+fn snapshot_embedding_identity(
+    contents: &SnapshotContents,
+) -> Result<crate::EmbeddingSpaceIdentity, MemoryEngineError> {
     let entry = contents
         .entries
         .iter()
-        .find(|entry| entry.key == key)
-        .ok_or_else(|| MemoryEngineError::MissingCandidate {
-            id: String::from_utf8_lossy(key).into_owned(),
+        .find(|entry| entry.key == crate::embedding_space::EMBEDDING_SPACE_KEY)
+        .ok_or_else(|| MemoryEngineError::Snapshot {
+            detail: "snapshot has no embedding identity".to_owned(),
         })?;
     let value =
         hyphae_engine::decode_document(&entry.value).map_err(hyphae_engine::EngineError::from)?;
-    let record = Record::new(entry.key.clone(), value);
-    let hyphae_query::Value::Object(fields) = &record.value else {
-        return Ok(Some(Memory::from_record(&record)?));
-    };
-    if fields.get("kind")
-        != Some(&hyphae_query::Value::String(
-            crate::memory::MEMORY_KIND.to_owned(),
-        ))
-    {
-        return Ok(None);
-    }
-    Ok(Some(Memory::from_record(&record)?))
+    crate::EmbeddingSpaceIdentity::from_record(&Record::new(entry.key.clone(), value))
+        .map_err(Into::into)
 }
 
 fn days_between(earlier_ms: i64, later_ms: i64) -> f64 {

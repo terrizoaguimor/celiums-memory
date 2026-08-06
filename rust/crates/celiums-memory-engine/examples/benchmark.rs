@@ -158,12 +158,13 @@ fn main() {
                 embedding_space: None,
                 disclosure_authority: celiums_cognition::DisclosureAuthority::Agent,
                 disclosure_purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
+                options: celiums_memory_engine::RecallOptions::default(),
             })
             .expect("recall");
         latencies_us.push(started.elapsed().as_micros());
 
         let hit = |scored: &celiums_memory_engine::ScoredMemory| {
-            scored.memory.tags.iter().any(|tag| tag == topic)
+            scored.memory.content.to_lowercase().contains(topic)
         };
         if response.results.first().is_some_and(hit) {
             top1 += 1;

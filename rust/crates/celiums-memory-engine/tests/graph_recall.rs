@@ -77,7 +77,7 @@ fn remember_bound(
 }
 
 fn recall_request(query: &str) -> RecallRequest {
-    RecallRequest {
+    let mut request = RecallRequest {
         query_text: query.to_owned(),
         embedding: deterministic_embed(query, 4),
         limit: 5,
@@ -87,7 +87,10 @@ fn recall_request(query: &str) -> RecallRequest {
         embedding_space: None,
         disclosure_authority: DisclosureAuthority::Owner,
         disclosure_purpose: MemoryPurpose::ConversationalContext,
-    }
+        options: celiums_memory_engine::RecallOptions::default(),
+    };
+    request.options.branches.graph = false;
+    request
 }
 
 fn strict_config() -> RecallConfig {

@@ -365,6 +365,7 @@ mod tests {
                 )
                 .expect("embedding space"),
             ),
+            vector: Some(hyphae_core::Q15Vector::new(vec![32_767, 1, 1]).expect("vector")),
             governance: None,
             content: content.to_owned(),
             importance: 0.75,

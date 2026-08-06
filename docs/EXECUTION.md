@@ -21,13 +21,13 @@ evidence and why the next action follows.
 | Field | Value |
 |---|---|
 | Active phase | Phase 7 - Recall and context composition |
-| Active item | P7.1 - Scoped filters before retrieval |
+| Active item | P7.7 - Phase close |
 | Branch | `dev` |
-| Baseline commit | `79c9595` |
+| Baseline commit | `04023ea` |
 | Canonical implementation | `rust/` |
 | Storage substrate | Hyphae `=0.2.1` |
 | Production direction | Cloudflare, one Durable Object per tenant |
-| Next phase after gate | Phase 7 - Recall and context composition |
+| Next phase after gate | Phase 8 - Rust server and authorization |
 
 ## Phase 0 checklist
 
@@ -165,6 +165,9 @@ stable and an isolated immutable server exists.
 | 2026-08-06 | P6.4 consolidation ops | passed | 3 tests: read-only plan/apply retry, deterministic due schedule, run rollback state; clippy green |
 | 2026-08-06 | P6.5 hierarchy gate | passed | 6 tests: active-head redundancy/evidence, durable forget/reopen, claim projection, sequential withdrawal, derived cleanup and lineage |
 | 2026-08-06 | Phase 6 GitHub CI | passed | run `31063701337`; MSRV/stable Rust, Node tests, lint, typecheck, build, Trivy and secret scan green |
+| 2026-08-06 | P7 recall pipeline | passed | 11 tests: prefilter starvation, current-truth retirement, four-branch union, strict budgets, fallback, explicit feedback, compact/hydrate/context and frozen read-only determinism |
+| 2026-08-06 | P7 context gate | passed | 2 tests: fixed-budget evidence density without disclosed duplicates; full memory/affect state unchanged |
+| 2026-08-06 | P7 MCP resources | passed | initialize capabilities, policy-safe list/read/templates, subscribe/update/list-changed notifications |
 
 ## Phase 3 checklist
 
@@ -210,13 +213,13 @@ stable and an isolated immutable server exists.
 
 | ID | Work item | Status | Evidence / exit condition |
 |---|---|---|---|
-| P7.1 | Scoped filters before retrieval | pending | authorization and requested filters execute before candidate retrieval |
-| P7.2 | Candidate union | pending | exact vector, BM25F, graph and temporal branches produce one bounded union |
-| P7.3 | Cognitive scoring and fallback | pending | optional reranker and deterministic fallback preserve explicit abstentions |
-| P7.4 | Diversity and compact retrieval | pending | MMR, compact search and hydrate-by-ID remove uncontrolled duplicates |
-| P7.5 | Context composition | pending | token-aware sections, citations and `why_recalled` are deterministic |
-| P7.6 | Read-only recall resources | pending | recall has no writes; MCP resources/subscriptions pass conformance |
-| P7.7 | Phase close | pending | evidence recall improves at fixed token budget with frozen-input determinism |
+| P7.1 | Scoped filters before retrieval | verified locally | authorized query corpus and canonical caller filter precede exact/BM25F ranking |
+| P7.2 | Candidate union | verified locally | exact Q15, BM25F, bounded graph and current-claim evidence share one ID union |
+| P7.3 | Cognitive scoring and fallback | verified locally | branch abstentions/reasons plus external-score contract and explicit deterministic fallback |
+| P7.4 | Diversity and compact retrieval | verified locally | content-hash suppression, Q15 MMR, compact search and policy-safe hydrate-by-ID |
+| P7.5 | Context composition | verified locally | estimator-v1 token budget, typed sections, citations and `why_recalled` |
+| P7.6 | Read-only recall resources | verified locally | no memory/affect writes; MCP resource list/read/templates/subscribe notifications green |
+| P7.7 | Phase close | verified locally | fixed-budget evidence density, duplicate control and frozen-state determinism gates green; journal `019fd534c7e0742da95a5a4718e65255` |
 
 ## Update protocol
 

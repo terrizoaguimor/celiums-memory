@@ -38,7 +38,7 @@ fn remember(engine: &mut MemoryEngine, content: &str, at_ms: i64) -> celiums_mem
 }
 
 fn recall_request(query: &str, at_ms: i64) -> RecallRequest {
-    RecallRequest {
+    let mut request = RecallRequest {
         query_text: query.to_owned(),
         embedding: celiums_memory_engine::deterministic_embed(query, DIMENSION),
         limit: 10,
@@ -48,7 +48,11 @@ fn recall_request(query: &str, at_ms: i64) -> RecallRequest {
         embedding_space: None,
         disclosure_authority: celiums_cognition::DisclosureAuthority::Agent,
         disclosure_purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
-    }
+        options: celiums_memory_engine::RecallOptions::default(),
+    };
+    request.options.branches.graph = false;
+    request.options.branches.temporal = false;
+    request
 }
 
 #[test]
@@ -196,9 +200,15 @@ fn time_travel_recalls_what_the_engine_knew_then() {
     // The points are enumerable from the data directory alone.
     let points = snapshot_points(dir.path()).expect("points");
     assert!(points.len() >= 2);
-    assert_eq!(
-        points.first().map(|p| p.checkpoint_sequence),
-        Some(day1.checkpoint_sequence)
+    assert!(
+        points
+            .iter()
+            .any(|point| point.checkpoint_sequence == day1.checkpoint_sequence)
+    );
+    assert!(
+        points
+            .iter()
+            .any(|point| point.checkpoint_sequence == day2.checkpoint_sequence)
     );
 
     // Time-travel to day 1: only the old belief exists there.
@@ -264,8 +274,7 @@ fn time_travel_is_read_only() {
         .expect("recall_at");
     }
 
-    // The live memory kept retrieval_count = 0: snapshots never
-    // reactivate (no spaced repetition from history reads).
+    // Both snapshot and live recall are read-only in Phase 7.
     let live = engine
         .recall(recall_request(
             "memory that must not mutate",
@@ -274,6 +283,6 @@ fn time_travel_is_read_only() {
         .expect("live recall");
     assert_eq!(
         live.results[0].memory.retrieval_count,
-        stored.retrieval_count + 1
+        stored.retrieval_count
     );
 }

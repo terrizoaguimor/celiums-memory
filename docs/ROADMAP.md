@@ -139,12 +139,12 @@ regression; consolidation is idempotent and snapshot rollback works.
 
 **Goal:** return compact, diverse, policy-safe and explainable context.
 
-- Scoped filters before retrieval.
-- Exact vector + BM25F + graph + temporal candidate union.
-- Cognitive scoring, optional cross-encoder and deterministic fallback.
-- Diversity/MMR, compact search and hydrate-by-ID.
-- Token-aware context sections, citations and `why_recalled`.
-- Read-only recall and MCP resources/subscriptions.
+- [x] Scoped filters before retrieval.
+- [x] Exact vector + BM25F + graph + temporal candidate union.
+- [x] Cognitive scoring, optional cross-encoder and deterministic fallback.
+- [x] Diversity/MMR, compact search and hydrate-by-ID.
+- [x] Token-aware context sections, citations and `why_recalled`.
+- [x] Read-only recall and MCP resources/subscriptions.
 
 **Exit gate:** evidence recall improves at fixed token budget; contexts contain
 no uncontrolled duplicates; frozen input and clock produce identical output.

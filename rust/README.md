@@ -75,12 +75,10 @@ engine no longer has.
   - `embed` — the deterministic offline embedder (word/bigram hashing,
     L2-normalised): the engine works with zero providers; callers with
     a real model (bge-m3, 1024-dim) pass their own vectors.
-  - `engine` — `remember` / `recall`: hybrid retrieval (exact cosine +
-    BM25F union, mirroring the TS Qdrant + pg_trgm pipeline),
-    cognitive re-ranking driven by the engine's own limbic state
-    (stimuli move it on `remember`; recalled memories feed back on
-    `recall`), spaced-repetition reactivation, preserved branch
-    abstentions.
+  - `engine` — `remember` / read-only `recall`: filtered exact cosine,
+    BM25F, graph and temporal union with cognitive re-ranking, diversity,
+    explicit abstentions and policy-safe citations. Spaced-repetition
+    reinforcement is separate via `record_recall_feedback`.
 - **`celiums-memory-cli`** — the single binary:
   - `celiums-memory mcp [--data <dir>] [--dimension <n>]` — MCP stdio
     server (JSON-RPC 2.0, protocol `2025-11-25`), 18 tools:
@@ -283,6 +281,19 @@ Roadmap Phase 6 adds evidence-preserving hierarchical consolidation:
   withdrawn, and remove forgotten evidence from current claim projection.
   `ErasurePending` removes derived state but does not claim raw-source or
   historical-snapshot erasure; that purge remains a later portability task.
+
+Roadmap Phase 7 replaces the mutating legacy recall path with one deterministic,
+read-only context pipeline:
+
+- authorization and canonical filters select the corpus before exact Q15 and
+  BM25F scoring; graph and current-claim evidence join the same bounded union;
+- cognitive scoring exposes branch reasons and citations, accepts optional
+  provider-neutral cross-encoder scores, and reports deterministic fallback;
+- exact-content suppression plus Q15 MMR produce diverse compact search,
+  followed by explicit policy-safe hydrate-by-ID;
+- token-budgeted context sections carry citations and `why_recalled` evidence;
+- MCP advertises policy-safe resources with read/list/subscribe notifications,
+  while recall leaves memory, retrieval counters and affect state unchanged.
 
 The ordered platform plan and its mechanical exit gates live in
 [`docs/ROADMAP.md`](../docs/ROADMAP.md); execution evidence and the current

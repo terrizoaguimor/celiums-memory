@@ -8,7 +8,8 @@
 //! hybrid exact-cosine + BM25F candidate retrieval re-ranked by the
 //! six-channel formula (semantic, text, importance, Ebbinghaus
 //! retrievability, emotional weight, PAD resonance under the SAR
-//! filter), with spaced-repetition reactivation on recall.
+//! filter). Recall is deterministic and read-only; spaced-repetition feedback
+//! is an explicit mutating operation.
 //!
 //! Embeddings are caller-provided floats; this crate quantises them to
 //! Hyphae's canonical Q15 domain and enforces the dimension guard.
@@ -32,6 +33,7 @@ mod ingestion;
 mod journal;
 mod memory;
 mod quantize;
+mod recall_pipeline;
 mod temporal;
 mod timetravel;
 
@@ -55,12 +57,11 @@ pub use derived::{
 pub use embed::deterministic_embed;
 pub use embedding_space::{EmbeddingNormalization, EmbeddingSpaceIdentity, InvalidEmbeddingSpace};
 pub use engine::{
-    ActionDecision, BatchRememberOutcome, BranchAbstention, CircadianStatus, ConsolidationReport,
-    DeleteMemoryOutcome, EnrichEventRequest, EntityMemoryView, GraphRecallRequest,
-    GraphRecallResponse, GraphScoredMemory, IngestBatchRequest, IngestConversationRequest,
-    IngestEventRequest, JournalRecallRequest, JournalWriteRequest, LifecycleReport,
-    ListMemoriesRequest, MemoryEngine, MemoryEngineError, MemoryPage, MemoryPatch, RecallConfig,
-    RecallRequest, RecallResponse, RememberRequest, ScoredMemory, UpdateMemoryRequest,
+    ActionDecision, BatchRememberOutcome, CircadianStatus, ConsolidationReport,
+    DeleteMemoryOutcome, EnrichEventRequest, EntityMemoryView, IngestBatchRequest,
+    IngestConversationRequest, IngestEventRequest, JournalRecallRequest, JournalWriteRequest,
+    LifecycleReport, ListMemoriesRequest, MemoryEngine, MemoryEngineError, MemoryPage, MemoryPatch,
+    RecallConfig, RememberRequest, UpdateMemoryRequest,
 };
 pub use entity_index::EntityRecord;
 pub use filter::{
@@ -93,6 +94,15 @@ pub use ingestion::{
 pub use journal::{BrokenLink, BrokenReason, ChainReport, JournalEntry, Supersession, chain_hash};
 pub use memory::{Memory, MemoryDecodeError};
 pub use quantize::{QuantizeError, quantize};
+pub use recall_pipeline::{
+    BranchAbstention, Citation, CompactSearchRequest, CompactSearchResponse, CompactSearchResult,
+    ContextComposeRequest, ContextComposition, ContextSection, ContextSectionKind,
+    DisclosedMemoryRequest, DiversityOptions, ExternalRerankerScores, GraphRecallRequest,
+    GraphRecallResponse, GraphScoredMemory, HydrateRequest, HydratedMemory, HydratedMemoryPage,
+    RecallAbstention, RecallBranchOptions, RecallFeedbackReport, RecallFeedbackRequest,
+    RecallOptions, RecallReason, RecallRequest, RecallResponse, RecalledMemory, RerankerIdentity,
+    RerankerInput, RerankerStatus, ScoredMemory, SearchBranch,
+};
 pub use temporal::{
     ClaimSnapshot, ClaimSnapshotEntry, EventTimeBasis, ResolvedTime, SemanticClaimChange,
     SemanticClaimDiff, SemanticClaimDiffKind, SequencedEvent, TemporalPrecision, TimeBasis,

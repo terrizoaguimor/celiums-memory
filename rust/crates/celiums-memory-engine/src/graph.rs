@@ -41,7 +41,7 @@ macro_rules! graph_id {
                 &self.0
             }
 
-            fn parse(value: String) -> Result<Self, GraphDecodeError> {
+            pub(crate) fn parse(value: String) -> Result<Self, GraphDecodeError> {
                 Uuid::parse_str(&value).map_err(|_| GraphDecodeError::Field { field: $field })?;
                 Ok(Self(value))
             }
@@ -1054,6 +1054,9 @@ pub enum InvalidGraph {
     /// Merge/split target cardinality is invalid.
     #[error("graph lineage target cardinality does not match its type")]
     LineageTargets,
+    /// Traversal budgets must be nonzero when graph traversal is enabled.
+    #[error("graph traversal budgets must be nonzero")]
+    TraversalBudget,
 }
 
 /// Failure decoding graph state.
