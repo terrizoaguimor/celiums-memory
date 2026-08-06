@@ -20,8 +20,8 @@ evidence and why the next action follows.
 
 | Field | Value |
 |---|---|
-| Active phase | Phase 7 - Recall and context composition |
-| Active item | P7.7 - Phase close |
+| Active phase | Phase 8 - Rust server and authorization |
+| Active item | P8.1 - Axum REST and remote MCP contract |
 | Branch | `dev` |
 | Baseline commit | `04023ea` |
 | Canonical implementation | `rust/` |
@@ -168,6 +168,7 @@ stable and an isolated immutable server exists.
 | 2026-08-06 | P7 recall pipeline | passed | 11 tests: prefilter starvation, current-truth retirement, four-branch union, strict budgets, fallback, explicit feedback, compact/hydrate/context and frozen read-only determinism |
 | 2026-08-06 | P7 context gate | passed | 2 tests: fixed-budget evidence density without disclosed duplicates; full memory/affect state unchanged |
 | 2026-08-06 | P7 MCP resources | passed | initialize capabilities, policy-safe list/read/templates, subscribe/update/list-changed notifications |
+| 2026-08-06 | Phase 7 GitHub CI | passed | run `31072720822`; MSRV/stable Rust, Node tests, lint, typecheck, build, Trivy and secret scan green |
 
 ## Phase 3 checklist
 
@@ -213,13 +214,25 @@ stable and an isolated immutable server exists.
 
 | ID | Work item | Status | Evidence / exit condition |
 |---|---|---|---|
-| P7.1 | Scoped filters before retrieval | verified locally | authorized query corpus and canonical caller filter precede exact/BM25F ranking |
-| P7.2 | Candidate union | verified locally | exact Q15, BM25F, bounded graph and current-claim evidence share one ID union |
-| P7.3 | Cognitive scoring and fallback | verified locally | branch abstentions/reasons plus external-score contract and explicit deterministic fallback |
-| P7.4 | Diversity and compact retrieval | verified locally | content-hash suppression, Q15 MMR, compact search and policy-safe hydrate-by-ID |
-| P7.5 | Context composition | verified locally | estimator-v1 token budget, typed sections, citations and `why_recalled` |
-| P7.6 | Read-only recall resources | verified locally | no memory/affect writes; MCP resource list/read/templates/subscribe notifications green |
-| P7.7 | Phase close | verified locally | fixed-budget evidence density, duplicate control and frozen-state determinism gates green; journals `019fd534c7e0742da95a5a4718e65255`, `019fd56f35e57c20a74399c0effadda4` |
+| P7.1 | Scoped filters before retrieval | closed | authorized query corpus and canonical caller filter precede exact/BM25F ranking |
+| P7.2 | Candidate union | closed | exact Q15, BM25F, bounded graph and current-claim evidence share one ID union |
+| P7.3 | Cognitive scoring and fallback | closed | branch abstentions/reasons plus external-score contract and explicit deterministic fallback |
+| P7.4 | Diversity and compact retrieval | closed | disclosed-content suppression, Q15 MMR, compact search and policy-safe hydrate-by-ID |
+| P7.5 | Context composition | closed | estimator-v1 token budget, typed sections, citations and `why_recalled` |
+| P7.6 | Read-only recall resources | closed | no memory/affect writes; explicit recall feedback; MCP resource list/read/templates/subscribe notifications green |
+| P7.7 | Phase close | closed | `b90eb34` + `00bb35b`; CI `31072720822` green; journals `019fd534c7e0742da95a5a4718e65255`, `019fd56f35e57c20a74399c0effadda4` |
+
+## Phase 8 checklist
+
+| ID | Work item | Status | Evidence / exit condition |
+|---|---|---|---|
+| P8.1 | Axum REST and remote MCP | pending | REST v1, MCP Streamable HTTP and OpenAPI share one transport-independent contract |
+| P8.2 | Authentication and tenant resolution | pending | API keys and OIDC resolve the physical tenant before engine access |
+| P8.3 | Authorization and confirmations | pending | RBAC, authority levels and confirmation tokens protect destructive operations |
+| P8.4 | Quotas and rate limits | pending | bounded tenant/user budgets fail explicitly and cannot bypass authorization |
+| P8.5 | Operational endpoints | pending | health, readiness, version and request IDs pass transport conformance |
+| P8.6 | Stable errors | pending | REST and MCP map typed engine failures consistently without leaking scope existence |
+| P8.7 | Phase close | pending | auth bypass/tenant fuzz and complete transport conformance suites are green |
 
 ## Update protocol
 
