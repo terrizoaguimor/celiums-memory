@@ -88,6 +88,13 @@ fn rollback_marks_created_derived_as_rolled_back() {
         })
         .expect("plan");
     let run = engine.apply_consolidation(plan).expect("apply");
+    assert!(!run.snapshot_digest.is_empty());
+    assert!(
+        celiums_memory_engine::snapshot_points(dir.path())
+            .expect("snapshots")
+            .iter()
+            .any(|point| point.checkpoint_sequence == run.snapshot_sequence)
+    );
     let rollback = engine
         .rollback_consolidation(&run.id, &event.scope(), NOW_MS + 1)
         .expect("rollback");
@@ -97,4 +104,144 @@ fn rollback_marks_created_derived_as_rolled_back() {
         engine.derived_memories(&event.scope()).expect("derived")[0].status,
         DerivedStatus::RolledBack
     );
+    assert_eq!(
+        engine
+            .rollback_consolidation(&run.id, &event.scope(), NOW_MS + 2)
+            .expect("rollback retry")
+            .rolled_back,
+        0
+    );
+}
+
+#[test]
+fn apply_does_not_claim_an_episode_created_outside_its_run() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut engine = open(&dir);
+    let mut request = support::raw_event("event-1", "turn content", None);
+    request.turn_id = Some(TurnId::new("turn-1").expect("turn"));
+    let event = engine.ingest_event(request).expect("event");
+    let turn = ConsolidateTurnRequest {
+        scope: event.scope(),
+        turn_id: TurnId::new("turn-1").expect("turn"),
+        algorithm_version: "extractive-v1".to_owned(),
+        recorded_at_ms: NOW_MS,
+    };
+    let plan = engine
+        .plan_consolidation(ConsolidationPlanRequest { turn: turn.clone() })
+        .expect("plan");
+    let episode = engine.consolidate_turn(turn).expect("episode");
+
+    let run = engine.apply_consolidation(plan).expect("apply");
+    assert!(run.derived_ids.is_empty());
+    assert_eq!(
+        engine
+            .rollback_consolidation(&run.id, &event.scope(), NOW_MS + 1)
+            .expect("rollback")
+            .rolled_back,
+        0
+    );
+    assert_eq!(
+        engine
+            .get_derived(&episode.id, &event.scope())
+            .expect("derived")
+            .expect("episode")
+            .status,
+        DerivedStatus::Active
+    );
+}
+
+#[test]
+fn apply_rejects_a_plan_when_turn_sources_changed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut engine = open(&dir);
+    let mut first = support::raw_event("event-1", "first turn content", None);
+    first.turn_id = Some(TurnId::new("turn-1").expect("turn"));
+    let event = engine.ingest_event(first).expect("first event");
+    let turn = ConsolidateTurnRequest {
+        scope: event.scope(),
+        turn_id: TurnId::new("turn-1").expect("turn"),
+        algorithm_version: "extractive-v1".to_owned(),
+        recorded_at_ms: NOW_MS,
+    };
+    let plan = engine
+        .plan_consolidation(ConsolidationPlanRequest { turn })
+        .expect("plan");
+    let mut second = support::raw_event("event-2", "later turn content", None);
+    second.turn_id = Some(TurnId::new("turn-1").expect("turn"));
+    engine.ingest_event(second).expect("second event");
+
+    assert!(engine.apply_consolidation(plan).is_err());
+    assert!(
+        engine
+            .derived_memories(&event.scope())
+            .expect("derived")
+            .is_empty()
+    );
+}
+
+#[test]
+fn rollback_stales_summaries_that_depend_on_the_run() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut engine = open(&dir);
+    let mut request = support::raw_event("event-1", "turn content", None);
+    request.turn_id = Some(TurnId::new("turn-1").expect("turn"));
+    let event = engine.ingest_event(request).expect("event");
+    let plan = engine
+        .plan_consolidation(ConsolidationPlanRequest {
+            turn: ConsolidateTurnRequest {
+                scope: event.scope(),
+                turn_id: TurnId::new("turn-1").expect("turn"),
+                algorithm_version: "extractive-v1".to_owned(),
+                recorded_at_ms: NOW_MS,
+            },
+        })
+        .expect("plan");
+    let run = engine.apply_consolidation(plan).expect("apply");
+    let summary = engine
+        .consolidate_summary(celiums_memory_engine::ConsolidateSummaryRequest {
+            scope: event.scope(),
+            kind: celiums_memory_engine::DerivedKind::SessionSummary,
+            hierarchy_key: "session".to_owned(),
+            algorithm_version: "summary-v1".to_owned(),
+            recorded_at_ms: NOW_MS + 1,
+            period: None,
+        })
+        .expect("summary");
+
+    engine
+        .rollback_consolidation(&run.id, &event.scope(), NOW_MS + 2)
+        .expect("rollback");
+
+    assert_eq!(
+        engine
+            .get_derived(&summary.id, &event.scope())
+            .expect("summary")
+            .expect("summary record")
+            .status,
+        DerivedStatus::Stale
+    );
+}
+
+#[test]
+fn idempotent_apply_rejects_a_tampered_retry() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut engine = open(&dir);
+    let mut request = support::raw_event("event-1", "turn content", None);
+    request.turn_id = Some(TurnId::new("turn-1").expect("turn"));
+    let event = engine.ingest_event(request).expect("event");
+    let plan = engine
+        .plan_consolidation(ConsolidationPlanRequest {
+            turn: ConsolidateTurnRequest {
+                scope: event.scope(),
+                turn_id: TurnId::new("turn-1").expect("turn"),
+                algorithm_version: "extractive-v1".to_owned(),
+                recorded_at_ms: NOW_MS,
+            },
+        })
+        .expect("plan");
+    engine.apply_consolidation(plan.clone()).expect("apply");
+    let mut tampered = plan;
+    tampered.actions.clear();
+
+    assert!(engine.apply_consolidation(tampered).is_err());
 }

@@ -269,6 +269,21 @@ Roadmap Phase 5 embeds a temporal context graph in the same Hyphae store:
 - `graph_verify` checks endpoint, ontology, evidence and memory-binding
   integrity. Hard-delete removes graph bindings so no orphan remains.
 
+Roadmap Phase 6 adds evidence-preserving hierarchical consolidation:
+
+- Explicit turns become deterministic `Episode` records; episode→session→
+  project/period summaries retain immediate sources and unique root EventIds.
+- Structured extractive summaries use DONE/OPEN/NEXT, and period summaries
+  require a half-open window with explicit time basis.
+- Duplicate claims produce fixed-point confidence aggregates over unique root
+  evidence; overlapping conflicting values block consolidation.
+- Read-only plans, idempotent apply/run records, external-clock schedules and
+  snapshot-anchored targeted rollback make maintenance reproducible. Durable
+  forget markers prevent reconsolidation, mark every descendant stale or
+  withdrawn, and remove forgotten evidence from current claim projection.
+  `ErasurePending` removes derived state but does not claim raw-source or
+  historical-snapshot erasure; that purge remains a later portability task.
+
 The ordered platform plan and its mechanical exit gates live in
 [`docs/ROADMAP.md`](../docs/ROADMAP.md); execution evidence and the current
 work anchor live in [`docs/EXECUTION.md`](../docs/EXECUTION.md). Public

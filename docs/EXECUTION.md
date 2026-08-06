@@ -21,7 +21,7 @@ evidence and why the next action follows.
 | Field | Value |
 |---|---|
 | Active phase | Phase 6 - Hierarchical consolidation |
-| Active item | P6.4 - Phase close (commit/push/CI) |
+| Active item | P6.5 - Forget propagation and phase gate |
 | Branch | `dev` |
 | Baseline commit | `79c9595` |
 | Canonical implementation | `rust/` |
@@ -163,6 +163,7 @@ stable and an isolated immutable server exists.
 | 2026-08-05 | P6.2 hierarchical summaries | passed | 3 tests: session/project root closure, period half-open basis, project isolation; clippy green |
 | 2026-08-05 | P6.3 claim aggregates | passed | 3 tests: unique evidence/confidence, contradiction block, duplicate-root deamplification; clippy green |
 | 2026-08-06 | P6.4 consolidation ops | passed | 3 tests: read-only plan/apply retry, deterministic due schedule, run rollback state; clippy green |
+| 2026-08-06 | P6.5 hierarchy gate | passed | 6 tests: active-head redundancy/evidence, durable forget/reopen, claim projection, sequential withdrawal, derived cleanup and lineage |
 
 ## Phase 3 checklist
 
@@ -201,8 +202,8 @@ stable and an isolated immutable server exists.
 | P6.1 | Turn-to-episode consolidation | closed | `236543b`; CI `31057792703` green; journal `019fd456467c7eb1a909dad57bdf5962` |
 | P6.2 | Session/project summaries | closed | `e77638b`; CI `31058033613` green; journal `019fd45a57d772f1affb6d047f14002a` |
 | P6.3 | Claim/duplicate consolidation | closed | `4732921`; CI `31058255916` green; journal `019fd45e5c9076c78079c0f64c7dc517` |
-| P6.4 | Scheduling and rollback | verified locally | read-only deterministic plan; idempotent apply/run ledger; durable external-clock schedules; targeted run rollback; journal `019fd46380c372b88cfa7235eefa43d2` |
-| P6.5 | Phase close | pending | redundancy drops without recall/evidence regression |
+| P6.4 | Scheduling and rollback | closed | `4eb8ae9`; CI `31058569344` green; journal `019fd46380c372b88cfa7235eefa43d2` |
+| P6.5 | Phase close | verified locally | 24 Phase 6 tests; hierarchy/idempotency, unique evidence, contradiction block, snapshot-anchored rollback and durable forget propagation green; journal `019fd4bf68ad7199a3e3a58f5b4e6879` |
 
 ## Update protocol
 

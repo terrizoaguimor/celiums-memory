@@ -125,11 +125,12 @@ quality; every edge has provenance; traversal has bounded cost.
 
 **Goal:** let long-running agents improve rather than accumulate noise.
 
-- Turn to episode, episode to session, session to project/period summaries.
-- Claim and semantic duplicate consolidation.
-- Evidence accumulation, confidence updates and derived-memory lineage.
-- Contradiction-aware merge, dry-run, scheduling and rollback.
-- Forget propagation from source records to derived records.
+- [x] Turn to episode, episode to session, session to project/period summaries.
+- [x] Claim and semantic duplicate consolidation.
+- [x] Evidence accumulation, confidence updates and derived-memory lineage.
+- [x] Contradiction-aware merge, dry-run, scheduling and rollback.
+- [x] Forget propagation from source records to derived records. Full raw and
+  snapshot erasure remains Phase 9 portability work.
 
 **Exit gate:** redundancy decreases without evidence loss or recall
 regression; consolidation is idempotent and snapshot rollback works.

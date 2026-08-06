@@ -21,6 +21,8 @@ const CLAIM_AGGREGATE_KIND: &str = "claim_aggregate";
 const CLAIM_AGGREGATE_PREFIX: &str = "__celiums/claim_aggregate/";
 const CONSOLIDATION_RUN_KIND: &str = "consolidation_run";
 const CONSOLIDATION_RUN_PREFIX: &str = "__celiums/consolidation/run/";
+const FORGOTTEN_SOURCE_KIND: &str = "forgotten_derived_source";
+const FORGOTTEN_SOURCE_PREFIX: &str = "__celiums/forgotten_derived_source/";
 const CONSOLIDATION_SCHEDULE_KIND: &str = "consolidation_schedule";
 const CONSOLIDATION_SCHEDULE_PREFIX: &str = "__celiums/consolidation/schedule/";
 const MAX_TEXT_BYTES: usize = 16_384;
@@ -179,6 +181,8 @@ pub struct DerivedMemory {
     pub period_from_ms: Option<i64>,
     /// Optional period end.
     pub period_to_ms: Option<i64>,
+    /// Timezone/reference basis for a period summary.
+    pub period_basis: Option<TimeBasis>,
 }
 
 pub(crate) struct NewDerivedMemory {
@@ -191,7 +195,7 @@ pub(crate) struct NewDerivedMemory {
     pub(crate) source_digest: String,
     pub(crate) algorithm_version: String,
     pub(crate) recorded_at_ms: i64,
-    pub(crate) period: Option<(i64, i64)>,
+    pub(crate) period: Option<PeriodWindow>,
 }
 
 impl DerivedMemory {
@@ -207,9 +211,18 @@ impl DerivedMemory {
             b"algorithm_version",
             new.algorithm_version.as_bytes(),
         );
-        if let Some((from, to)) = new.period {
-            hash_field(&mut hasher, b"period_from_ms", &from.to_le_bytes());
-            hash_field(&mut hasher, b"period_to_ms", &to.to_le_bytes());
+        if let Some(period) = &new.period {
+            hash_field(
+                &mut hasher,
+                b"period_from_ms",
+                &period.from_ms.to_le_bytes(),
+            );
+            hash_field(&mut hasher, b"period_to_ms", &period.to_ms.to_le_bytes());
+            hash_field(
+                &mut hasher,
+                b"period_basis",
+                &encode_time_basis(&period.basis),
+            );
         }
         Self {
             id: DerivedId(uuid_from_hash(hasher.finalize()).to_string()),
@@ -223,8 +236,9 @@ impl DerivedMemory {
             algorithm_version: new.algorithm_version,
             status: DerivedStatus::Active,
             recorded_at_ms: new.recorded_at_ms,
-            period_from_ms: new.period.map(|value| value.0),
-            period_to_ms: new.period.map(|value| value.1),
+            period_from_ms: new.period.as_ref().map(|period| period.from_ms),
+            period_to_ms: new.period.as_ref().map(|period| period.to_ms),
+            period_basis: new.period.map(|period| period.basis),
         }
     }
 
@@ -275,6 +289,12 @@ impl DerivedMemory {
                 "period_to_ms".to_owned(),
                 nullable_integer(self.period_to_ms),
             ),
+            (
+                "period_basis".to_owned(),
+                self.period_basis
+                    .as_ref()
+                    .map_or(Value::Null, |basis| Value::Bytes(encode_time_basis(basis))),
+            ),
         ]));
         Record::new(Self::key(&self.id), Value::Object(fields))
     }
@@ -315,6 +335,7 @@ impl DerivedMemory {
             recorded_at_ms: integer(fields, "recorded_at_ms")?,
             period_from_ms: optional_integer(fields, "period_from_ms")?,
             period_to_ms: optional_integer(fields, "period_to_ms")?,
+            period_basis: optional_time_basis(fields, "period_basis")?,
         })
     }
 }
@@ -492,8 +513,14 @@ pub struct ConsolidationRun {
     pub id: String,
     /// Owning scope.
     pub scope: RecallScope,
+    /// Canonical digest of the applied plan.
+    pub plan_digest: String,
     /// Created artifact IDs.
     pub derived_ids: Vec<DerivedId>,
+    /// Verified snapshot sequence immediately before the run commit.
+    pub snapshot_sequence: u64,
+    /// Verified snapshot content digest immediately before the run commit.
+    pub snapshot_digest: String,
     /// Run state.
     pub status: ConsolidationRunStatus,
     /// Transaction time.
@@ -510,6 +537,7 @@ impl ConsolidationRun {
         fields.extend(BTreeMap::from([
             ("kind".to_owned(), string(CONSOLIDATION_RUN_KIND)),
             ("id".to_owned(), string(&self.id)),
+            ("plan_digest".to_owned(), string(&self.plan_digest)),
             (
                 "derived_ids".to_owned(),
                 Value::Array(
@@ -519,6 +547,11 @@ impl ConsolidationRun {
                         .collect(),
                 ),
             ),
+            (
+                "snapshot_sequence".to_owned(),
+                Value::Integer(i64::try_from(self.snapshot_sequence).unwrap_or(i64::MAX)),
+            ),
+            ("snapshot_digest".to_owned(), string(&self.snapshot_digest)),
             ("status".to_owned(), string(self.status.as_str())),
             (
                 "recorded_at_ms".to_owned(),
@@ -541,10 +574,13 @@ impl ConsolidationRun {
         Ok(Self {
             id: text(fields, "id")?,
             scope: scope_from_fields(fields)?,
+            plan_digest: optional_missing_text(fields, "plan_digest")?.unwrap_or_default(),
             derived_ids: strings(fields, "derived_ids")?
                 .into_iter()
                 .map(DerivedId::parse)
                 .collect::<Result<Vec<_>, _>>()?,
+            snapshot_sequence: optional_unsigned(fields, "snapshot_sequence")?.unwrap_or(0),
+            snapshot_digest: optional_missing_text(fields, "snapshot_digest")?.unwrap_or_default(),
             status: ConsolidationRunStatus::parse(&text(fields, "status")?)
                 .ok_or(DerivedDecodeError::Field { field: "status" })?,
             recorded_at_ms: integer(fields, "recorded_at_ms")?,
@@ -693,9 +729,86 @@ pub struct RollbackReport {
     pub rolled_back: u64,
 }
 
+/// Forget semantics applied to derived descendants.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ForgetMode {
+    /// Source remains historical but descendants become stale/withdrawn.
+    SourceRetraction,
+    /// User erasure intent; derived state is removed and source purging remains pending.
+    ErasurePending,
+}
+
+/// Request to propagate one forgotten root event.
+#[derive(Clone, Debug)]
+pub struct ForgetDerivedSourceRequest {
+    /// Authorization boundary.
+    pub scope: RecallScope,
+    /// Root event to retract.
+    pub event_id: EventId,
+    /// Retraction or erasure mode.
+    pub mode: ForgetMode,
+    /// Transaction time.
+    pub recorded_at_ms: i64,
+}
+
+/// Forget propagation outcome.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ForgetPropagationReport {
+    /// Descendant derived artifacts affected.
+    pub affected: u64,
+    /// Claim aggregates affected.
+    pub aggregates_affected: u64,
+}
+
+/// Durable root-event invalidation consulted by all later consolidation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ForgottenDerivedSource {
+    pub(crate) scope: RecallScope,
+    pub(crate) event_id: EventId,
+    pub(crate) mode: ForgetMode,
+    pub(crate) recorded_at_ms: i64,
+}
+
+/// Derived hierarchy metrics used by the Phase 6 gate.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DerivedMetrics {
+    /// Active artifact count including lower hierarchy levels.
+    pub active_artifact_count: u64,
+    /// Active artifacts not referenced by another active artifact.
+    pub active_head_count: u64,
+    /// Unique root event count.
+    pub root_evidence_count: u64,
+    /// Fixed-point active-head/root ratio.
+    pub redundancy_ratio_nanos: i64,
+}
+
+/// One derived-lineage integrity issue.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DerivedIntegrityIssue {
+    /// Machine-readable kind.
+    pub kind: String,
+    /// Offending derived ID.
+    pub derived_id: String,
+}
+
+/// Complete derived lineage integrity report.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DerivedIntegrityReport {
+    /// True when all source references and root closures are valid.
+    pub valid: bool,
+    /// Visible derived artifacts checked.
+    pub derived_count: usize,
+    /// Issues found.
+    pub issues: Vec<DerivedIntegrityIssue>,
+}
+
 impl ClaimAggregate {
     pub(crate) fn prefix() -> &'static [u8] {
         CLAIM_AGGREGATE_PREFIX.as_bytes()
+    }
+
+    pub(crate) fn key(id: &str) -> Vec<u8> {
+        format!("{CLAIM_AGGREGATE_PREFIX}{id}").into_bytes()
     }
 
     pub(crate) fn to_record(&self) -> Record {
@@ -741,10 +854,7 @@ impl ClaimAggregate {
                 Value::Integer(self.recorded_at_ms),
             ),
         ]));
-        Record::new(
-            format!("{CLAIM_AGGREGATE_PREFIX}{}", self.id).into_bytes(),
-            Value::Object(fields),
-        )
+        Record::new(Self::key(&self.id), Value::Object(fields))
     }
 
     pub(crate) fn from_record(record: &Record) -> Result<Self, DerivedDecodeError> {
@@ -785,6 +895,63 @@ impl ClaimAggregate {
             algorithm_version: text(fields, "algorithm_version")?,
             recorded_at_ms: integer(fields, "recorded_at_ms")?,
         })
+    }
+}
+
+impl ForgottenDerivedSource {
+    pub(crate) fn key(event_id: &EventId) -> Vec<u8> {
+        format!("{FORGOTTEN_SOURCE_PREFIX}{event_id}").into_bytes()
+    }
+
+    pub(crate) fn to_record(&self) -> Record {
+        let mut fields = scope_fields(&self.scope);
+        fields.extend(BTreeMap::from([
+            ("kind".to_owned(), string(FORGOTTEN_SOURCE_KIND)),
+            ("event_id".to_owned(), string(self.event_id.as_str())),
+            ("mode".to_owned(), string(self.mode.as_str())),
+            (
+                "recorded_at_ms".to_owned(),
+                Value::Integer(self.recorded_at_ms),
+            ),
+        ]));
+        Record::new(Self::key(&self.event_id), Value::Object(fields))
+    }
+
+    pub(crate) fn from_record(record: &Record) -> Result<Self, DerivedDecodeError> {
+        if !record.key.starts_with(FORGOTTEN_SOURCE_PREFIX.as_bytes()) {
+            return Err(DerivedDecodeError::Key);
+        }
+        let Value::Object(fields) = &record.value else {
+            return field_error("(root)");
+        };
+        if text(fields, "kind")? != FORGOTTEN_SOURCE_KIND {
+            return field_error("kind");
+        }
+        Ok(Self {
+            scope: scope_from_fields(fields)?,
+            event_id: EventId::parse(text(fields, "event_id")?)
+                .map_err(|_| DerivedDecodeError::Field { field: "event_id" })?,
+            mode: ForgetMode::parse(&text(fields, "mode")?)
+                .ok_or(DerivedDecodeError::Field { field: "mode" })?,
+            recorded_at_ms: integer(fields, "recorded_at_ms")?,
+        })
+    }
+}
+
+impl ForgetMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SourceRetraction => "source_retraction",
+            Self::ErasurePending => "erasure_pending",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "source_retraction" => Some(Self::SourceRetraction),
+            "erasure_pending" | "user_erasure" => Some(Self::ErasurePending),
+            _ => None,
+        }
     }
 }
 
@@ -964,6 +1131,17 @@ fn optional_text(
     }
 }
 
+fn optional_missing_text(
+    fields: &BTreeMap<String, Value>,
+    field: &'static str,
+) -> Result<Option<String>, DerivedDecodeError> {
+    match fields.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => field_error(field),
+    }
+}
+
 fn integer(
     fields: &BTreeMap<String, Value>,
     field: &'static str,
@@ -971,6 +1149,19 @@ fn integer(
     match fields.get(field) {
         Some(Value::Integer(value)) => Ok(*value),
         _ => field_error(field),
+    }
+}
+
+fn optional_unsigned(
+    fields: &BTreeMap<String, Value>,
+    field: &'static str,
+) -> Result<Option<u64>, DerivedDecodeError> {
+    match fields.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Integer(value)) => u64::try_from(*value)
+            .map(Some)
+            .map_err(|_| DerivedDecodeError::Field { field }),
+        Some(_) => field_error(field),
     }
 }
 
@@ -983,6 +1174,46 @@ fn optional_integer(
         Some(Value::Integer(value)) => Ok(Some(*value)),
         _ => field_error(field),
     }
+}
+
+fn encode_time_basis(basis: &TimeBasis) -> Vec<u8> {
+    match basis {
+        TimeBasis::Utc => b"utc".to_vec(),
+        TimeBasis::FixedOffsetMinutes(minutes) => format!("fixed:{minutes}").into_bytes(),
+        TimeBasis::Iana(name) => format!("iana:{name}").into_bytes(),
+    }
+}
+
+fn optional_time_basis(
+    fields: &BTreeMap<String, Value>,
+    field: &'static str,
+) -> Result<Option<TimeBasis>, DerivedDecodeError> {
+    let Some(value) = fields.get(field) else {
+        return Ok(None);
+    };
+    let Value::Bytes(encoded) = value else {
+        return match value {
+            Value::Null => Ok(None),
+            _ => field_error(field),
+        };
+    };
+    let encoded = std::str::from_utf8(encoded).map_err(|_| DerivedDecodeError::Field { field })?;
+    if encoded == "utc" {
+        return Ok(Some(TimeBasis::Utc));
+    }
+    if let Some(minutes) = encoded.strip_prefix("fixed:") {
+        return minutes
+            .parse::<i32>()
+            .map(TimeBasis::FixedOffsetMinutes)
+            .map(Some)
+            .map_err(|_| DerivedDecodeError::Field { field });
+    }
+    encoded
+        .strip_prefix("iana:")
+        .filter(|name| !name.is_empty())
+        .map(|name| TimeBasis::Iana(name.to_owned()))
+        .map(Some)
+        .ok_or(DerivedDecodeError::Field { field })
 }
 
 fn strings(

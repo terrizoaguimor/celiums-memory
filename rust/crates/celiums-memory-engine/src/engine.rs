@@ -49,8 +49,10 @@ use crate::derived::{
     ClaimAggregate, ClaimAggregateStatus, ConsolidateClaimsRequest, ConsolidateSummaryRequest,
     ConsolidateTurnRequest, ConsolidationAction, ConsolidationPlan, ConsolidationPlanRequest,
     ConsolidationRun, ConsolidationRunStatus, ConsolidationSchedule, ConsolidationScheduleRequest,
-    DerivedDecodeError, DerivedId, DerivedKind, DerivedMemory, DerivedSource, InvalidDerived,
-    NewDerivedMemory, RollbackReport, source_digest, validate_text as validate_derived_text,
+    DerivedDecodeError, DerivedId, DerivedIntegrityIssue, DerivedIntegrityReport, DerivedKind,
+    DerivedMemory, DerivedMetrics, DerivedSource, ForgetDerivedSourceRequest,
+    ForgetPropagationReport, ForgottenDerivedSource, InvalidDerived, NewDerivedMemory,
+    RollbackReport, source_digest, validate_text as validate_derived_text,
 };
 use crate::embedding_space::{EMBEDDING_SPACE_KEY, EmbeddingSpaceIdentity};
 use crate::entity_index::{EntityRecord, entity_key, entity_prefix};
@@ -322,6 +324,9 @@ pub enum MemoryEngineError {
     /// No visible source matched a consolidation request.
     #[error("consolidation request has no visible source records")]
     ConsolidationSourcesEmpty,
+    /// A supplied plan no longer matches its immutable source set.
+    #[error("consolidation plan no longer matches its source records")]
+    ConsolidationPlanConflict,
     /// A canonical memory filter was invalid.
     #[error(transparent)]
     Filter(#[from] MemoryFilterError),
@@ -1486,6 +1491,11 @@ impl MemoryEngine {
         request.validate()?;
         self.require_tenant(&request.scope.tenant_id)?;
         for evidence in &request.evidence {
+            if self.is_derived_source_forgotten(&evidence.event_id, &request.scope)? {
+                return Err(MemoryEngineError::ClaimEvidenceNotFound {
+                    event_id: evidence.event_id.to_string(),
+                });
+            }
             let episode = self
                 .get_ingestion(&evidence.event_id, &request.scope)?
                 .ok_or_else(|| MemoryEngineError::ClaimEvidenceNotFound {
@@ -1557,6 +1567,20 @@ impl MemoryEngine {
             .iter()
             .map(|record| ClaimEvidence::from_record(record).map_err(Into::into))
             .collect()
+    }
+
+    fn active_claim_evidence(
+        &self,
+        claim_id: &ClaimId,
+        scope: &RecallScope,
+    ) -> Result<Vec<ClaimEvidence>, MemoryEngineError> {
+        let mut active = Vec::new();
+        for evidence in self.claim_evidence(claim_id, scope)? {
+            if !self.is_derived_source_forgotten(&evidence.event_id, scope)? {
+                active.push(evidence);
+            }
+        }
+        Ok(active)
     }
 
     /// Appends a validated claim supersession relation.
@@ -1753,7 +1777,7 @@ impl MemoryEngine {
         let claims = self.latest_claims(query.clone())?;
         let mut entries = Vec::with_capacity(claims.len());
         for claim in claims {
-            let evidence = self.claim_evidence(&claim.id, &query.scope)?;
+            let evidence = self.active_claim_evidence(&claim.id, &query.scope)?;
             entries.push(snapshot_entry(claim, &evidence));
         }
         Ok(ClaimSnapshot {
@@ -1770,10 +1794,15 @@ impl MemoryEngine {
             .iter()
             .map(Claim::from_record)
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(claims
-            .into_iter()
-            .filter(|claim| claim_visible_to(claim, scope))
-            .collect())
+        let mut visible = Vec::new();
+        for claim in claims {
+            if claim_visible_to(&claim, scope)
+                && !self.active_claim_evidence(&claim.id, scope)?.is_empty()
+            {
+                visible.push(claim);
+            }
+        }
+        Ok(visible)
     }
 
     fn claim_reaches(
@@ -3602,29 +3631,59 @@ impl MemoryEngine {
         &mut self,
         plan: ConsolidationPlan,
     ) -> Result<ConsolidationRun, MemoryEngineError> {
+        self.require_tenant(&plan.turn.scope.tenant_id)?;
         if let Some(record) = self.hyphae.get_record(&ConsolidationRun::key(&plan.id))? {
-            return Ok(ConsolidationRun::from_record(&record)?);
+            let run = ConsolidationRun::from_record(&record)?;
+            if !recall_scope_visible_to(&run.scope, &plan.turn.scope)
+                || run.plan_digest.is_empty()
+                || run.plan_digest != consolidation_plan_digest(&plan)
+            {
+                return Err(MemoryEngineError::ConsolidationPlanConflict);
+            }
+            return Ok(run);
         }
+        let current = self.build_turn_episode(&plan.turn)?;
+        let expected_actions = [ConsolidationAction::CreateDerived(current.id.clone())];
+        if current != plan.expected
+            || plan.id != current.id.to_string()
+            || plan.actions.as_slice() != expected_actions
+        {
+            return Err(MemoryEngineError::ConsolidationPlanConflict);
+        }
+        let snapshot = self.hyphae.snapshot()?;
+        let creates_derived = self
+            .hyphae
+            .get_record(&DerivedMemory::key(&plan.expected.id))?
+            .is_none();
+        let plan_digest = consolidation_plan_digest(&plan);
         let run = ConsolidationRun {
             id: plan.id,
             scope: plan.turn.scope,
-            derived_ids: vec![plan.expected.id.clone()],
+            plan_digest,
+            derived_ids: creates_derived
+                .then(|| plan.expected.id.clone())
+                .into_iter()
+                .collect(),
+            snapshot_sequence: snapshot.checkpoint_sequence,
+            snapshot_digest: hex_digest(snapshot.snapshot_digest),
             status: ConsolidationRunStatus::Committed,
             recorded_at_ms: plan.expected.recorded_at_ms,
         };
-        self.hyphae.put_records(
-            Uuid::now_v7(),
-            &[plan.expected.to_record(), run.to_record()],
-        )?;
+        let mut records = Vec::with_capacity(2);
+        if creates_derived {
+            records.push(plan.expected.to_record());
+        }
+        records.push(run.to_record());
+        self.hyphae.put_records(Uuid::now_v7(), &records)?;
         Ok(run)
     }
 
-    /// Rolls back artifacts created by one consolidation run without restoring unrelated state.
+    /// Rolls back artifacts created by one run after verifying its pre-commit snapshot anchor.
     pub fn rollback_consolidation(
         &mut self,
         run_id: &str,
         scope: &RecallScope,
-        now_ms: i64,
+        _now_ms: i64,
     ) -> Result<RollbackReport, MemoryEngineError> {
         self.require_tenant(&scope.tenant_id)?;
         let Some(record) = self.hyphae.get_record(&ConsolidationRun::key(run_id))? else {
@@ -3637,19 +3696,100 @@ impl MemoryEngine {
         if run.status == ConsolidationRunStatus::RolledBack {
             return Ok(RollbackReport { rolled_back: 0 });
         }
+        self.verify_consolidation_snapshot(&run)?;
         let mut rolled_back = 0;
+        let rolled_back_ids: std::collections::BTreeSet<DerivedId> =
+            run.derived_ids.iter().cloned().collect();
         for id in &run.derived_ids {
             if let Some(mut derived) = self.get_derived(id, scope)? {
                 derived.status = crate::DerivedStatus::RolledBack;
-                derived.recorded_at_ms = derived.recorded_at_ms.min(now_ms);
                 self.hyphae
                     .put_record(Uuid::now_v7(), &derived.to_record())?;
                 rolled_back += 1;
             }
         }
+        self.stale_derived_descendants(&rolled_back_ids, scope)?;
         run.status = ConsolidationRunStatus::RolledBack;
         self.hyphae.put_record(Uuid::now_v7(), &run.to_record())?;
         Ok(RollbackReport { rolled_back })
+    }
+
+    fn stale_derived_descendants(
+        &mut self,
+        roots: &std::collections::BTreeSet<DerivedId>,
+        scope: &RecallScope,
+    ) -> Result<(), MemoryEngineError> {
+        let mut affected = roots.clone();
+        loop {
+            let mut changed = false;
+            for mut entry in self.derived_memories(scope)? {
+                if entry.status != crate::DerivedStatus::Active
+                    || !entry.immediate_sources.iter().any(|source| {
+                        matches!(source, DerivedSource::Derived(id) if affected.contains(id))
+                    })
+                {
+                    continue;
+                }
+                entry.status = crate::DerivedStatus::Stale;
+                changed |= affected.insert(entry.id.clone());
+                self.hyphae.put_record(Uuid::now_v7(), &entry.to_record())?;
+            }
+            if !changed {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn verify_consolidation_snapshot(
+        &self,
+        run: &ConsolidationRun,
+    ) -> Result<(), MemoryEngineError> {
+        if run.snapshot_digest.is_empty() {
+            return Err(MemoryEngineError::Snapshot {
+                detail: "consolidation run has no pre-commit snapshot anchor".to_owned(),
+            });
+        }
+        let point = crate::snapshot_points(self.hyphae.data_path())
+            .map_err(|error| MemoryEngineError::Snapshot {
+                detail: error.to_string(),
+            })?
+            .into_iter()
+            .find(|point| point.checkpoint_sequence == run.snapshot_sequence)
+            .ok_or_else(|| MemoryEngineError::Snapshot {
+                detail: format!(
+                    "consolidation snapshot {} is missing",
+                    run.snapshot_sequence
+                ),
+            })?;
+        let contents = hyphae_storage::load_snapshot(
+            &point.path,
+            &hyphae_storage::SnapshotReadLimits::default(),
+        )
+        .map_err(|error| MemoryEngineError::Snapshot {
+            detail: error.to_string(),
+        })?;
+        let digest = hex_digest(contents.info.snapshot_digest);
+        if digest != run.snapshot_digest {
+            return Err(MemoryEngineError::Snapshot {
+                detail: format!(
+                    "consolidation snapshot {} digest does not match run anchor",
+                    run.snapshot_sequence
+                ),
+            });
+        }
+        for id in &run.derived_ids {
+            let key = DerivedMemory::key(id);
+            if contents.entries.iter().any(|entry| entry.key == key) {
+                return Err(MemoryEngineError::Snapshot {
+                    detail: format!(
+                        "consolidation snapshot {} already contains artifact {id}",
+                        run.snapshot_sequence
+                    ),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Creates or updates a durable schedule interpreted by an external clock.
@@ -3697,11 +3837,18 @@ impl MemoryEngine {
     ) -> Result<DerivedMemory, MemoryEngineError> {
         self.require_tenant(&request.scope.tenant_id)?;
         validate_derived_text(&request.algorithm_version, "algorithm_version")?;
-        let mut events = self
+        let events = self
             .ingestion_entries(&request.scope)?
             .into_iter()
             .filter(|event| event.turn_id.as_ref() == Some(&request.turn_id))
             .collect::<Vec<_>>();
+        let mut active_events = Vec::with_capacity(events.len());
+        for event in events {
+            if !self.is_derived_source_forgotten(&event.event_id, &request.scope)? {
+                active_events.push(event);
+            }
+        }
+        let mut events = active_events;
         if events.is_empty() {
             return Err(MemoryEngineError::ConsolidationSourcesEmpty);
         }
@@ -3743,6 +3890,34 @@ impl MemoryEngine {
         }))
     }
 
+    fn is_derived_source_forgotten(
+        &self,
+        event_id: &EventId,
+        scope: &RecallScope,
+    ) -> Result<bool, MemoryEngineError> {
+        let Some(record) = self
+            .hyphae
+            .get_record(&ForgottenDerivedSource::key(event_id))?
+        else {
+            return Ok(false);
+        };
+        let forgotten = ForgottenDerivedSource::from_record(&record)?;
+        Ok(ingestion_scope_visible_to(&forgotten.scope, scope))
+    }
+
+    fn count_active_derived_roots(
+        &self,
+        entry: &DerivedMemory,
+    ) -> Result<usize, MemoryEngineError> {
+        let mut active = 0;
+        for event_id in &entry.root_event_ids {
+            if !self.is_derived_source_forgotten(event_id, &entry.scope)? {
+                active += 1;
+            }
+        }
+        Ok(active)
+    }
+
     /// Gets one visible derived artifact.
     pub fn get_derived(
         &self,
@@ -3754,7 +3929,7 @@ impl MemoryEngine {
             return Ok(None);
         };
         let derived = DerivedMemory::from_record(&record)?;
-        Ok(recall_scope_visible_to(&derived.scope, scope).then_some(derived))
+        Ok(derived_visible_to(&derived.scope, scope).then_some(derived))
     }
 
     /// Lists visible derived artifacts in deterministic ID order.
@@ -3770,7 +3945,32 @@ impl MemoryEngine {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(derived
             .into_iter()
-            .filter(|entry| recall_scope_visible_to(&entry.scope, scope))
+            .filter(|entry| derived_visible_to(&entry.scope, scope))
+            .collect())
+    }
+
+    fn derived_memories_for_summary(
+        &self,
+        scope: &RecallScope,
+        target_kind: DerivedKind,
+    ) -> Result<Vec<DerivedMemory>, MemoryEngineError> {
+        self.require_tenant(&scope.tenant_id)?;
+        let derived = self
+            .scan_prefix(DerivedMemory::prefix())?
+            .iter()
+            .map(DerivedMemory::from_record)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(derived
+            .into_iter()
+            .filter(|entry| match target_kind {
+                DerivedKind::SessionSummary => recall_scope_visible_to(&entry.scope, scope),
+                DerivedKind::ProjectSummary | DerivedKind::PeriodSummary => {
+                    entry.scope.tenant_id == scope.tenant_id
+                        && entry.scope.user_id == scope.user_id
+                        && entry.scope.project_id == scope.project_id
+                }
+                DerivedKind::Episode | DerivedKind::ClaimAggregate => false,
+            })
             .collect())
     }
 
@@ -3782,9 +3982,9 @@ impl MemoryEngine {
         self.require_tenant(&request.scope.tenant_id)?;
         validate_derived_text(&request.hierarchy_key, "hierarchy_key")?;
         validate_derived_text(&request.algorithm_version, "algorithm_version")?;
-        let period = match (&request.kind, &request.period) {
+        let period_window = match (&request.kind, &request.period) {
             (DerivedKind::PeriodSummary, Some(period)) if period.from_ms < period.to_ms => {
-                Some((period.from_ms, period.to_ms))
+                Some(period.clone())
             }
             (DerivedKind::PeriodSummary, _) => return Err(InvalidDerived::Period.into()),
             (_, None) => None,
@@ -3802,13 +4002,14 @@ impl MemoryEngine {
             }
         };
         let mut sources = self
-            .derived_memories(&request.scope)?
+            .derived_memories_for_summary(&request.scope, request.kind)?
             .into_iter()
             .filter(|derived| derived.kind == source_kind)
             .filter(|derived| derived.status == crate::DerivedStatus::Active)
             .filter(|derived| {
-                period.is_none_or(|(from, to)| {
-                    derived.recorded_at_ms >= from && derived.recorded_at_ms < to
+                period_window.as_ref().is_none_or(|period| {
+                    derived.recorded_at_ms >= period.from_ms
+                        && derived.recorded_at_ms < period.to_ms
                 })
             })
             .collect::<Vec<_>>();
@@ -3829,16 +4030,17 @@ impl MemoryEngine {
         let mut root_hashes = Vec::with_capacity(root_event_ids.len());
         for event_id in &root_event_ids {
             let event = self
-                .get_ingestion(event_id, &request.scope)?
+                .get_ingestion_for_hierarchy(event_id, &request.scope)?
                 .ok_or_else(|| MemoryEngineError::IngestionEventNotFound {
                     event_id: event_id.to_string(),
                 })?;
             root_hashes.push((event_id.clone(), event.content_hash));
         }
         let content = structured_summary(&sources);
+        let target_scope = summary_target_scope(&request.scope, request.kind);
         let derived = DerivedMemory::build(NewDerivedMemory {
             kind: request.kind,
-            scope: request.scope.clone(),
+            scope: target_scope,
             hierarchy_key: request.hierarchy_key,
             content,
             immediate_sources: immediate_sources.clone(),
@@ -3846,7 +4048,7 @@ impl MemoryEngine {
             source_digest: source_digest(&immediate_sources, &root_hashes),
             algorithm_version: request.algorithm_version,
             recorded_at_ms: request.recorded_at_ms,
-            period,
+            period: period_window,
         });
         if let Some(existing) = self.get_derived(&derived.id, &request.scope)? {
             return Ok(existing);
@@ -3854,6 +4056,17 @@ impl MemoryEngine {
         self.hyphae
             .put_record(Uuid::now_v7(), &derived.to_record())?;
         Ok(derived)
+    }
+
+    fn get_ingestion_for_hierarchy(
+        &self,
+        event_id: &EventId,
+        scope: &RecallScope,
+    ) -> Result<Option<IngestionEntry>, MemoryEngineError> {
+        self.require_tenant(&scope.tenant_id)?;
+        Ok(self
+            .get_ingestion_unscoped(event_id)?
+            .filter(|entry| ingestion_visible_to_derived_hierarchy(entry, scope)))
     }
 
     /// Consolidates compatible duplicate claims while preserving every member and root event.
@@ -3865,13 +4078,23 @@ impl MemoryEngine {
         validate_derived_text(&request.subject, "subject")?;
         validate_derived_text(&request.predicate, "predicate")?;
         validate_derived_text(&request.algorithm_version, "algorithm_version")?;
-        let mut claims = self
+        let claims = self
             .visible_claims(&request.scope)?
             .into_iter()
             .filter(|claim| {
                 claim.subject == request.subject && claim.predicate == request.predicate
             })
             .collect::<Vec<_>>();
+        let mut active_evidence = BTreeMap::new();
+        let mut active_claims = Vec::with_capacity(claims.len());
+        for claim in claims {
+            let evidence = self.active_claim_evidence(&claim.id, &request.scope)?;
+            if !evidence.is_empty() {
+                active_evidence.insert(claim.id.clone(), evidence);
+                active_claims.push(claim);
+            }
+        }
+        let mut claims = active_claims;
         if claims.is_empty() {
             return Err(MemoryEngineError::ConsolidationSourcesEmpty);
         }
@@ -3886,40 +4109,46 @@ impl MemoryEngine {
         let mut evidence_event_ids = Vec::new();
         let mut confidence_by_event: BTreeMap<EventId, i64> = BTreeMap::new();
         for claim in &claims {
-            for evidence in self.claim_evidence(&claim.id, &request.scope)? {
+            for evidence in &active_evidence[&claim.id] {
                 evidence_event_ids.push(evidence.event_id.clone());
                 confidence_by_event
-                    .entry(evidence.event_id)
+                    .entry(evidence.event_id.clone())
                     .and_modify(|value| *value = (*value).max(claim.confidence_nanos))
                     .or_insert(claim.confidence_nanos);
             }
         }
         evidence_event_ids.sort();
         evidence_event_ids.dedup();
-        let confidence_nanos = if blocked {
+        let evidence_empty = evidence_event_ids.is_empty();
+        let confidence_nanos = if blocked || evidence_empty {
             0
         } else {
             combine_confidence(confidence_by_event.values().copied())
         };
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"celiums-memory/claim-aggregate/v1");
-        hasher.update(request.subject.as_bytes());
-        hasher.update(&[0]);
-        hasher.update(request.predicate.as_bytes());
+        hash_plan_field(&mut hasher, b"subject", request.subject.as_bytes());
+        hash_plan_field(&mut hasher, b"predicate", request.predicate.as_bytes());
         for claim in &claims {
-            hasher.update(claim.id.as_str().as_bytes());
+            hash_plan_field(&mut hasher, b"claim_id", claim.id.as_str().as_bytes());
         }
-        hasher.update(request.algorithm_version.as_bytes());
+        hash_plan_field(
+            &mut hasher,
+            b"algorithm_version",
+            request.algorithm_version.as_bytes(),
+        );
         let aggregate = ClaimAggregate {
             id: hasher.finalize().to_hex().to_string(),
             scope: request.scope.clone(),
             subject: request.subject,
             predicate: request.predicate,
-            value: (!blocked).then(|| claims[0].value.clone()),
+            value: (!blocked && !evidence_empty).then(|| claims[0].value.clone()),
             member_claim_ids: claims.iter().map(|claim| claim.id.clone()).collect(),
             evidence_event_ids,
             confidence_nanos,
-            status: if blocked {
+            status: if evidence_empty {
+                ClaimAggregateStatus::Withdrawn
+            } else if blocked {
                 ClaimAggregateStatus::BlockedByContradiction
             } else {
                 ClaimAggregateStatus::Active
@@ -3951,6 +4180,309 @@ impl MemoryEngine {
             .into_iter()
             .filter(|aggregate| recall_scope_visible_to(&aggregate.scope, scope))
             .collect())
+    }
+
+    /// Computes active-head redundancy and unique root evidence metrics.
+    pub fn derived_metrics(
+        &self,
+        scope: &RecallScope,
+    ) -> Result<DerivedMetrics, MemoryEngineError> {
+        let active = self
+            .derived_memories(scope)?
+            .into_iter()
+            .filter(|derived| derived.status == crate::DerivedStatus::Active)
+            .collect::<Vec<_>>();
+        let roots: std::collections::BTreeSet<EventId> = active
+            .iter()
+            .flat_map(|derived| derived.root_event_ids.clone())
+            .collect();
+        let active_heads = active
+            .iter()
+            .filter(|derived| {
+                !active.iter().any(|other| {
+                    other
+                        .immediate_sources
+                        .contains(&DerivedSource::Derived(derived.id.clone()))
+                })
+            })
+            .count() as u64;
+        let root_count = roots.len() as u64;
+        let redundancy_ratio_nanos = active_heads
+            .saturating_mul(1_000_000_000)
+            .checked_div(root_count)
+            .and_then(|value| i64::try_from(value).ok())
+            .unwrap_or(0);
+        Ok(DerivedMetrics {
+            active_artifact_count: active.len() as u64,
+            active_head_count: active_heads,
+            root_evidence_count: root_count,
+            redundancy_ratio_nanos,
+        })
+    }
+
+    /// Propagates one forgotten root event through all visible descendants.
+    pub fn forget_derived_source(
+        &mut self,
+        request: ForgetDerivedSourceRequest,
+    ) -> Result<ForgetPropagationReport, MemoryEngineError> {
+        self.require_tenant(&request.scope.tenant_id)?;
+        let source = self
+            .get_ingestion(&request.event_id, &request.scope)?
+            .ok_or_else(|| MemoryEngineError::IngestionEventNotFound {
+                event_id: request.event_id.to_string(),
+            })?;
+        let existing = self
+            .hyphae
+            .get_record(&ForgottenDerivedSource::key(&request.event_id))?
+            .as_ref()
+            .map(ForgottenDerivedSource::from_record)
+            .transpose()?;
+        let forgotten = ForgottenDerivedSource {
+            scope: forgotten_source_scope(&source),
+            event_id: request.event_id.clone(),
+            mode: if request.mode == crate::ForgetMode::ErasurePending
+                || existing
+                    .as_ref()
+                    .is_some_and(|entry| entry.mode == crate::ForgetMode::ErasurePending)
+            {
+                crate::ForgetMode::ErasurePending
+            } else {
+                crate::ForgetMode::SourceRetraction
+            },
+            recorded_at_ms: existing.as_ref().map_or(request.recorded_at_ms, |entry| {
+                entry.recorded_at_ms.min(request.recorded_at_ms)
+            }),
+        };
+        self.hyphae
+            .put_record(Uuid::now_v7(), &forgotten.to_record())?;
+        let mut affected = 0;
+        let descendants = self
+            .scan_prefix(DerivedMemory::prefix())?
+            .iter()
+            .map(DerivedMemory::from_record)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|entry| forgotten_source_reaches_derived(&forgotten.scope, &entry.scope))
+            .collect::<Vec<_>>();
+        for mut entry in descendants {
+            if !entry.root_event_ids.contains(&request.event_id) {
+                continue;
+            }
+            if forgotten.mode == crate::ForgetMode::ErasurePending {
+                self.hyphae
+                    .delete_record(Uuid::now_v7(), &DerivedMemory::key(&entry.id))?;
+                affected += 1;
+                continue;
+            }
+            let remaining_roots = self.count_active_derived_roots(&entry)?;
+            let next_status = if remaining_roots == 0 {
+                crate::DerivedStatus::Withdrawn
+            } else {
+                crate::DerivedStatus::Stale
+            };
+            let changed = entry.status != next_status;
+            entry.status = next_status;
+            self.hyphae.put_record(Uuid::now_v7(), &entry.to_record())?;
+            affected += u64::from(changed);
+        }
+        let mut aggregates_affected = 0;
+        let aggregates = self
+            .scan_prefix(ClaimAggregate::prefix())?
+            .iter()
+            .map(ClaimAggregate::from_record)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|aggregate| ingestion_scope_visible_to(&forgotten.scope, &aggregate.scope))
+            .collect::<Vec<_>>();
+        for mut aggregate in aggregates {
+            let has_active_evidence = aggregate.evidence_event_ids.contains(&request.event_id);
+            let has_member_evidence = if forgotten.mode == crate::ForgetMode::ErasurePending {
+                self.claim_aggregate_has_event(&aggregate, &request.event_id)?
+            } else {
+                false
+            };
+            if !has_active_evidence && !has_member_evidence {
+                continue;
+            }
+            if forgotten.mode == crate::ForgetMode::ErasurePending {
+                self.hyphae
+                    .delete_record(Uuid::now_v7(), &ClaimAggregate::key(&aggregate.id))?;
+                aggregates_affected += 1;
+                continue;
+            }
+            aggregate
+                .evidence_event_ids
+                .retain(|id| id != &request.event_id);
+            self.refresh_claim_aggregate(&mut aggregate)?;
+            self.hyphae
+                .put_record(Uuid::now_v7(), &aggregate.to_record())?;
+            aggregates_affected += 1;
+        }
+        Ok(ForgetPropagationReport {
+            affected,
+            aggregates_affected,
+        })
+    }
+
+    fn claim_aggregate_has_event(
+        &self,
+        aggregate: &ClaimAggregate,
+        event_id: &EventId,
+    ) -> Result<bool, MemoryEngineError> {
+        for claim_id in &aggregate.member_claim_ids {
+            if self
+                .claim_evidence(claim_id, &aggregate.scope)?
+                .iter()
+                .any(|evidence| &evidence.event_id == event_id)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn refresh_claim_aggregate(
+        &self,
+        aggregate: &mut ClaimAggregate,
+    ) -> Result<(), MemoryEngineError> {
+        let active_events: std::collections::BTreeSet<EventId> =
+            aggregate.evidence_event_ids.iter().cloned().collect();
+        let mut confidence_by_event: BTreeMap<EventId, i64> = BTreeMap::new();
+        let mut active_claims = Vec::new();
+        for claim_id in &aggregate.member_claim_ids {
+            let Some(claim) = self.get_claim(claim_id, &aggregate.scope)? else {
+                continue;
+            };
+            let mut claim_is_active = false;
+            for evidence in self.claim_evidence(claim_id, &aggregate.scope)? {
+                if active_events.contains(&evidence.event_id) {
+                    claim_is_active = true;
+                    confidence_by_event
+                        .entry(evidence.event_id)
+                        .and_modify(|value| *value = (*value).max(claim.confidence_nanos))
+                        .or_insert(claim.confidence_nanos);
+                }
+            }
+            if claim_is_active {
+                active_claims.push(claim);
+            }
+        }
+        let active_ids: std::collections::BTreeSet<ClaimId> =
+            active_claims.iter().map(|claim| claim.id.clone()).collect();
+        let blocked = self
+            .claim_contradictions(&aggregate.scope)?
+            .iter()
+            .any(|conflict| {
+                active_ids.contains(&conflict.left_claim_id)
+                    && active_ids.contains(&conflict.right_claim_id)
+            });
+        aggregate.status = if active_claims.is_empty() {
+            ClaimAggregateStatus::Withdrawn
+        } else if blocked {
+            ClaimAggregateStatus::BlockedByContradiction
+        } else {
+            ClaimAggregateStatus::Active
+        };
+        aggregate.value = (aggregate.status == ClaimAggregateStatus::Active)
+            .then(|| active_claims[0].value.clone());
+        aggregate.confidence_nanos = if aggregate.status == ClaimAggregateStatus::Active {
+            combine_confidence(confidence_by_event.values().copied())
+        } else {
+            0
+        };
+        Ok(())
+    }
+
+    /// Verifies immediate source references and root-event closure.
+    pub fn verify_derived_lineage(
+        &self,
+        scope: &RecallScope,
+    ) -> Result<DerivedIntegrityReport, MemoryEngineError> {
+        self.require_tenant(&scope.tenant_id)?;
+        let derived = self
+            .scan_prefix(DerivedMemory::prefix())?
+            .iter()
+            .map(DerivedMemory::from_record)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|entry| derived_integrity_scope_visible(&entry.scope, scope))
+            .collect::<Vec<_>>();
+        let by_id: BTreeMap<DerivedId, &DerivedMemory> = derived
+            .iter()
+            .map(|entry| (entry.id.clone(), entry))
+            .collect();
+        let mut issues = Vec::new();
+        for entry in &derived {
+            let mut expected_roots = std::collections::BTreeSet::new();
+            for source in &entry.immediate_sources {
+                match source {
+                    DerivedSource::Event(event_id) => {
+                        match self.get_ingestion_for_hierarchy(event_id, scope)? {
+                            Some(_) => {
+                                expected_roots.insert(event_id.clone());
+                            }
+                            None => push_derived_issue(
+                                &mut issues,
+                                "missing_immediate_source",
+                                &entry.id,
+                            ),
+                        }
+                    }
+                    DerivedSource::Derived(derived_id) => match by_id.get(derived_id) {
+                        Some(source) => {
+                            expected_roots.extend(source.root_event_ids.iter().cloned());
+                            if entry.status == crate::DerivedStatus::Active
+                                && source.status != crate::DerivedStatus::Active
+                            {
+                                push_derived_issue(
+                                    &mut issues,
+                                    "inactive_immediate_source",
+                                    &entry.id,
+                                );
+                            }
+                        }
+                        None => {
+                            push_derived_issue(&mut issues, "missing_immediate_source", &entry.id)
+                        }
+                    },
+                    DerivedSource::Claim(claim_id) => match self.get_claim(claim_id, scope)? {
+                        Some(_) => {
+                            for evidence in self.claim_evidence(claim_id, scope)? {
+                                expected_roots.insert(evidence.event_id);
+                            }
+                        }
+                        None => {
+                            push_derived_issue(&mut issues, "missing_immediate_source", &entry.id)
+                        }
+                    },
+                }
+            }
+            let actual_roots: std::collections::BTreeSet<EventId> =
+                entry.root_event_ids.iter().cloned().collect();
+            if expected_roots != actual_roots {
+                push_derived_issue(&mut issues, "root_closure_mismatch", &entry.id);
+            }
+            let mut root_hashes = Vec::with_capacity(entry.root_event_ids.len());
+            for root in &entry.root_event_ids {
+                match self.get_ingestion_for_hierarchy(root, scope)? {
+                    Some(event) => root_hashes.push((root.clone(), event.content_hash)),
+                    None => push_derived_issue(&mut issues, "missing_root_event", &entry.id),
+                }
+            }
+            if root_hashes.len() == entry.root_event_ids.len()
+                && source_digest(&entry.immediate_sources, &root_hashes) != entry.source_digest
+            {
+                push_derived_issue(&mut issues, "source_digest_mismatch", &entry.id);
+            }
+            if derived_cycle_from(&entry.id, &by_id) {
+                push_derived_issue(&mut issues, "derived_cycle", &entry.id);
+            }
+        }
+        Ok(DerivedIntegrityReport {
+            valid: issues.is_empty(),
+            derived_count: derived.len(),
+            issues,
+        })
     }
 
     /// Consolidates a block of conversation text into memories
@@ -4613,6 +5145,56 @@ fn ingestion_visible_to(entry: &IngestionEntry, scope: &RecallScope) -> bool {
     }
 }
 
+fn ingestion_visible_to_derived_hierarchy(entry: &IngestionEntry, scope: &RecallScope) -> bool {
+    if entry.identity.tenant_id != scope.tenant_id || entry.identity.user_id != scope.user_id {
+        return false;
+    }
+    match entry.scope {
+        Scope::Global => true,
+        Scope::Project | Scope::Session => entry.identity.project_id == scope.project_id,
+    }
+}
+
+fn forgotten_source_scope(entry: &IngestionEntry) -> RecallScope {
+    match entry.scope {
+        Scope::Global => RecallScope {
+            tenant_id: entry.identity.tenant_id.clone(),
+            user_id: entry.identity.user_id.clone(),
+            project_id: None,
+            conversation_id: None,
+            session_id: None,
+        },
+        Scope::Project => RecallScope {
+            tenant_id: entry.identity.tenant_id.clone(),
+            user_id: entry.identity.user_id.clone(),
+            project_id: entry.identity.project_id.clone(),
+            conversation_id: None,
+            session_id: None,
+        },
+        Scope::Session => entry.scope(),
+    }
+}
+
+fn ingestion_scope_visible_to(owner: &RecallScope, requested: &RecallScope) -> bool {
+    owner.tenant_id == requested.tenant_id
+        && owner.user_id == requested.user_id
+        && owner
+            .project_id
+            .as_ref()
+            .is_none_or(|project| requested.project_id.as_ref() == Some(project))
+        && owner
+            .session_id
+            .as_ref()
+            .is_none_or(|session| requested.session_id.as_ref() == Some(session))
+}
+
+fn forgotten_source_reaches_derived(source: &RecallScope, derived: &RecallScope) -> bool {
+    source.tenant_id == derived.tenant_id
+        && source.user_id == derived.user_id
+        && source.project_id == derived.project_id
+        && (source.session_id == derived.session_id || derived.session_id.is_none())
+}
+
 fn claim_visible_to(claim: &Claim, scope: &RecallScope) -> bool {
     recall_scope_visible_to(&claim.scope, scope)
 }
@@ -4707,11 +5289,176 @@ fn combine_confidence(confidences: impl IntoIterator<Item = i64>) -> i64 {
     i64::try_from(SCALE - remaining).unwrap_or(1_000_000_000)
 }
 
+fn push_derived_issue(issues: &mut Vec<DerivedIntegrityIssue>, kind: &str, derived_id: &DerivedId) {
+    issues.push(DerivedIntegrityIssue {
+        kind: kind.to_owned(),
+        derived_id: derived_id.to_string(),
+    });
+}
+
+fn derived_cycle_from(start: &DerivedId, by_id: &BTreeMap<DerivedId, &DerivedMemory>) -> bool {
+    let mut stack = vec![start.clone()];
+    let mut visited = std::collections::BTreeSet::new();
+    while let Some(current) = stack.pop() {
+        let Some(entry) = by_id.get(&current) else {
+            continue;
+        };
+        for source in &entry.immediate_sources {
+            let DerivedSource::Derived(source_id) = source else {
+                continue;
+            };
+            if source_id == start {
+                return true;
+            }
+            if visited.insert(source_id.clone()) {
+                stack.push(source_id.clone());
+            }
+        }
+    }
+    false
+}
+
+fn consolidation_plan_digest(plan: &ConsolidationPlan) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"celiums-memory/consolidation-plan/v1");
+    hash_plan_field(&mut hasher, b"id", plan.id.as_bytes());
+    hash_plan_field(
+        &mut hasher,
+        b"tenant_id",
+        plan.turn.scope.tenant_id.as_str().as_bytes(),
+    );
+    hash_plan_field(
+        &mut hasher,
+        b"user_id",
+        plan.turn.scope.user_id.as_str().as_bytes(),
+    );
+    hash_optional_plan_field(
+        &mut hasher,
+        b"project_id",
+        plan.turn
+            .scope
+            .project_id
+            .as_ref()
+            .map(crate::ProjectId::as_str),
+    );
+    hash_optional_plan_field(
+        &mut hasher,
+        b"conversation_id",
+        plan.turn
+            .scope
+            .conversation_id
+            .as_ref()
+            .map(crate::ConversationId::as_str),
+    );
+    hash_optional_plan_field(
+        &mut hasher,
+        b"session_id",
+        plan.turn
+            .scope
+            .session_id
+            .as_ref()
+            .map(crate::SessionId::as_str),
+    );
+    hash_plan_field(
+        &mut hasher,
+        b"turn_id",
+        plan.turn.turn_id.as_str().as_bytes(),
+    );
+    hash_plan_field(
+        &mut hasher,
+        b"algorithm_version",
+        plan.turn.algorithm_version.as_bytes(),
+    );
+    hash_plan_field(
+        &mut hasher,
+        b"recorded_at_ms",
+        &plan.turn.recorded_at_ms.to_le_bytes(),
+    );
+    hash_plan_field(
+        &mut hasher,
+        b"expected_derived_id",
+        plan.expected.id.as_str().as_bytes(),
+    );
+    hash_plan_field(
+        &mut hasher,
+        b"expected_source_digest",
+        plan.expected.source_digest.as_bytes(),
+    );
+    for action in &plan.actions {
+        match action {
+            ConsolidationAction::CreateDerived(id) => {
+                hash_plan_field(&mut hasher, b"create_derived", id.as_str().as_bytes());
+            }
+        }
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+fn hash_plan_field(hasher: &mut blake3::Hasher, name: &[u8], value: &[u8]) {
+    hasher.update(&(name.len() as u64).to_le_bytes());
+    hasher.update(name);
+    hasher.update(&(value.len() as u64).to_le_bytes());
+    hasher.update(value);
+}
+
+fn hash_optional_plan_field(hasher: &mut blake3::Hasher, name: &[u8], value: Option<&str>) {
+    match value {
+        Some(value) => {
+            hash_plan_field(hasher, name, &[1]);
+            hash_plan_field(hasher, name, value.as_bytes());
+        }
+        None => hash_plan_field(hasher, name, &[0]),
+    }
+}
+
 fn recall_scope_visible_to(owner: &RecallScope, requested: &RecallScope) -> bool {
     owner.tenant_id == requested.tenant_id
         && owner.user_id == requested.user_id
         && owner.project_id == requested.project_id
         && owner.session_id == requested.session_id
+}
+
+fn derived_visible_to(owner: &RecallScope, requested: &RecallScope) -> bool {
+    owner.tenant_id == requested.tenant_id
+        && owner.user_id == requested.user_id
+        && owner
+            .project_id
+            .as_ref()
+            .is_none_or(|project| requested.project_id.as_ref() == Some(project))
+        && owner
+            .session_id
+            .as_ref()
+            .is_none_or(|session| requested.session_id.as_ref() == Some(session))
+}
+
+fn derived_integrity_scope_visible(owner: &RecallScope, requested: &RecallScope) -> bool {
+    owner.tenant_id == requested.tenant_id
+        && owner.user_id == requested.user_id
+        && owner.project_id == requested.project_id
+}
+
+fn summary_target_scope(scope: &RecallScope, kind: DerivedKind) -> RecallScope {
+    match kind {
+        DerivedKind::SessionSummary => scope.clone(),
+        DerivedKind::ProjectSummary | DerivedKind::PeriodSummary => RecallScope {
+            tenant_id: scope.tenant_id.clone(),
+            user_id: scope.user_id.clone(),
+            project_id: scope.project_id.clone(),
+            conversation_id: None,
+            session_id: None,
+        },
+        DerivedKind::Episode | DerivedKind::ClaimAggregate => scope.clone(),
+    }
+}
+
+fn hex_digest(digest: [u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(64);
+    for byte in digest {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
 }
 
 pub(crate) fn disclose_memory(
