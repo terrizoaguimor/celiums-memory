@@ -20,8 +20,8 @@ evidence and why the next action follows.
 
 | Field | Value |
 |---|---|
-| Active phase | Phase 6 - Hierarchical consolidation |
-| Active item | P6.5 - Forget propagation and phase gate |
+| Active phase | Phase 7 - Recall and context composition |
+| Active item | P7.1 - Scoped filters before retrieval |
 | Branch | `dev` |
 | Baseline commit | `79c9595` |
 | Canonical implementation | `rust/` |
@@ -164,6 +164,7 @@ stable and an isolated immutable server exists.
 | 2026-08-05 | P6.3 claim aggregates | passed | 3 tests: unique evidence/confidence, contradiction block, duplicate-root deamplification; clippy green |
 | 2026-08-06 | P6.4 consolidation ops | passed | 3 tests: read-only plan/apply retry, deterministic due schedule, run rollback state; clippy green |
 | 2026-08-06 | P6.5 hierarchy gate | passed | 6 tests: active-head redundancy/evidence, durable forget/reopen, claim projection, sequential withdrawal, derived cleanup and lineage |
+| 2026-08-06 | Phase 6 GitHub CI | passed | run `31063701337`; MSRV/stable Rust, Node tests, lint, typecheck, build, Trivy and secret scan green |
 
 ## Phase 3 checklist
 
@@ -203,7 +204,19 @@ stable and an isolated immutable server exists.
 | P6.2 | Session/project summaries | closed | `e77638b`; CI `31058033613` green; journal `019fd45a57d772f1affb6d047f14002a` |
 | P6.3 | Claim/duplicate consolidation | closed | `4732921`; CI `31058255916` green; journal `019fd45e5c9076c78079c0f64c7dc517` |
 | P6.4 | Scheduling and rollback | closed | `4eb8ae9`; CI `31058569344` green; journal `019fd46380c372b88cfa7235eefa43d2` |
-| P6.5 | Phase close | verified locally | 24 Phase 6 tests; hierarchy/idempotency, unique evidence, contradiction block, snapshot-anchored rollback and durable forget propagation green; journal `019fd4bf68ad7199a3e3a58f5b4e6879` |
+| P6.5 | Phase close | closed | `a2b54bf`; 24 Phase 6 tests; CI `31063701337` green; journal `019fd4bf68ad7199a3e3a58f5b4e6879` |
+
+## Phase 7 checklist
+
+| ID | Work item | Status | Evidence / exit condition |
+|---|---|---|---|
+| P7.1 | Scoped filters before retrieval | pending | authorization and requested filters execute before candidate retrieval |
+| P7.2 | Candidate union | pending | exact vector, BM25F, graph and temporal branches produce one bounded union |
+| P7.3 | Cognitive scoring and fallback | pending | optional reranker and deterministic fallback preserve explicit abstentions |
+| P7.4 | Diversity and compact retrieval | pending | MMR, compact search and hydrate-by-ID remove uncontrolled duplicates |
+| P7.5 | Context composition | pending | token-aware sections, citations and `why_recalled` are deterministic |
+| P7.6 | Read-only recall resources | pending | recall has no writes; MCP resources/subscriptions pass conformance |
+| P7.7 | Phase close | pending | evidence recall improves at fixed token budget with frozen-input determinism |
 
 ## Update protocol
 
