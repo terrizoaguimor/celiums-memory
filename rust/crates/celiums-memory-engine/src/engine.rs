@@ -47,9 +47,10 @@ use crate::claim::{
 };
 use crate::derived::{
     ClaimAggregate, ClaimAggregateStatus, ConsolidateClaimsRequest, ConsolidateSummaryRequest,
-    ConsolidateTurnRequest, DerivedDecodeError, DerivedId, DerivedKind, DerivedMemory,
-    DerivedSource, InvalidDerived, NewDerivedMemory, source_digest,
-    validate_text as validate_derived_text,
+    ConsolidateTurnRequest, ConsolidationAction, ConsolidationPlan, ConsolidationPlanRequest,
+    ConsolidationRun, ConsolidationRunStatus, ConsolidationSchedule, ConsolidationScheduleRequest,
+    DerivedDecodeError, DerivedId, DerivedKind, DerivedMemory, DerivedSource, InvalidDerived,
+    NewDerivedMemory, RollbackReport, source_digest, validate_text as validate_derived_text,
 };
 use crate::embedding_space::{EMBEDDING_SPACE_KEY, EmbeddingSpaceIdentity};
 use crate::entity_index::{EntityRecord, entity_key, entity_prefix};
@@ -3572,6 +3573,128 @@ impl MemoryEngine {
         &mut self,
         request: ConsolidateTurnRequest,
     ) -> Result<DerivedMemory, MemoryEngineError> {
+        let derived = self.build_turn_episode(&request)?;
+        if let Some(existing) = self.get_derived(&derived.id, &request.scope)? {
+            return Ok(existing);
+        }
+        self.hyphae
+            .put_record(Uuid::now_v7(), &derived.to_record())?;
+        Ok(derived)
+    }
+
+    /// Builds a strictly read-only consolidation plan.
+    pub fn plan_consolidation(
+        &self,
+        request: ConsolidationPlanRequest,
+    ) -> Result<ConsolidationPlan, MemoryEngineError> {
+        let expected = self.build_turn_episode(&request.turn)?;
+        let id = expected.id.to_string();
+        Ok(ConsolidationPlan {
+            id,
+            turn: request.turn,
+            actions: vec![ConsolidationAction::CreateDerived(expected.id.clone())],
+            expected,
+        })
+    }
+
+    /// Applies one deterministic plan and persists its run state.
+    pub fn apply_consolidation(
+        &mut self,
+        plan: ConsolidationPlan,
+    ) -> Result<ConsolidationRun, MemoryEngineError> {
+        if let Some(record) = self.hyphae.get_record(&ConsolidationRun::key(&plan.id))? {
+            return Ok(ConsolidationRun::from_record(&record)?);
+        }
+        let run = ConsolidationRun {
+            id: plan.id,
+            scope: plan.turn.scope,
+            derived_ids: vec![plan.expected.id.clone()],
+            status: ConsolidationRunStatus::Committed,
+            recorded_at_ms: plan.expected.recorded_at_ms,
+        };
+        self.hyphae.put_records(
+            Uuid::now_v7(),
+            &[plan.expected.to_record(), run.to_record()],
+        )?;
+        Ok(run)
+    }
+
+    /// Rolls back artifacts created by one consolidation run without restoring unrelated state.
+    pub fn rollback_consolidation(
+        &mut self,
+        run_id: &str,
+        scope: &RecallScope,
+        now_ms: i64,
+    ) -> Result<RollbackReport, MemoryEngineError> {
+        self.require_tenant(&scope.tenant_id)?;
+        let Some(record) = self.hyphae.get_record(&ConsolidationRun::key(run_id))? else {
+            return Err(MemoryEngineError::ConsolidationSourcesEmpty);
+        };
+        let mut run = ConsolidationRun::from_record(&record)?;
+        if !recall_scope_visible_to(&run.scope, scope) {
+            return Err(MemoryEngineError::ConsolidationSourcesEmpty);
+        }
+        if run.status == ConsolidationRunStatus::RolledBack {
+            return Ok(RollbackReport { rolled_back: 0 });
+        }
+        let mut rolled_back = 0;
+        for id in &run.derived_ids {
+            if let Some(mut derived) = self.get_derived(id, scope)? {
+                derived.status = crate::DerivedStatus::RolledBack;
+                derived.recorded_at_ms = derived.recorded_at_ms.min(now_ms);
+                self.hyphae
+                    .put_record(Uuid::now_v7(), &derived.to_record())?;
+                rolled_back += 1;
+            }
+        }
+        run.status = ConsolidationRunStatus::RolledBack;
+        self.hyphae.put_record(Uuid::now_v7(), &run.to_record())?;
+        Ok(RollbackReport { rolled_back })
+    }
+
+    /// Creates or updates a durable schedule interpreted by an external clock.
+    pub fn upsert_consolidation_schedule(
+        &mut self,
+        request: ConsolidationScheduleRequest,
+    ) -> Result<ConsolidationSchedule, MemoryEngineError> {
+        self.require_tenant(&request.scope.tenant_id)?;
+        validate_derived_text(&request.policy_version, "policy_version")?;
+        let schedule = ConsolidationSchedule::from_request(request);
+        self.hyphae
+            .put_record(Uuid::now_v7(), &schedule.to_record())?;
+        Ok(schedule)
+    }
+
+    /// Lists visible schedules due at or before an explicit clock.
+    pub fn due_consolidations(
+        &self,
+        now_ms: i64,
+        limit: usize,
+        scope: &RecallScope,
+    ) -> Result<Vec<ConsolidationSchedule>, MemoryEngineError> {
+        self.require_tenant(&scope.tenant_id)?;
+        let mut schedules = self
+            .scan_prefix(ConsolidationSchedule::prefix())?
+            .iter()
+            .map(ConsolidationSchedule::from_record)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|schedule| recall_scope_visible_to(&schedule.scope, scope))
+            .filter(|schedule| schedule.next_due_at_ms <= now_ms)
+            .collect::<Vec<_>>();
+        schedules.sort_by(|left, right| {
+            left.next_due_at_ms
+                .cmp(&right.next_due_at_ms)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        schedules.truncate(limit.clamp(1, 1_000));
+        Ok(schedules)
+    }
+
+    fn build_turn_episode(
+        &self,
+        request: &ConsolidateTurnRequest,
+    ) -> Result<DerivedMemory, MemoryEngineError> {
         self.require_tenant(&request.scope.tenant_id)?;
         validate_derived_text(&request.algorithm_version, "algorithm_version")?;
         let mut events = self
@@ -3606,7 +3729,7 @@ impl MemoryEngine {
             .collect::<Vec<_>>()
             .join("\n");
         let digest = source_digest(&immediate_sources, &root_hashes);
-        let derived = DerivedMemory::build(NewDerivedMemory {
+        Ok(DerivedMemory::build(NewDerivedMemory {
             kind: DerivedKind::Episode,
             scope: request.scope.clone(),
             hierarchy_key: request.turn_id.to_string(),
@@ -3614,16 +3737,10 @@ impl MemoryEngine {
             immediate_sources,
             root_event_ids,
             source_digest: digest,
-            algorithm_version: request.algorithm_version,
+            algorithm_version: request.algorithm_version.clone(),
             recorded_at_ms: request.recorded_at_ms,
             period: None,
-        });
-        if let Some(existing) = self.get_derived(&derived.id, &request.scope)? {
-            return Ok(existing);
-        }
-        self.hyphae
-            .put_record(Uuid::now_v7(), &derived.to_record())?;
-        Ok(derived)
+        }))
     }
 
     /// Gets one visible derived artifact.

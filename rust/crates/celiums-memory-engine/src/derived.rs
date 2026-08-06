@@ -19,6 +19,10 @@ const DERIVED_KIND: &str = "derived_memory";
 const DERIVED_PREFIX: &str = "__celiums/derived/";
 const CLAIM_AGGREGATE_KIND: &str = "claim_aggregate";
 const CLAIM_AGGREGATE_PREFIX: &str = "__celiums/claim_aggregate/";
+const CONSOLIDATION_RUN_KIND: &str = "consolidation_run";
+const CONSOLIDATION_RUN_PREFIX: &str = "__celiums/consolidation/run/";
+const CONSOLIDATION_SCHEDULE_KIND: &str = "consolidation_schedule";
+const CONSOLIDATION_SCHEDULE_PREFIX: &str = "__celiums/consolidation/schedule/";
 const MAX_TEXT_BYTES: usize = 16_384;
 
 /// Stable deterministic derived-memory ID.
@@ -316,7 +320,7 @@ impl DerivedMemory {
 }
 
 /// Request to consolidate all visible events in one explicit turn.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConsolidateTurnRequest {
     /// Exact turn scope.
     pub scope: RecallScope,
@@ -426,6 +430,267 @@ pub struct ClaimAggregate {
     pub algorithm_version: String,
     /// First transaction time.
     pub recorded_at_ms: i64,
+}
+
+/// Dry-run request currently covering deterministic turn consolidation.
+#[derive(Clone, Debug)]
+pub struct ConsolidationPlanRequest {
+    /// Turn consolidation to plan.
+    pub turn: ConsolidateTurnRequest,
+}
+
+/// One planned action; planning is strictly read-only.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConsolidationAction {
+    /// Create one derived artifact.
+    CreateDerived(DerivedId),
+}
+
+/// Serializable consolidation plan and expected artifact.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConsolidationPlan {
+    /// Stable run ID derived from target artifact.
+    pub id: String,
+    /// Original turn request.
+    pub turn: ConsolidateTurnRequest,
+    /// Planned artifact.
+    pub expected: DerivedMemory,
+    /// Planned writes.
+    pub actions: Vec<ConsolidationAction>,
+}
+
+/// Durable run state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConsolidationRunStatus {
+    /// Artifact was committed.
+    Committed,
+    /// Artifact was rolled back.
+    RolledBack,
+}
+
+impl ConsolidationRunStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Committed => "committed",
+            Self::RolledBack => "rolled_back",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "committed" => Some(Self::Committed),
+            "rolled_back" => Some(Self::RolledBack),
+            _ => None,
+        }
+    }
+}
+
+/// One durable consolidation run.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConsolidationRun {
+    /// Stable plan/run ID.
+    pub id: String,
+    /// Owning scope.
+    pub scope: RecallScope,
+    /// Created artifact IDs.
+    pub derived_ids: Vec<DerivedId>,
+    /// Run state.
+    pub status: ConsolidationRunStatus,
+    /// Transaction time.
+    pub recorded_at_ms: i64,
+}
+
+impl ConsolidationRun {
+    pub(crate) fn key(id: &str) -> Vec<u8> {
+        format!("{CONSOLIDATION_RUN_PREFIX}{id}").into_bytes()
+    }
+
+    pub(crate) fn to_record(&self) -> Record {
+        let mut fields = scope_fields(&self.scope);
+        fields.extend(BTreeMap::from([
+            ("kind".to_owned(), string(CONSOLIDATION_RUN_KIND)),
+            ("id".to_owned(), string(&self.id)),
+            (
+                "derived_ids".to_owned(),
+                Value::Array(
+                    self.derived_ids
+                        .iter()
+                        .map(|id| string(id.as_str()))
+                        .collect(),
+                ),
+            ),
+            ("status".to_owned(), string(self.status.as_str())),
+            (
+                "recorded_at_ms".to_owned(),
+                Value::Integer(self.recorded_at_ms),
+            ),
+        ]));
+        Record::new(Self::key(&self.id), Value::Object(fields))
+    }
+
+    pub(crate) fn from_record(record: &Record) -> Result<Self, DerivedDecodeError> {
+        if !record.key.starts_with(CONSOLIDATION_RUN_PREFIX.as_bytes()) {
+            return Err(DerivedDecodeError::Key);
+        }
+        let Value::Object(fields) = &record.value else {
+            return field_error("(root)");
+        };
+        if text(fields, "kind")? != CONSOLIDATION_RUN_KIND {
+            return field_error("kind");
+        }
+        Ok(Self {
+            id: text(fields, "id")?,
+            scope: scope_from_fields(fields)?,
+            derived_ids: strings(fields, "derived_ids")?
+                .into_iter()
+                .map(DerivedId::parse)
+                .collect::<Result<Vec<_>, _>>()?,
+            status: ConsolidationRunStatus::parse(&text(fields, "status")?)
+                .ok_or(DerivedDecodeError::Field { field: "status" })?,
+            recorded_at_ms: integer(fields, "recorded_at_ms")?,
+        })
+    }
+}
+
+/// Durable schedule trigger interpreted by an external clock/runner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScheduleTrigger {
+    /// Consolidate when the session closes.
+    SessionEnd,
+    /// Consolidate after a fixed idle duration.
+    IdleForMs(i64),
+    /// Consolidate at a fixed interval.
+    EveryMs(i64),
+    /// Consolidate at a period boundary.
+    PeriodBoundary,
+}
+
+impl ScheduleTrigger {
+    fn encode(self) -> (&'static str, Option<i64>) {
+        match self {
+            Self::SessionEnd => ("session_end", None),
+            Self::IdleForMs(value) => ("idle_for", Some(value)),
+            Self::EveryMs(value) => ("every", Some(value)),
+            Self::PeriodBoundary => ("period_boundary", None),
+        }
+    }
+
+    fn decode(kind: &str, value: Option<i64>) -> Option<Self> {
+        match kind {
+            "session_end" => Some(Self::SessionEnd),
+            "idle_for" => value.map(Self::IdleForMs),
+            "every" => value.map(Self::EveryMs),
+            "period_boundary" => Some(Self::PeriodBoundary),
+            _ => None,
+        }
+    }
+}
+
+/// Request to create/update a deterministic schedule.
+#[derive(Clone, Debug)]
+pub struct ConsolidationScheduleRequest {
+    /// Owning scope.
+    pub scope: RecallScope,
+    /// Trigger policy.
+    pub trigger: ScheduleTrigger,
+    /// Next externally computed due time.
+    pub next_due_at_ms: i64,
+    /// Policy version.
+    pub policy_version: String,
+}
+
+/// Durable consolidation schedule.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConsolidationSchedule {
+    /// Stable schedule ID.
+    pub id: String,
+    /// Owning scope.
+    pub scope: RecallScope,
+    /// Trigger.
+    pub trigger: ScheduleTrigger,
+    /// Next due time.
+    pub next_due_at_ms: i64,
+    /// Policy version.
+    pub policy_version: String,
+}
+
+impl ConsolidationSchedule {
+    pub(crate) fn from_request(request: ConsolidationScheduleRequest) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"celiums-memory/consolidation-schedule/v1");
+        hash_scope(&mut hasher, &request.scope);
+        hash_field(
+            &mut hasher,
+            b"policy_version",
+            request.policy_version.as_bytes(),
+        );
+        let (trigger, value) = request.trigger.encode();
+        hash_field(&mut hasher, b"trigger", trigger.as_bytes());
+        if let Some(value) = value {
+            hash_field(&mut hasher, b"trigger_value", &value.to_le_bytes());
+        }
+        Self {
+            id: uuid_from_hash(hasher.finalize()).to_string(),
+            scope: request.scope,
+            trigger: request.trigger,
+            next_due_at_ms: request.next_due_at_ms,
+            policy_version: request.policy_version,
+        }
+    }
+
+    pub(crate) fn prefix() -> &'static [u8] {
+        CONSOLIDATION_SCHEDULE_PREFIX.as_bytes()
+    }
+
+    pub(crate) fn to_record(&self) -> Record {
+        let (trigger, value) = self.trigger.encode();
+        let mut fields = scope_fields(&self.scope);
+        fields.extend(BTreeMap::from([
+            ("kind".to_owned(), string(CONSOLIDATION_SCHEDULE_KIND)),
+            ("id".to_owned(), string(&self.id)),
+            ("trigger".to_owned(), string(trigger)),
+            ("trigger_value".to_owned(), nullable_integer(value)),
+            (
+                "next_due_at_ms".to_owned(),
+                Value::Integer(self.next_due_at_ms),
+            ),
+            ("policy_version".to_owned(), string(&self.policy_version)),
+        ]));
+        Record::new(
+            format!("{CONSOLIDATION_SCHEDULE_PREFIX}{}", self.id).into_bytes(),
+            Value::Object(fields),
+        )
+    }
+
+    pub(crate) fn from_record(record: &Record) -> Result<Self, DerivedDecodeError> {
+        if !record.key.starts_with(Self::prefix()) {
+            return Err(DerivedDecodeError::Key);
+        }
+        let Value::Object(fields) = &record.value else {
+            return field_error("(root)");
+        };
+        if text(fields, "kind")? != CONSOLIDATION_SCHEDULE_KIND {
+            return field_error("kind");
+        }
+        Ok(Self {
+            id: text(fields, "id")?,
+            scope: scope_from_fields(fields)?,
+            trigger: ScheduleTrigger::decode(
+                &text(fields, "trigger")?,
+                optional_integer(fields, "trigger_value")?,
+            )
+            .ok_or(DerivedDecodeError::Field { field: "trigger" })?,
+            next_due_at_ms: integer(fields, "next_due_at_ms")?,
+            policy_version: text(fields, "policy_version")?,
+        })
+    }
+}
+
+/// Result of a rollback operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RollbackReport {
+    /// Derived artifacts marked rolled back.
+    pub rolled_back: u64,
 }
 
 impl ClaimAggregate {

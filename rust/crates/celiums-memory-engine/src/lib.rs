@@ -45,8 +45,10 @@ pub use claim::{
 };
 pub use derived::{
     ClaimAggregate, ClaimAggregateStatus, ConsolidateClaimsRequest, ConsolidateSummaryRequest,
-    ConsolidateTurnRequest, DerivedDecodeError, DerivedId, DerivedKind, DerivedMemory,
-    DerivedSource, DerivedStatus, InvalidDerived, PeriodWindow,
+    ConsolidateTurnRequest, ConsolidationAction, ConsolidationPlan, ConsolidationPlanRequest,
+    ConsolidationRun, ConsolidationRunStatus, ConsolidationSchedule, ConsolidationScheduleRequest,
+    DerivedDecodeError, DerivedId, DerivedKind, DerivedMemory, DerivedSource, DerivedStatus,
+    InvalidDerived, PeriodWindow, RollbackReport, ScheduleTrigger,
 };
 pub use embed::deterministic_embed;
 pub use embedding_space::{EmbeddingNormalization, EmbeddingSpaceIdentity, InvalidEmbeddingSpace};

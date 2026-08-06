@@ -77,6 +77,40 @@ pub fn episode_at(
 }
 
 #[allow(dead_code)]
+pub fn raw_event(
+    source_event_id: &str,
+    content: &str,
+    embedding: Option<Vec<f32>>,
+) -> IngestEventRequest {
+    IngestEventRequest {
+        source_namespace: SourceNamespace::new("test-support").expect("namespace"),
+        source_event_id: SourceEventId::new(source_event_id).expect("event"),
+        turn_id: None,
+        source_kind: SourceKind::User,
+        source_uri: None,
+        actor: None,
+        identity: MemoryIdentity {
+            tenant_id: TenantId::new("tenant-a").expect("tenant"),
+            user_id: UserId::new("mario").expect("user"),
+            agent_id: None,
+            project_id: None,
+            conversation_id: None,
+            session_id: None,
+        },
+        content: content.to_owned(),
+        event_at_ms: Some(NOW_MS),
+        ingested_at_ms: NOW_MS,
+        embedding,
+        embedding_space: None,
+        tags: Vec::new(),
+        scope: Scope::Global,
+        importance: None,
+        content_role: ContentRole::Observation,
+        purpose: MemoryPurpose::ConversationalContext,
+    }
+}
+
+#[allow(dead_code)]
 pub fn claim_request(
     episode: &IngestionEntry,
     subject: &str,
