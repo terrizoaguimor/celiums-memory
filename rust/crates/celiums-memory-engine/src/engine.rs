@@ -46,8 +46,9 @@ use crate::claim::{
     InvalidClaim, SupersedeClaimRequest, validity_overlap,
 };
 use crate::derived::{
-    ConsolidateSummaryRequest, ConsolidateTurnRequest, DerivedDecodeError, DerivedId, DerivedKind,
-    DerivedMemory, DerivedSource, InvalidDerived, NewDerivedMemory, source_digest,
+    ClaimAggregate, ClaimAggregateStatus, ConsolidateClaimsRequest, ConsolidateSummaryRequest,
+    ConsolidateTurnRequest, DerivedDecodeError, DerivedId, DerivedKind, DerivedMemory,
+    DerivedSource, InvalidDerived, NewDerivedMemory, source_digest,
     validate_text as validate_derived_text,
 };
 use crate::embedding_space::{EMBEDDING_SPACE_KEY, EmbeddingSpaceIdentity};
@@ -3738,6 +3739,103 @@ impl MemoryEngine {
         Ok(derived)
     }
 
+    /// Consolidates compatible duplicate claims while preserving every member and root event.
+    pub fn consolidate_claims(
+        &mut self,
+        request: ConsolidateClaimsRequest,
+    ) -> Result<ClaimAggregate, MemoryEngineError> {
+        self.require_tenant(&request.scope.tenant_id)?;
+        validate_derived_text(&request.subject, "subject")?;
+        validate_derived_text(&request.predicate, "predicate")?;
+        validate_derived_text(&request.algorithm_version, "algorithm_version")?;
+        let mut claims = self
+            .visible_claims(&request.scope)?
+            .into_iter()
+            .filter(|claim| {
+                claim.subject == request.subject && claim.predicate == request.predicate
+            })
+            .collect::<Vec<_>>();
+        if claims.is_empty() {
+            return Err(MemoryEngineError::ConsolidationSourcesEmpty);
+        }
+        claims.sort_by(|left, right| left.id.cmp(&right.id));
+        let contradictions = self.claim_contradictions(&request.scope)?;
+        let member_ids: std::collections::BTreeSet<ClaimId> =
+            claims.iter().map(|claim| claim.id.clone()).collect();
+        let blocked = contradictions.iter().any(|contradiction| {
+            member_ids.contains(&contradiction.left_claim_id)
+                && member_ids.contains(&contradiction.right_claim_id)
+        });
+        let mut evidence_event_ids = Vec::new();
+        let mut confidence_by_event: BTreeMap<EventId, i64> = BTreeMap::new();
+        for claim in &claims {
+            for evidence in self.claim_evidence(&claim.id, &request.scope)? {
+                evidence_event_ids.push(evidence.event_id.clone());
+                confidence_by_event
+                    .entry(evidence.event_id)
+                    .and_modify(|value| *value = (*value).max(claim.confidence_nanos))
+                    .or_insert(claim.confidence_nanos);
+            }
+        }
+        evidence_event_ids.sort();
+        evidence_event_ids.dedup();
+        let confidence_nanos = if blocked {
+            0
+        } else {
+            combine_confidence(confidence_by_event.values().copied())
+        };
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"celiums-memory/claim-aggregate/v1");
+        hasher.update(request.subject.as_bytes());
+        hasher.update(&[0]);
+        hasher.update(request.predicate.as_bytes());
+        for claim in &claims {
+            hasher.update(claim.id.as_str().as_bytes());
+        }
+        hasher.update(request.algorithm_version.as_bytes());
+        let aggregate = ClaimAggregate {
+            id: hasher.finalize().to_hex().to_string(),
+            scope: request.scope.clone(),
+            subject: request.subject,
+            predicate: request.predicate,
+            value: (!blocked).then(|| claims[0].value.clone()),
+            member_claim_ids: claims.iter().map(|claim| claim.id.clone()).collect(),
+            evidence_event_ids,
+            confidence_nanos,
+            status: if blocked {
+                ClaimAggregateStatus::BlockedByContradiction
+            } else {
+                ClaimAggregateStatus::Active
+            },
+            algorithm_version: request.algorithm_version,
+            recorded_at_ms: request.recorded_at_ms,
+        };
+        let key = format!("__celiums/claim_aggregate/{}", aggregate.id).into_bytes();
+        if let Some(record) = self.hyphae.get_record(&key)? {
+            return Ok(ClaimAggregate::from_record(&record)?);
+        }
+        self.hyphae
+            .put_record(Uuid::now_v7(), &aggregate.to_record())?;
+        Ok(aggregate)
+    }
+
+    /// Lists visible claim aggregates.
+    pub fn claim_aggregates(
+        &self,
+        scope: &RecallScope,
+    ) -> Result<Vec<ClaimAggregate>, MemoryEngineError> {
+        self.require_tenant(&scope.tenant_id)?;
+        let aggregates = self
+            .scan_prefix(ClaimAggregate::prefix())?
+            .iter()
+            .map(ClaimAggregate::from_record)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(aggregates
+            .into_iter()
+            .filter(|aggregate| recall_scope_visible_to(&aggregate.scope, scope))
+            .collect())
+    }
+
     /// Consolidates a block of conversation text into memories
     /// (consolidate.ts:74-172).
     ///
@@ -4480,6 +4578,16 @@ fn structured_summary(sources: &[DerivedMemory]) -> String {
         open.join("\n"),
         next.join("\n")
     )
+}
+
+fn combine_confidence(confidences: impl IntoIterator<Item = i64>) -> i64 {
+    const SCALE: i128 = 1_000_000_000;
+    let mut remaining = SCALE;
+    for confidence in confidences {
+        let confidence = i128::from(confidence.clamp(0, SCALE as i64));
+        remaining = remaining.saturating_mul(SCALE - confidence) / SCALE;
+    }
+    i64::try_from(SCALE - remaining).unwrap_or(1_000_000_000)
 }
 
 fn recall_scope_visible_to(owner: &RecallScope, requested: &RecallScope) -> bool {

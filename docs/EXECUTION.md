@@ -21,7 +21,7 @@ evidence and why the next action follows.
 | Field | Value |
 |---|---|
 | Active phase | Phase 6 - Hierarchical consolidation |
-| Active item | P6.2 - Phase close (commit/push/CI) |
+| Active item | P6.3 - Phase close (commit/push/CI) |
 | Branch | `dev` |
 | Baseline commit | `79c9595` |
 | Canonical implementation | `rust/` |
@@ -161,6 +161,7 @@ stable and an isolated immutable server exists.
 | 2026-08-05 | Phase 5 GitHub CI | passed | run `31055862077`; MSRV/stable Rust, Node tests, lint, typecheck, build, Trivy and secret scan green |
 | 2026-08-05 | P6.1 turn episodes | passed | 3 tests: ordered exact lineage, retry/reopen idempotency, cross-session and missing-turn isolation; clippy green |
 | 2026-08-05 | P6.2 hierarchical summaries | passed | 3 tests: session/project root closure, period half-open basis, project isolation; clippy green |
+| 2026-08-05 | P6.3 claim aggregates | passed | 3 tests: unique evidence/confidence, contradiction block, duplicate-root deamplification; clippy green |
 
 ## Phase 3 checklist
 
@@ -197,8 +198,8 @@ stable and an isolated immutable server exists.
 | ID | Work item | Status | Evidence / exit condition |
 |---|---|---|---|
 | P6.1 | Turn-to-episode consolidation | closed | `236543b`; CI `31057792703` green; journal `019fd456467c7eb1a909dad57bdf5962` |
-| P6.2 | Session/project summaries | verified locally | episode->session->project/period; DONE/OPEN/NEXT extractive content; immediate and root lineage preserved; journal `019fd45a57d772f1affb6d047f14002a` |
-| P6.3 | Claim/duplicate consolidation | pending | contradiction-aware merge and confidence updates |
+| P6.2 | Session/project summaries | closed | `e77638b`; CI `31058033613` green; journal `019fd45a57d772f1affb6d047f14002a` |
+| P6.3 | Claim/duplicate consolidation | verified locally | immutable member claims; unique root evidence; fixed-point confidence accumulation; overlap conflicts block merge; journal `019fd45e5c9076c78079c0f64c7dc517` |
 | P6.4 | Scheduling and rollback | pending | dry-run, scheduling and snapshot rollback |
 | P6.5 | Phase close | pending | redundancy drops without recall/evidence regression |
 

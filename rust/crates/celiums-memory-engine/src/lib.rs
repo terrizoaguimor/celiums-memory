@@ -44,8 +44,9 @@ pub use claim::{
     ClaimSupersessionRelation, CreateClaimRequest, InvalidClaim, SupersedeClaimRequest,
 };
 pub use derived::{
-    ConsolidateSummaryRequest, ConsolidateTurnRequest, DerivedDecodeError, DerivedId, DerivedKind,
-    DerivedMemory, DerivedSource, DerivedStatus, InvalidDerived, PeriodWindow,
+    ClaimAggregate, ClaimAggregateStatus, ConsolidateClaimsRequest, ConsolidateSummaryRequest,
+    ConsolidateTurnRequest, DerivedDecodeError, DerivedId, DerivedKind, DerivedMemory,
+    DerivedSource, DerivedStatus, InvalidDerived, PeriodWindow,
 };
 pub use embed::deterministic_embed;
 pub use embedding_space::{EmbeddingNormalization, EmbeddingSpaceIdentity, InvalidEmbeddingSpace};

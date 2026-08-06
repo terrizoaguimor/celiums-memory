@@ -17,6 +17,8 @@ use crate::{
 
 const DERIVED_KIND: &str = "derived_memory";
 const DERIVED_PREFIX: &str = "__celiums/derived/";
+const CLAIM_AGGREGATE_KIND: &str = "claim_aggregate";
+const CLAIM_AGGREGATE_PREFIX: &str = "__celiums/claim_aggregate/";
 const MAX_TEXT_BYTES: usize = 16_384;
 
 /// Stable deterministic derived-memory ID.
@@ -352,6 +354,173 @@ pub struct ConsolidateSummaryRequest {
     pub recorded_at_ms: i64,
     /// Required for period summaries, forbidden otherwise.
     pub period: Option<PeriodWindow>,
+}
+
+/// Request to consolidate duplicate claims for one canonical property.
+#[derive(Clone, Debug)]
+pub struct ConsolidateClaimsRequest {
+    /// Authorization boundary.
+    pub scope: RecallScope,
+    /// Canonical subject.
+    pub subject: String,
+    /// Canonical predicate.
+    pub predicate: String,
+    /// Confidence policy version.
+    pub algorithm_version: String,
+    /// Transaction time.
+    pub recorded_at_ms: i64,
+}
+
+/// Outcome state of one claim aggregate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClaimAggregateStatus {
+    /// Compatible duplicates merged.
+    Active,
+    /// Overlapping values conflict and no merge was performed.
+    BlockedByContradiction,
+    /// All supporting evidence was forgotten.
+    Withdrawn,
+}
+
+impl ClaimAggregateStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::BlockedByContradiction => "blocked_by_contradiction",
+            Self::Withdrawn => "withdrawn",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "active" => Some(Self::Active),
+            "blocked_by_contradiction" => Some(Self::BlockedByContradiction),
+            "withdrawn" => Some(Self::Withdrawn),
+            _ => None,
+        }
+    }
+}
+
+/// Durable duplicate-claim aggregate with unique root evidence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimAggregate {
+    /// Stable deterministic ID.
+    pub id: String,
+    /// Owning scope.
+    pub scope: RecallScope,
+    /// Canonical subject.
+    pub subject: String,
+    /// Canonical predicate.
+    pub predicate: String,
+    /// Consolidated value, absent while blocked by contradiction.
+    pub value: Option<String>,
+    /// Member claims.
+    pub member_claim_ids: Vec<ClaimId>,
+    /// Unique root evidence events.
+    pub evidence_event_ids: Vec<EventId>,
+    /// Fixed-point confidence.
+    pub confidence_nanos: i64,
+    /// Aggregate status.
+    pub status: ClaimAggregateStatus,
+    /// Confidence policy version.
+    pub algorithm_version: String,
+    /// First transaction time.
+    pub recorded_at_ms: i64,
+}
+
+impl ClaimAggregate {
+    pub(crate) fn prefix() -> &'static [u8] {
+        CLAIM_AGGREGATE_PREFIX.as_bytes()
+    }
+
+    pub(crate) fn to_record(&self) -> Record {
+        let mut fields = scope_fields(&self.scope);
+        fields.extend(BTreeMap::from([
+            ("kind".to_owned(), string(CLAIM_AGGREGATE_KIND)),
+            ("id".to_owned(), string(&self.id)),
+            ("subject".to_owned(), string(&self.subject)),
+            ("predicate".to_owned(), string(&self.predicate)),
+            (
+                "value".to_owned(),
+                self.value.as_deref().map_or(Value::Null, string),
+            ),
+            (
+                "member_claim_ids".to_owned(),
+                Value::Array(
+                    self.member_claim_ids
+                        .iter()
+                        .map(|id| string(id.as_str()))
+                        .collect(),
+                ),
+            ),
+            (
+                "evidence_event_ids".to_owned(),
+                Value::Array(
+                    self.evidence_event_ids
+                        .iter()
+                        .map(|id| string(id.as_str()))
+                        .collect(),
+                ),
+            ),
+            (
+                "confidence_nanos".to_owned(),
+                Value::Integer(self.confidence_nanos),
+            ),
+            ("status".to_owned(), string(self.status.as_str())),
+            (
+                "algorithm_version".to_owned(),
+                string(&self.algorithm_version),
+            ),
+            (
+                "recorded_at_ms".to_owned(),
+                Value::Integer(self.recorded_at_ms),
+            ),
+        ]));
+        Record::new(
+            format!("{CLAIM_AGGREGATE_PREFIX}{}", self.id).into_bytes(),
+            Value::Object(fields),
+        )
+    }
+
+    pub(crate) fn from_record(record: &Record) -> Result<Self, DerivedDecodeError> {
+        if !record.key.starts_with(Self::prefix()) {
+            return Err(DerivedDecodeError::Key);
+        }
+        let Value::Object(fields) = &record.value else {
+            return field_error("(root)");
+        };
+        if text(fields, "kind")? != CLAIM_AGGREGATE_KIND {
+            return field_error("kind");
+        }
+        Ok(Self {
+            id: text(fields, "id")?,
+            scope: scope_from_fields(fields)?,
+            subject: text(fields, "subject")?,
+            predicate: text(fields, "predicate")?,
+            value: optional_text(fields, "value")?,
+            member_claim_ids: strings(fields, "member_claim_ids")?
+                .into_iter()
+                .map(|value| {
+                    ClaimId::parse(value).map_err(|_| DerivedDecodeError::Field {
+                        field: "member_claim_ids",
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            evidence_event_ids: strings(fields, "evidence_event_ids")?
+                .into_iter()
+                .map(|value| {
+                    EventId::parse(value).map_err(|_| DerivedDecodeError::Field {
+                        field: "evidence_event_ids",
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            confidence_nanos: integer(fields, "confidence_nanos")?,
+            status: ClaimAggregateStatus::parse(&text(fields, "status")?)
+                .ok_or(DerivedDecodeError::Field { field: "status" })?,
+            algorithm_version: text(fields, "algorithm_version")?,
+            recorded_at_ms: integer(fields, "recorded_at_ms")?,
+        })
+    }
 }
 
 /// Invalid derived-memory request.
