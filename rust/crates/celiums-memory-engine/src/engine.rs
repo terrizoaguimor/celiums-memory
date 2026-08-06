@@ -340,6 +340,12 @@ pub enum MemoryEngineError {
         /// Actionable validation detail.
         detail: &'static str,
     },
+    /// Recall request budgets or shape were invalid.
+    #[error("invalid recall request: {detail}")]
+    InvalidRecallRequest {
+        /// Actionable validation detail.
+        detail: &'static str,
+    },
     /// A canonical memory filter was invalid.
     #[error(transparent)]
     Filter(#[from] MemoryFilterError),
@@ -2846,8 +2852,13 @@ impl MemoryEngine {
     pub fn recall(&self, request: RecallRequest) -> Result<RecallResponse, MemoryEngineError> {
         let scope = request.scope.clone().unwrap_or_else(RecallScope::local);
         self.require_tenant(&scope.tenant_id)?;
+        if request.limit == 0 {
+            return Err(MemoryEngineError::InvalidRecallRequest {
+                detail: "result limit must be nonzero",
+            });
+        }
         if request.options.branches.max_union_candidates == 0 {
-            return Err(MemoryEngineError::InvalidRerankerScores {
+            return Err(MemoryEngineError::InvalidRecallRequest {
                 detail: "candidate union budget must be nonzero",
             });
         }
@@ -2866,7 +2877,7 @@ impl MemoryEngine {
         let mut authorized =
             self.authorized_recall_records(&scope, request.options.filter.as_ref())?;
         let retired_events =
-            self.retired_claim_events_for_query(&scope, &request.query_text, request.now_ms)?;
+            self.inactive_claim_events_for_query(&scope, &request.query_text, request.now_ms)?;
         authorized.retain(|_, memory| {
             memory
                 .provenance
@@ -3079,6 +3090,7 @@ impl MemoryEngine {
         let result_count = response.results.len();
         let mut remaining = budget;
         let mut sections = Vec::new();
+        let mut content_truncated = false;
         let mut results = response.results;
         results.sort_by_key(|result| {
             if result.branches.contains(&SearchBranch::Temporal) {
@@ -3117,6 +3129,7 @@ impl MemoryEngine {
                 why_recalled: result.why_recalled,
             });
             if was_truncated {
+                content_truncated = true;
                 break;
             }
         }
@@ -3126,7 +3139,7 @@ impl MemoryEngine {
             .map(|section| section.content.as_str())
             .collect::<Vec<_>>()
             .join("\n\n");
-        let truncated = sections.len() < result_count;
+        let truncated = content_truncated || sections.len() < result_count;
         let abstention = if sections.is_empty() && result_count > 0 {
             Some(RecallAbstention::BudgetExhausted)
         } else {
@@ -3387,7 +3400,7 @@ impl MemoryEngine {
             .then_some(BranchAbstention::NoCandidates))
     }
 
-    fn retired_claim_events_for_query(
+    fn inactive_claim_events_for_query(
         &self,
         scope: &RecallScope,
         query: &str,
@@ -3406,12 +3419,14 @@ impl MemoryEngine {
             if query_tokens.is_disjoint(&property) {
                 continue;
             }
-            let is_retired = supersessions.iter().any(|link| {
-                link.original_claim_id == claim.id
-                    && link.relation.retires_original()
-                    && link.effective_at_ms <= now_ms
-                    && link.recorded_at_ms <= now_ms
-            });
+            let is_retired = claim.recorded_at_ms > now_ms
+                || !claim.valid_at(now_ms)
+                || supersessions.iter().any(|link| {
+                    link.original_claim_id == claim.id
+                        && link.relation.retires_original()
+                        && link.effective_at_ms <= now_ms
+                        && link.recorded_at_ms <= now_ms
+                });
             let target = if is_retired {
                 &mut retired
             } else {
@@ -6545,29 +6560,33 @@ fn ensure_tenant_binding(
 }
 
 fn existing_memory_tenants(hyphae: &HyphaeEngine) -> Result<Vec<String>, MemoryEngineError> {
-    use hyphae_query::{CompareOperator, ExecutionLimits, Filter, Query, Value};
-    let result = hyphae.query(
-        &Query {
-            filter: Filter::Compare {
-                path: FieldPath::field("kind"),
-                operator: CompareOperator::Equal,
-                value: Value::String(crate::memory::MEMORY_KIND.to_owned()),
+    use hyphae_query::{ExecutionLimits, Filter, Query, Value};
+    let mut tenants = Vec::new();
+    let mut cursor = None;
+    loop {
+        let result = hyphae.query(
+            &Query {
+                filter: Filter::MatchAll,
+                sort: Vec::new(),
+                cursor,
+                limit: 1_000,
+                aggregation: None,
             },
-            sort: Vec::new(),
-            cursor: None,
-            limit: 1_000,
-            aggregation: None,
-        },
-        &ExecutionLimits::default(),
-    )?;
-    let mut tenants = result
-        .rows
-        .iter()
-        .map(Memory::from_record)
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .map(|memory| memory.identity.tenant_id.to_string())
-        .collect::<Vec<_>>();
+            &ExecutionLimits::default(),
+        )?;
+        for record in &result.rows {
+            let Value::Object(fields) = &record.value else {
+                continue;
+            };
+            if let Some(Value::String(tenant)) = fields.get("tenant_id") {
+                tenants.push(tenant.clone());
+            }
+        }
+        match result.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
     tenants.sort();
     tenants.dedup();
     Ok(tenants)

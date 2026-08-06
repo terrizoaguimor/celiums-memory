@@ -97,6 +97,11 @@ pub fn recall_at(
     config: &RecallConfig,
     request: &RecallRequest,
 ) -> Result<RecallResponse, MemoryEngineError> {
+    if request.limit == 0 || request.options.branches.max_union_candidates == 0 {
+        return Err(MemoryEngineError::InvalidRecallRequest {
+            detail: "snapshot result and union budgets must be nonzero",
+        });
+    }
     if request.options.branches.graph
         || request.options.branches.temporal
         || !matches!(
@@ -179,6 +184,18 @@ pub fn recall_at(
     for (key, lexical) in lexical_scores {
         candidates.entry(key).or_insert((0.0, 0.0)).1 = lexical;
     }
+    let union_budget = request.options.branches.max_union_candidates.min(10_000);
+    let union_truncated = if candidates.len() > union_budget {
+        let retained = candidates
+            .keys()
+            .take(union_budget)
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        candidates.retain(|key, _| retained.contains(key));
+        true
+    } else {
+        false
+    };
 
     let current_state = request.current_state.unwrap_or_default();
     let current_arousal = request
@@ -258,7 +275,7 @@ pub fn recall_at(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| left.memory.id.cmp(&right.memory.id))
     });
-    scored.truncate(config.max_results.min(request.limit.max(1)));
+    scored.truncate(config.max_results.min(request.limit));
 
     let overall_abstention = scored
         .is_empty()
@@ -275,7 +292,7 @@ pub fn recall_at(
         graph_truncated: false,
         graph_inspected_edges: 0,
         graph_truncation_reason: None,
-        union_truncated: false,
+        union_truncated,
     })
 }
 

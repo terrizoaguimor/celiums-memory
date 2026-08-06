@@ -410,7 +410,10 @@ impl Session {
         let limit = arguments
             .get("limit")
             .and_then(Value::as_u64)
-            .map_or(DEFAULT_RECALL_LIMIT, |value| value.max(1) as usize);
+            .map_or(DEFAULT_RECALL_LIMIT, |value| value as usize);
+        if limit == 0 || limit > 50 {
+            return Err("limit must be in 1..=50".to_owned());
+        }
         let response = self
             .engine
             .recall(RecallRequest {

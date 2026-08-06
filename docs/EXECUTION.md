@@ -219,7 +219,7 @@ stable and an isolated immutable server exists.
 | P7.4 | Diversity and compact retrieval | verified locally | content-hash suppression, Q15 MMR, compact search and policy-safe hydrate-by-ID |
 | P7.5 | Context composition | verified locally | estimator-v1 token budget, typed sections, citations and `why_recalled` |
 | P7.6 | Read-only recall resources | verified locally | no memory/affect writes; MCP resource list/read/templates/subscribe notifications green |
-| P7.7 | Phase close | verified locally | fixed-budget evidence density, duplicate control and frozen-state determinism gates green; journal `019fd534c7e0742da95a5a4718e65255` |
+| P7.7 | Phase close | verified locally | fixed-budget evidence density, duplicate control and frozen-state determinism gates green; journals `019fd534c7e0742da95a5a4718e65255`, `019fd56f35e57c20a74399c0effadda4` |
 
 ## Update protocol
 
