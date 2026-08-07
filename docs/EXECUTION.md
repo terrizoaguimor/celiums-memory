@@ -241,11 +241,11 @@ stable and an isolated immutable server exists.
 
 | ID | Work item | Status | Evidence / exit condition |
 |---|---|---|---|
-| P9.1 | Versioned logical export/import format | verified locally | tenant/user/project selectors, deterministic NDJSON records/vectors, BLAKE3 manifest, tamper detection, destination-new import and 5 portability tests |
-| P9.2 | Export ownership and verified hard delete | verified locally | tenant physical delete, selective survivor rebuild and residue reports; full record-family closure and historical backup policy remain under review |
-| P9.3 | Encrypted backup, retention and restore | verified locally | ChaCha20-Poly1305 envelope, Hyphae verified backup/restore, retention pruning and encrypted-backup roundtrip test |
+| P9.1 | Versioned logical export/import format | verified locally | tenant/user/project selectors, deterministic NDJSON records/vectors, BLAKE3 manifest, tamper detection, destination-new import and 6 portability tests |
+| P9.2 | Export ownership and verified hard delete | verified locally | tenant physical delete, selective survivor rebuild and residue reports; complete record-family closure and historical backup policy require follow-up review |
+| P9.3 | Encrypted backup, retention and restore | verified locally | ChaCha20-Poly1305 envelope, Hyphae verified backup/restore, retention pruning and encrypted-backup tests |
 | P9.4 | TypeScript and embedding migrations | verified locally | source-digest dry-run/apply foundation; provider-specific TypeScript extraction and embedding vector transformation remain separate adapters |
-| P9.5 | Phase close | pending | DR drill, full workspace/release gates, journal, commit, push and CI green |
+| P9.5 | Phase close | pending | PR #46 open toward `dev`; DR drill, review, merge, final journal and CI on merged `dev` remain |
 
 ## Update protocol
 
