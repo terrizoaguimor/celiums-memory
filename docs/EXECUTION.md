@@ -20,14 +20,14 @@ evidence and why the next action follows.
 
 | Field | Value |
 |---|---|
-| Active phase | Phase 8 - Rust server and authorization |
-| Active item | P8.7 - Phase close |
+| Active phase | Phase 9 - Portability and recovery |
+| Active item | P9.1 - Versioned logical export/import format |
 | Branch | `dev` |
-| Baseline commit | `9d3ab8f` |
+| Baseline commit | `c67cdbc` |
 | Canonical implementation | `rust/` |
 | Storage substrate | Hyphae `=0.2.1` |
 | Production direction | Cloudflare, one Durable Object per tenant |
-| Next phase after gate | Phase 9 - Portability and recovery |
+| Next phase after gate | Phase 10 - Cloudflare runtime |
 
 ## Phase 0 checklist
 
@@ -171,6 +171,7 @@ stable and an isolated immutable server exists.
 | 2026-08-06 | Phase 7 GitHub CI | passed | run `31072720822`; MSRV/stable Rust, Node tests, lint, typecheck, build, Trivy and secret scan green |
 | 2026-08-06 | P8 server/auth gate | passed | 38 tests: REST scoped CRUD/OpenAPI, authenticated MCP lifecycle/resources, role-derived disclosure, user isolation, queued SSE delivery, confirmation/replay, per-item quotas, OIDC interface, stable errors, URI encoding, tenant fuzz and non-enumeration |
 | 2026-08-06 | P8 full local gate | passed | workspace fmt, clippy `-D warnings`, tests and doc tests green; release ingestion gate green; benchmark typecheck/build green; diff hygiene clean |
+| 2026-08-07 | Phase 8 GitHub CI | passed | run `31217306169`; MSRV/stable Rust, Node tests, lint, typecheck, build, Trivy and secret scan green |
 
 ## Phase 3 checklist
 
@@ -228,13 +229,13 @@ stable and an isolated immutable server exists.
 
 | ID | Work item | Status | Evidence / exit condition |
 |---|---|---|---|
-| P8.1 | Axum REST and remote MCP | verified locally | REST v1, stateful MCP Streamable HTTP, OpenAPI 3.1 and `serve` command share one serial resident actor per tenant |
-| P8.2 | Authentication and tenant resolution | verified locally | static API keys and injectable OIDC verifier boundary produce immutable principals before opaque tenant directories open |
-| P8.3 | Authorization and confirmations | verified locally | five roles; role-derived MCP disclosure; destructive operations require elevated capability and one-use, expiring, bound tokens |
-| P8.4 | Quotas and rate limits | verified locally | bounded actor queue, body limits, per-principal request window and write quota return explicit 429/503 without ambiguous write timeout |
-| P8.5 | Operational endpoints | verified locally | `/healthz`, `/readyz`, `/version`, `/openapi.json` and request IDs green |
-| P8.6 | Stable errors | verified locally | typed public error codes redact engine detail and foreign/missing IDs are indistinguishable |
-| P8.7 | Phase close | verified locally | 38 REST/MCP adversarial tests plus complete workspace, release ingestion, benchmark and diff gates green; journal `019fd99e0bda7b03863465f75e1f5b76`; commit, push and CI pending |
+| P8.1 | Axum REST and remote MCP | closed | REST v1, stateful MCP Streamable HTTP, OpenAPI 3.1 and `serve` command share one serial resident actor per tenant |
+| P8.2 | Authentication and tenant resolution | closed | static API keys and injectable OIDC verifier boundary produce immutable principals before opaque tenant directories open |
+| P8.3 | Authorization and confirmations | closed | five roles; role-derived MCP disclosure; destructive operations require elevated capability and one-use, expiring, bound tokens |
+| P8.4 | Quotas and rate limits | closed | bounded actor queue, body limits, per-principal request window and write quota return explicit 429/503 without ambiguous write timeout |
+| P8.5 | Operational endpoints | closed | `/healthz`, `/readyz`, `/version`, `/openapi.json` and request IDs green |
+| P8.6 | Stable errors | closed | typed public error codes redact engine detail and foreign/missing IDs are indistinguishable |
+| P8.7 | Phase close | closed | `c67cdbc`; CI `31217306169` green; journal `019fd99e0bda7b03863465f75e1f5b76` |
 
 ## Update protocol
 
