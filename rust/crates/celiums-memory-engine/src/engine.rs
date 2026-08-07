@@ -3752,6 +3752,31 @@ impl MemoryEngine {
         })
     }
 
+    /// Creates a deterministic logical export from one verified checkpoint.
+    pub fn export_logical(
+        &self,
+        output: impl AsRef<std::path::Path>,
+        selector: crate::ExportSelector,
+    ) -> Result<crate::LogicalExportInfo, crate::PortabilityError> {
+        if selector.tenant_id() != self.tenant_id.as_str() {
+            return Err(crate::PortabilityError::Ownership);
+        }
+        let snapshot = self
+            .hyphae
+            .snapshot()
+            .map_err(|error| crate::PortabilityError::Manifest(error.to_string()))?;
+        crate::portability::export_snapshot(&snapshot.path, output.as_ref(), selector)
+    }
+
+    /// Creates a verified encrypted Hyphae backup for this tenant store.
+    pub fn create_encrypted_backup(
+        &self,
+        output: impl AsRef<std::path::Path>,
+        key: &[u8; 32],
+    ) -> Result<crate::EncryptedBackupInfo, crate::PortabilityError> {
+        crate::portability::create_encrypted_backup(&self.hyphae, output, key)
+    }
+
     /// Total stored memories (internal state records excluded).
     ///
     /// # Errors

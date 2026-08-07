@@ -237,6 +237,16 @@ stable and an isolated immutable server exists.
 | P8.6 | Stable errors | closed | typed public error codes redact engine detail and foreign/missing IDs are indistinguishable |
 | P8.7 | Phase close | closed | `c67cdbc`; CI `31217306169` green; journal `019fd99e0bda7b03863465f75e1f5b76` |
 
+## Phase 9 checklist
+
+| ID | Work item | Status | Evidence / exit condition |
+|---|---|---|---|
+| P9.1 | Versioned logical export/import format | verified locally | tenant/user/project selectors, deterministic NDJSON records/vectors, BLAKE3 manifest, tamper detection, destination-new import and 5 portability tests |
+| P9.2 | Export ownership and verified hard delete | verified locally | tenant physical delete, selective survivor rebuild and residue reports; full record-family closure and historical backup policy remain under review |
+| P9.3 | Encrypted backup, retention and restore | verified locally | ChaCha20-Poly1305 envelope, Hyphae verified backup/restore, retention pruning and encrypted-backup roundtrip test |
+| P9.4 | TypeScript and embedding migrations | verified locally | source-digest dry-run/apply foundation; provider-specific TypeScript extraction and embedding vector transformation remain separate adapters |
+| P9.5 | Phase close | pending | DR drill, full workspace/release gates, journal, commit, push and CI green |
+
 ## Update protocol
 
 For each item:

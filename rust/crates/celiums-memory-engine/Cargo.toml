@@ -14,11 +14,15 @@ authors.workspace = true
 [dependencies]
 blake3 = { workspace = true }
 celiums-cognition = { workspace = true }
+chacha20poly1305 = { workspace = true }
+getrandom = { workspace = true }
 hyphae-core = { workspace = true }
 hyphae-engine = { workspace = true }
 hyphae-query = { workspace = true }
 hyphae-retrieval = { workspace = true }
 hyphae-storage = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 
