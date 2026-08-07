@@ -81,12 +81,12 @@ engine no longer has.
     reinforcement is separate via `record_recall_feedback`.
 - **`celiums-memory-cli`** — the single binary:
   - `celiums-memory mcp [--data <dir>] [--dimension <n>]` — MCP stdio
-    server (JSON-RPC 2.0, protocol `2025-11-25`), 18 tools:
+    server (JSON-RPC 2.0, protocol `2025-11-25`), 19 tools:
     `remember`, `recall`, `journal_write`, `journal_recall`,
     `journal_verify_chain`, `memory_stats`, `entity_lookup`,
     `consolidate`, `snapshot_now`, `recall_at`, `run_lifecycle`, and
     `circadian_status`, `memory_get`, `memory_list`, `memory_update`,
-    `memory_delete`, `remember_batch`, and `capture_event`. The engine is embedded in the process — no HTTP
+    `memory_delete`, `confirm_destructive`, `remember_batch`, and `capture_event`. The engine is embedded in the process — no HTTP
     hop. Works out of the box with the offline embedder; accepts caller
     `embedding` arrays for real models.
 
@@ -207,7 +207,7 @@ Phase 3 (this tree): the ethics pipeline and the biological clock —
     drift-correction hack (`lastCircadianApplied`) — here the drift
     is impossible by construction.
 
-MCP: 18 tools, including scoped CRUD, batch ingestion and normalized capture.
+MCP: 19 tools, including scoped CRUD, destructive confirmation, batch ingestion and normalized capture.
 
 Phase 4 (roadmap P2): ethics-native governance — every memory now carries a
 durable, versioned policy trace with purpose, trust, sensitivity, poisoning
@@ -294,6 +294,23 @@ read-only context pipeline:
 - token-budgeted context sections carry citations and `why_recalled` evidence;
 - MCP advertises policy-safe resources with read/list/subscribe notifications,
   while recall leaves memory, retrieval counters and affect state unchanged.
+
+Roadmap Phase 8 adds the native server boundary without moving transport into
+the engine:
+
+- `celiums-memory serve` binds to `127.0.0.1:3210` by default and exposes REST
+  v1, stateful MCP Streamable HTTP, OpenAPI 3.1, health/readiness/version;
+- API-key records and an OIDC verifier interface resolve an immutable
+  principal before selecting the opaque, physically tenant-bound data path;
+- OIDC is an injectable verifier boundary in Phase 8; the stock `serve`
+  command authenticates static API keys and does not advertise OIDC metadata;
+- one serial engine actor owns each tenant store; bounded queues, request and
+  write budgets fail explicitly rather than opening an engine per request;
+  actors are resident for the process lifetime and `max_tenant_engines` is a
+  hard cap on the configured tenant set, not an idle-actor cache;
+- five RBAC roles and short-lived single-use confirmation tokens protect
+  destructive operations, with stable redacted REST/MCP error contracts and
+  `X-Celiums-Request-Id` correlation.
 
 The ordered platform plan and its mechanical exit gates live in
 [`docs/ROADMAP.md`](../docs/ROADMAP.md); execution evidence and the current

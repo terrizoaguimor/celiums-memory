@@ -21,13 +21,13 @@ evidence and why the next action follows.
 | Field | Value |
 |---|---|
 | Active phase | Phase 8 - Rust server and authorization |
-| Active item | P8.1 - Axum REST and remote MCP contract |
+| Active item | P8.7 - Phase close |
 | Branch | `dev` |
-| Baseline commit | `04023ea` |
+| Baseline commit | `9d3ab8f` |
 | Canonical implementation | `rust/` |
 | Storage substrate | Hyphae `=0.2.1` |
 | Production direction | Cloudflare, one Durable Object per tenant |
-| Next phase after gate | Phase 8 - Rust server and authorization |
+| Next phase after gate | Phase 9 - Portability and recovery |
 
 ## Phase 0 checklist
 
@@ -169,6 +169,8 @@ stable and an isolated immutable server exists.
 | 2026-08-06 | P7 context gate | passed | 2 tests: fixed-budget evidence density without disclosed duplicates; full memory/affect state unchanged |
 | 2026-08-06 | P7 MCP resources | passed | initialize capabilities, policy-safe list/read/templates, subscribe/update/list-changed notifications |
 | 2026-08-06 | Phase 7 GitHub CI | passed | run `31072720822`; MSRV/stable Rust, Node tests, lint, typecheck, build, Trivy and secret scan green |
+| 2026-08-06 | P8 server/auth gate | passed | 38 tests: REST scoped CRUD/OpenAPI, authenticated MCP lifecycle/resources, role-derived disclosure, user isolation, queued SSE delivery, confirmation/replay, per-item quotas, OIDC interface, stable errors, URI encoding, tenant fuzz and non-enumeration |
+| 2026-08-06 | P8 full local gate | passed | workspace fmt, clippy `-D warnings`, tests and doc tests green; release ingestion gate green; benchmark typecheck/build green; diff hygiene clean |
 
 ## Phase 3 checklist
 
@@ -226,13 +228,13 @@ stable and an isolated immutable server exists.
 
 | ID | Work item | Status | Evidence / exit condition |
 |---|---|---|---|
-| P8.1 | Axum REST and remote MCP | pending | REST v1, MCP Streamable HTTP and OpenAPI share one transport-independent contract |
-| P8.2 | Authentication and tenant resolution | pending | API keys and OIDC resolve the physical tenant before engine access |
-| P8.3 | Authorization and confirmations | pending | RBAC, authority levels and confirmation tokens protect destructive operations |
-| P8.4 | Quotas and rate limits | pending | bounded tenant/user budgets fail explicitly and cannot bypass authorization |
-| P8.5 | Operational endpoints | pending | health, readiness, version and request IDs pass transport conformance |
-| P8.6 | Stable errors | pending | REST and MCP map typed engine failures consistently without leaking scope existence |
-| P8.7 | Phase close | pending | auth bypass/tenant fuzz and complete transport conformance suites are green |
+| P8.1 | Axum REST and remote MCP | verified locally | REST v1, stateful MCP Streamable HTTP, OpenAPI 3.1 and `serve` command share one serial resident actor per tenant |
+| P8.2 | Authentication and tenant resolution | verified locally | static API keys and injectable OIDC verifier boundary produce immutable principals before opaque tenant directories open |
+| P8.3 | Authorization and confirmations | verified locally | five roles; role-derived MCP disclosure; destructive operations require elevated capability and one-use, expiring, bound tokens |
+| P8.4 | Quotas and rate limits | verified locally | bounded actor queue, body limits, per-principal request window and write quota return explicit 429/503 without ambiguous write timeout |
+| P8.5 | Operational endpoints | verified locally | `/healthz`, `/readyz`, `/version`, `/openapi.json` and request IDs green |
+| P8.6 | Stable errors | verified locally | typed public error codes redact engine detail and foreign/missing IDs are indistinguishable |
+| P8.7 | Phase close | verified locally | 38 REST/MCP adversarial tests plus complete workspace, release ingestion, benchmark and diff gates green; journal `019fd99e0bda7b03863465f75e1f5b76`; commit, push and CI pending |
 
 ## Update protocol
 

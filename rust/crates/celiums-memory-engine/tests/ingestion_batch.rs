@@ -158,6 +158,47 @@ fn changed_batch_payload_is_a_durable_conflict() {
 }
 
 #[test]
+fn raw_batch_reuses_existing_event_without_overwriting_materialized_state() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut engine = open(&dir);
+    let materialized = engine
+        .ingest_event(event(
+            "shared",
+            "materialized",
+            Some(vec![1.0, 0.0, 0.0, 0.0]),
+        ))
+        .expect("materialized");
+    let report = engine
+        .ingest_batch(IngestBatchRequest {
+            batch_id: BatchId::new("raw-retry").expect("batch"),
+            events: vec![event("shared", "materialized", None)],
+            now_ms: NOW_MS,
+        })
+        .expect("raw retry");
+    assert_eq!(report.items[0].status, IngestionStatus::Materialized);
+    assert_eq!(report.items[0].memory_id, materialized.memory_id);
+    assert_eq!(engine.count().expect("count"), 1);
+}
+
+#[test]
+fn batch_ids_are_isolated_by_user() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut engine = open(&dir);
+    for user in ["alice", "bob"] {
+        let mut request = event(user, user, None);
+        request.identity.user_id = UserId::new(user).expect("user");
+        let report = engine
+            .ingest_batch(IngestBatchRequest {
+                batch_id: BatchId::new("shared-batch").expect("batch"),
+                events: vec![request],
+                now_ms: NOW_MS,
+            })
+            .expect("isolated batch");
+        assert_eq!(report.scope.user_id.as_str(), user);
+    }
+}
+
+#[test]
 fn conversation_ingestion_rejects_mixed_conversation_ids_before_writing() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut engine = open(&dir);

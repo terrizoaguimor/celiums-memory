@@ -16,7 +16,7 @@
 //! from their activity rhythm (and falls back to UTC until it has
 //! signal); the flag pins it explicitly (e.g. `-300` for UTC-5).
 
-use celiums_memory_cli::mcp;
+use celiums_memory_cli::{mcp, server};
 
 use std::io::{self, BufReader, BufWriter};
 use std::path::PathBuf;
@@ -44,9 +44,9 @@ fn main() -> ExitCode {
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let command = args.next().unwrap_or_default();
-    if command != "mcp" {
+    if command != "mcp" && command != "serve" {
         return Err(format!(
-            "usage: celiums-memory mcp [--data <dir>] [--dimension <n>] [--embedding-provider <id>] [--embedding-model <id>] [--embedding-revision <id>] [--tenant-id <id>] [--timezone-offset <min>]{}",
+            "usage: celiums-memory <mcp|serve> [--data <dir>] [--dimension <n>] [--embedding-provider <id>] [--embedding-model <id>] [--embedding-revision <id>] [--tenant-id <id>] [--timezone-offset <min>] [--bind <addr>]{}",
             if command.is_empty() {
                 ""
             } else {
@@ -62,6 +62,8 @@ fn run() -> Result<(), String> {
     let mut embedding_provider = "celiums".to_owned();
     let mut embedding_model = "deterministic-word-bigram-hash".to_owned();
     let mut embedding_revision = "v1".to_owned();
+    let mut bind = "127.0.0.1:3210".to_owned();
+    let api_keys: Option<String> = std::env::var("CELIUMS_API_KEYS").ok();
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--data" => {
@@ -100,6 +102,7 @@ fn run() -> Result<(), String> {
             "--embedding-revision" => {
                 embedding_revision = args.next().ok_or("--embedding-revision requires an id")?;
             }
+            "--bind" => bind = args.next().ok_or("--bind requires an address")?,
             other => return Err(format!("unknown flag `{other}`")),
         }
     }
@@ -113,6 +116,38 @@ fn run() -> Result<(), String> {
         EmbeddingNormalization::L2,
     )
     .map_err(|error| error.to_string())?;
+    if command == "serve" {
+        let api_keys = server::parse_api_keys(
+            api_keys
+                .as_deref()
+                .ok_or("serve requires --api-keys or CELIUMS_API_KEYS")?,
+        )?;
+        let config = server::ServerConfig {
+            bind: bind.parse().map_err(|_| "invalid --bind address")?,
+            data_root: data_dir,
+            dimension,
+            embedding_space,
+            api_keys,
+            api_key_pepper: std::env::var("CELIUMS_API_KEY_PEPPER")
+                .map_err(|_| "serve requires CELIUMS_API_KEY_PEPPER")?,
+            oidc: None,
+            oidc_metadata: None,
+            request_limit: 120,
+            request_window: std::time::Duration::from_secs(60),
+            write_quota: 10_000,
+            write_quota_window: std::time::Duration::from_secs(24 * 60 * 60),
+            confirmation_secret: std::env::var("CELIUMS_CONFIRMATION_SECRET")
+                .unwrap_or_else(|_| "local-development-secret".to_owned()),
+            allowed_origins: Vec::new(),
+            body_limit: 1024 * 1024,
+            max_tenant_engines: 100,
+            max_mcp_sessions: 1_000,
+            max_confirmations: 1_000,
+        };
+        let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
+        return runtime.block_on(server::serve(config));
+    }
+
     let mut engine = MemoryEngine::open_for_tenant_with_embedding(
         &data_dir,
         RecallConfig::default(),

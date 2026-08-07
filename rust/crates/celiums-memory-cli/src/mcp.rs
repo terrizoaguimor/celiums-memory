@@ -3,7 +3,7 @@
 
 //! MCP stdio server over the embedded memory engine.
 //!
-//! Newline-delimited JSON-RPC 2.0, MCP protocol `2025-11-25`, 18 tools:
+//! Newline-delimited JSON-RPC 2.0, MCP protocol `2025-11-25`, 19 tools:
 //! memory, journal, entity graph, consolidation, lifecycle, snapshots,
 //! time-travel recall and circadian status. The transport pattern
 //! follows Hyphae's bounded stdio adapter (`hyphae-cli/src/mcp.rs`);
@@ -13,20 +13,23 @@
 //! `remember`/`recall`; without one the engine's deterministic offline
 //! embedder is used, so the binary works with zero providers.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::io::{self, BufRead, Write};
+use std::time::{Duration, Instant};
 
-use celiums_cognition::{EntityKind, JournalEntryType, Scope};
+use celiums_cognition::{DisclosureAuthority, EntityKind, JournalEntryType, MemoryPurpose, Scope};
 use celiums_memory_engine::{
     AgentId, BranchAbstention, CaptureAdapter, CaptureEvent, ConversationId,
     EmbeddingNormalization, EmbeddingSpaceIdentity, IdempotencyKey, JournalRecallRequest,
-    JournalWriteRequest, ListMemoriesRequest, MemoryEngine, MemoryIdentity, MemoryPatch, ProjectId,
-    Provenance, RecallConfig, RecallRequest, RecallScope, RememberContext, RememberRequest,
-    ScoredMemory, SessionId, SourceEventId, SourceKind, TenantId, TurnId, UpdateMemoryRequest,
-    UserId, deterministic_embed, recall_at, snapshot_points,
+    JournalWriteRequest, MemoryEngine, MemoryIdentity, MemoryPatch, ProjectId, Provenance,
+    RecallConfig, RecallRequest, RecallScope, RememberContext, RememberRequest, ScoredMemory,
+    SessionId, SourceEventId, SourceKind, TenantId, TurnId, UpdateMemoryRequest, UserId,
+    deterministic_embed, recall_at, snapshot_points,
 };
+use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use serde_json::{Value, json};
 use std::path::PathBuf;
+use uuid::Uuid;
 
 /// MCP protocol revision, matching the Hyphae adapter.
 const MCP_PROTOCOL: &str = "2025-11-25";
@@ -44,12 +47,45 @@ pub struct Session {
     initialized: bool,
     subscriptions: BTreeSet<String>,
     pending_notifications: VecDeque<Value>,
+    pending_resource_changes: VecDeque<ResourceChange>,
+    authenticated_remote: bool,
+    confirmations: HashMap<String, LocalConfirmation>,
+    local_tenant: TenantId,
+}
+
+struct LocalConfirmation {
+    operation: String,
+    resource_id: String,
+    expires_at: Instant,
+}
+
+#[derive(Clone, Copy)]
+struct DisclosureContext {
+    authority: DisclosureAuthority,
+    purpose: MemoryPurpose,
+}
+
+/// Memory-resource changes produced by one successful MCP operation.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ResourceChange {
+    /// Whether the visible resource list may have changed.
+    pub list_changed: bool,
+    /// Canonical resources whose representation changed.
+    pub updated_uris: BTreeSet<String>,
+    /// Whether every user in the tenant must invalidate its resource list.
+    pub tenant_wide: bool,
+}
+
+struct ToolOutcome {
+    value: Value,
+    resource_change: Option<ResourceChange>,
 }
 
 impl Session {
     /// Creates a session that owns `engine`. `data_dir` locates the
     /// snapshot directory for time-travel tools.
     pub fn new(engine: MemoryEngine, dimension: u16, data_dir: PathBuf) -> Self {
+        let local_tenant = engine.tenant_id().clone();
         Self {
             engine,
             dimension,
@@ -58,7 +94,16 @@ impl Session {
             initialized: false,
             subscriptions: BTreeSet::new(),
             pending_notifications: VecDeque::new(),
+            pending_resource_changes: VecDeque::new(),
+            authenticated_remote: false,
+            confirmations: HashMap::new(),
+            local_tenant,
         }
+    }
+
+    /// Exposes the owned engine to the native application actor.
+    pub fn engine_mut(&mut self) -> &mut MemoryEngine {
+        &mut self.engine
     }
 
     /// Runs the session until end of input.
@@ -97,6 +142,27 @@ impl Session {
     /// Handles one JSON-RPC message; `None` means no response
     /// (notification).
     pub fn handle(&mut self, message: &Value) -> Option<Value> {
+        let mut message = message.clone();
+        inject_local_identity(&mut message, &self.local_tenant);
+        self.handle_with_disclosure(&message, None)
+    }
+
+    /// Handles one request with transport-authenticated disclosure policy.
+    pub(crate) fn handle_authenticated(
+        &mut self,
+        message: &Value,
+        authority: DisclosureAuthority,
+        purpose: MemoryPurpose,
+    ) -> Option<Value> {
+        self.authenticated_remote = true;
+        self.handle_with_disclosure(message, Some(DisclosureContext { authority, purpose }))
+    }
+
+    fn handle_with_disclosure(
+        &mut self,
+        message: &Value,
+        disclosure: Option<DisclosureContext>,
+    ) -> Option<Value> {
         let Some(object) = message.as_object() else {
             return Some(rpc_error(&Value::Null, -32600, "Invalid Request"));
         };
@@ -124,16 +190,19 @@ impl Session {
             return None;
         }
         let id = id.unwrap_or(Value::Null);
+        if method == "notifications/initialized" {
+            return Some(rpc_error(&id, -32600, "Invalid Request"));
+        }
         match method {
             "initialize" => Some(self.initialize(&id, &params)),
             "ping" => Some(rpc_result(&id, &json!({}))),
             _ if !self.initialized => Some(rpc_error(&id, -32002, "Server not initialized")),
             "tools/list" => Some(rpc_result(&id, &json!({ "tools": tool_definitions() }))),
-            "tools/call" => Some(self.call_tool(&id, &params)),
-            "resources/list" => Some(self.list_resources(&id, &params)),
+            "tools/call" => Some(self.call_tool(&id, &params, disclosure)),
+            "resources/list" => Some(self.list_resources(&id, &params, disclosure)),
             "resources/templates/list" => Some(self.list_resource_templates(&id)),
-            "resources/read" => Some(self.read_resource(&id, &params)),
-            "resources/subscribe" => Some(self.subscribe_resource(&id, &params)),
+            "resources/read" => Some(self.read_resource(&id, &params, disclosure)),
+            "resources/subscribe" => Some(self.subscribe_resource(&id, &params, disclosure)),
             "resources/unsubscribe" => Some(self.unsubscribe_resource(&id, &params)),
             _ => Some(rpc_error(&id, -32601, "Method not found")),
         }
@@ -142,6 +211,11 @@ impl Session {
     /// Drains server-initiated notifications produced by the last request.
     pub fn drain_notifications(&mut self) -> Vec<Value> {
         self.pending_notifications.drain(..).collect()
+    }
+
+    /// Drains typed resource changes produced by the last request.
+    pub(crate) fn drain_resource_changes(&mut self) -> Vec<ResourceChange> {
+        self.pending_resource_changes.drain(..).collect()
     }
 
     fn initialize(&mut self, id: &Value, params: &Value) -> Value {
@@ -176,7 +250,12 @@ impl Session {
         )
     }
 
-    fn call_tool(&mut self, id: &Value, params: &Value) -> Value {
+    fn call_tool(
+        &mut self,
+        id: &Value,
+        params: &Value,
+        disclosure: Option<DisclosureContext>,
+    ) -> Value {
         let Some(name) = params.get("name").and_then(Value::as_str) else {
             return rpc_error(id, -32602, "Tool name is required");
         };
@@ -187,31 +266,59 @@ impl Session {
         if !arguments.is_object() {
             return rpc_error(id, -32602, "Tool arguments must be an object");
         }
+        if let Some(message) = arguments
+            .get("_invalid_operation_key")
+            .and_then(Value::as_str)
+        {
+            return rpc_result(id, &tool_error(message));
+        }
+        if name == "remember" {
+            return match self.tool_remember_outcome(&arguments) {
+                Ok(outcome) => {
+                    if let Some(change) = outcome.resource_change {
+                        self.notify_resource_changes(change);
+                    }
+                    rpc_result(id, &tool_success(&outcome.value))
+                }
+                Err(message) => rpc_result(id, &tool_error(&message)),
+            };
+        }
+        if name == "confirm_destructive" {
+            return match self.tool_confirm_destructive(&arguments) {
+                Ok(value) => rpc_result(id, &tool_success(&value)),
+                Err(message) => rpc_result(id, &tool_error(&message)),
+            };
+        }
+        if !self.authenticated_remote
+            && matches!(name, "memory_delete" | "consolidate" | "run_lifecycle")
+            && !self.consume_local_confirmation(name, &arguments)
+        {
+            return rpc_result(id, &tool_error("confirmation required"));
+        }
         let result = match name {
-            "remember" => self.tool_remember(&arguments),
-            "recall" => self.tool_recall(&arguments),
+            "recall" => self.tool_recall(&arguments, disclosure),
             "journal_write" => self.tool_journal_write(&arguments),
             "journal_recall" => self.tool_journal_recall(&arguments),
             "journal_verify_chain" => self.tool_journal_verify(&arguments),
-            "memory_stats" => self.tool_stats(),
-            "memory_get" => self.tool_memory_get(&arguments),
-            "memory_list" => self.tool_memory_list(&arguments),
-            "memory_update" => self.tool_memory_update(&arguments),
+            "memory_stats" => self.tool_stats(&arguments, disclosure.is_some()),
+            "memory_get" => self.tool_memory_get(&arguments, disclosure),
+            "memory_list" => self.tool_memory_list(&arguments, disclosure),
+            "memory_update" => self.tool_memory_update(&arguments, disclosure),
             "memory_delete" => self.tool_memory_delete(&arguments),
             "remember_batch" => self.tool_remember_batch(&arguments),
             "capture_event" => self.tool_capture_event(&arguments),
-            "entity_lookup" => self.tool_entity_lookup(&arguments),
+            "entity_lookup" => self.tool_entity_lookup(&arguments, disclosure),
             "consolidate" => self.tool_consolidate(&arguments),
             "snapshot_now" => self.tool_snapshot_now(),
-            "recall_at" => self.tool_recall_at(&arguments),
+            "recall_at" => self.tool_recall_at(&arguments, disclosure),
             "run_lifecycle" => self.tool_run_lifecycle(),
             "circadian_status" => self.tool_circadian_status(),
             _ => return rpc_error(id, -32602, "Unknown tool"),
         };
         match result {
             Ok(value) => {
-                if is_mutating_tool(name) {
-                    self.notify_resource_changes();
+                if let Some(change) = resource_change(name, &arguments, &value) {
+                    self.notify_resource_changes(change);
                 }
                 rpc_result(id, &tool_success(&value))
             }
@@ -219,7 +326,12 @@ impl Session {
         }
     }
 
-    fn list_resources(&self, id: &Value, params: &Value) -> Value {
+    fn list_resources(
+        &self,
+        id: &Value,
+        params: &Value,
+        disclosure: Option<DisclosureContext>,
+    ) -> Value {
         let scope = match recall_scope(params) {
             Ok(scope) => scope,
             Err(error) => return rpc_error(id, -32602, &error),
@@ -235,24 +347,26 @@ impl Session {
             &scope,
             200,
             offset,
-            celiums_cognition::DisclosureAuthority::Agent,
-            celiums_cognition::MemoryPurpose::ConversationalContext,
+            disclosure.map_or(DisclosureAuthority::Agent, |context| context.authority),
+            disclosure.map_or(MemoryPurpose::ConversationalContext, |context| {
+                context.purpose
+            }),
         ) {
             Ok(page) => page,
             Err(error) => return rpc_error(id, -32002, &error.to_string()),
         };
-        rpc_result(
-            id,
-            &json!({
-                "resources": page.memories.iter().map(|memory| json!({
+        let mut result = json!({
+            "resources": page.memories.iter().map(|memory| json!({
                     "uri": memory_resource_uri(&memory.id, &scope),
                     "name": format!("Memory {}", memory.id),
                     "title": "Policy-safe memory",
                     "mimeType": "application/json"
-                })).collect::<Vec<_>>(),
-                "nextCursor": page.next_offset.map(|offset| offset.to_string())
-            }),
-        )
+                })).collect::<Vec<_>>()
+        });
+        if let Some(offset) = page.next_offset {
+            result["nextCursor"] = Value::String(offset.to_string());
+        }
+        rpc_result(id, &result)
     }
 
     fn list_resource_templates(&self, id: &Value) -> Value {
@@ -268,7 +382,12 @@ impl Session {
         )
     }
 
-    fn read_resource(&self, id: &Value, params: &Value) -> Value {
+    fn read_resource(
+        &self,
+        id: &Value,
+        params: &Value,
+        disclosure: Option<DisclosureContext>,
+    ) -> Value {
         let Some(uri) = params.get("uri").and_then(Value::as_str) else {
             return rpc_error(id, -32602, "Resource URI is required");
         };
@@ -286,8 +405,12 @@ impl Session {
                 .get_disclosed_memory(celiums_memory_engine::DisclosedMemoryRequest {
                     id: memory_id,
                     scope,
-                    disclosure_authority: celiums_cognition::DisclosureAuthority::Agent,
-                    disclosure_purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
+                    disclosure_authority: disclosure
+                        .map_or(DisclosureAuthority::Agent, |context| context.authority),
+                    disclosure_purpose: disclosure
+                        .map_or(MemoryPurpose::ConversationalContext, |context| {
+                            context.purpose
+                        }),
                 }) {
                 Ok(Some(memory)) => memory,
                 Ok(None) => return rpc_error(id, -32002, "Resource not found"),
@@ -308,7 +431,12 @@ impl Session {
         )
     }
 
-    fn subscribe_resource(&mut self, id: &Value, params: &Value) -> Value {
+    fn subscribe_resource(
+        &mut self,
+        id: &Value,
+        params: &Value,
+        disclosure: Option<DisclosureContext>,
+    ) -> Value {
         let Some(uri) = params.get("uri").and_then(Value::as_str) else {
             return rpc_error(id, -32602, "Resource URI is required");
         };
@@ -328,8 +456,12 @@ impl Session {
             .get_disclosed_memory(celiums_memory_engine::DisclosedMemoryRequest {
                 id: memory_id,
                 scope,
-                disclosure_authority: celiums_cognition::DisclosureAuthority::Agent,
-                disclosure_purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
+                disclosure_authority: disclosure
+                    .map_or(DisclosureAuthority::Agent, |context| context.authority),
+                disclosure_purpose: disclosure
+                    .map_or(MemoryPurpose::ConversationalContext, |context| {
+                        context.purpose
+                    }),
             }) {
             Ok(Some(_)) => {}
             Ok(None) => return rpc_error(id, -32002, "Resource not found"),
@@ -347,26 +479,36 @@ impl Session {
         rpc_result(id, &json!({}))
     }
 
-    fn notify_resource_changes(&mut self) {
-        for uri in &self.subscriptions {
+    fn notify_resource_changes(&mut self, change: ResourceChange) {
+        for uri in self.subscriptions.iter().filter(|subscribed| {
+            change.tenant_wide
+                || change
+                    .updated_uris
+                    .iter()
+                    .any(|changed| same_resource_uri(changed, subscribed))
+        }) {
             self.pending_notifications.push_back(json!({
                 "jsonrpc":"2.0",
                 "method":"notifications/resources/updated",
                 "params":{"uri":uri}
             }));
         }
-        self.pending_notifications.push_back(json!({
-            "jsonrpc":"2.0",
-            "method":"notifications/resources/list_changed"
-        }));
+        if change.list_changed {
+            self.pending_notifications.push_back(json!({
+                "jsonrpc":"2.0",
+                "method":"notifications/resources/list_changed"
+            }));
+        }
+        self.pending_resource_changes.push_back(change);
     }
 
-    fn tool_remember(&mut self, arguments: &Value) -> Result<Value, String> {
+    fn tool_remember_outcome(&mut self, arguments: &Value) -> Result<ToolOutcome, String> {
         let content = required_string(arguments, "content")?;
         let embedding = self.embedding_from(arguments, &content)?;
         let embedding_space = self.embedding_space_from(arguments)?;
         let now = now_ms();
         let context = remember_context(arguments, &content, now)?;
+        let before_count = self.engine.count().map_err(|error| error.to_string())?;
         let memory = self
             .engine
             .remember(RememberRequest {
@@ -386,7 +528,9 @@ impl Session {
                 purpose: parse_memory_purpose(arguments, "purpose")?,
             })
             .map_err(|error| error.to_string())?;
-        Ok(json!({
+        let after_count = self.engine.count().map_err(|error| error.to_string())?;
+        Ok(ToolOutcome {
+            value: json!({
             "id": memory.id,
             "importance": memory.importance,
             "memory_type": memory.memory_type.as_str(),
@@ -399,14 +543,24 @@ impl Session {
             ),
             "event_at_ms": memory.event_at_ms,
             "ingested_at_ms": memory.ingested_at_ms,
-        }))
+            }),
+            resource_change: (after_count > before_count).then(|| ResourceChange {
+                list_changed: true,
+                updated_uris: BTreeSet::new(),
+                tenant_wide: false,
+            }),
+        })
     }
 
-    fn tool_recall(&mut self, arguments: &Value) -> Result<Value, String> {
+    fn tool_recall(
+        &mut self,
+        arguments: &Value,
+        disclosure: Option<DisclosureContext>,
+    ) -> Result<Value, String> {
         let query = required_string(arguments, "query")?;
         let embedding = self.embedding_from(arguments, &query)?;
         let embedding_space = self.embedding_space_from(arguments)?;
-        let scope = recall_scope(arguments)?;
+        let scope = scoped_recall_scope(arguments)?;
         let limit = arguments
             .get("limit")
             .and_then(Value::as_u64)
@@ -424,8 +578,8 @@ impl Session {
                 now_ms: now_ms(),
                 scope: Some(scope),
                 embedding_space: Some(embedding_space),
-                disclosure_authority: session_disclosure_authority(arguments)?,
-                disclosure_purpose: parse_memory_purpose(arguments, "disclosure_purpose")?,
+                disclosure_authority: disclosure_authority(arguments, disclosure)?,
+                disclosure_purpose: disclosure_purpose(arguments, disclosure)?,
                 options: celiums_memory_engine::RecallOptions::default(),
             })
             .map_err(|error| error.to_string())?;
@@ -527,66 +681,76 @@ impl Session {
         }))
     }
 
-    fn tool_stats(&mut self) -> Result<Value, String> {
+    fn tool_stats(&mut self, arguments: &Value, authenticated: bool) -> Result<Value, String> {
+        if authenticated {
+            let count = self
+                .engine
+                .count_visible(&scoped_recall_scope(arguments)?)
+                .map_err(|error| error.to_string())?;
+            return Ok(json!({"memories":count,"affect":Value::Null}));
+        }
         let count = self.engine.count().map_err(|error| error.to_string())?;
         let state = self.engine.affect_state(now_ms());
-        Ok(json!({
-            "memories": count,
-            "affect": {
-                "pleasure": state.pleasure,
-                "arousal": state.arousal,
-                "dominance": state.dominance,
-                "label": celiums_cognition::emotion_label(state),
-            },
-        }))
+        Ok(json!({"memories":count,"affect":{
+            "pleasure":state.pleasure,
+            "arousal":state.arousal,
+            "dominance":state.dominance,
+            "label":celiums_cognition::emotion_label(state),
+        }}))
     }
 
-    fn tool_memory_get(&self, arguments: &Value) -> Result<Value, String> {
+    fn tool_memory_get(
+        &self,
+        arguments: &Value,
+        disclosure: Option<DisclosureContext>,
+    ) -> Result<Value, String> {
         let memory = self
             .engine
             .get_disclosed_memory(celiums_memory_engine::DisclosedMemoryRequest {
                 id: required_string(arguments, "id")?,
-                scope: recall_scope(arguments)?,
-                disclosure_authority: session_disclosure_authority(arguments)?,
-                disclosure_purpose: parse_memory_purpose(arguments, "disclosure_purpose")?,
+                scope: scoped_recall_scope(arguments)?,
+                disclosure_authority: disclosure_authority(arguments, disclosure)?,
+                disclosure_purpose: disclosure_purpose(arguments, disclosure)?,
             })
             .map_err(|error| error.to_string())?;
-        Ok(json!({ "memory": memory.as_ref().map(hydrated_json) }))
+        match memory {
+            Some(memory) => Ok(json!({"memory":hydrated_json(&memory)})),
+            None if self.authenticated_remote => Err("resource not found".to_owned()),
+            None => Ok(json!({"memory":Value::Null})),
+        }
     }
 
-    fn tool_memory_list(&self, arguments: &Value) -> Result<Value, String> {
-        let scope = recall_scope(arguments)?;
+    fn tool_memory_list(
+        &self,
+        arguments: &Value,
+        disclosure: Option<DisclosureContext>,
+    ) -> Result<Value, String> {
+        let scope = scoped_recall_scope(arguments)?;
+        let limit = arguments.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize;
         let page = self
             .engine
-            .list_memories(&ListMemoriesRequest {
-                scope: scope.clone(),
-                filter: None,
-                limit: arguments.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize,
-            })
-            .map_err(|error| error.to_string())?;
-        let hydrated = self
-            .engine
-            .hydrate(celiums_memory_engine::HydrateRequest {
-                ids: page
-                    .memories
-                    .iter()
-                    .map(|memory| memory.id.clone())
-                    .collect(),
-                scope,
-                disclosure_authority: session_disclosure_authority(arguments)?,
-                disclosure_purpose: parse_memory_purpose(arguments, "disclosure_purpose")?,
-            })
+            .list_disclosed_memory_page(
+                &scope,
+                limit,
+                0,
+                disclosure_authority(arguments, disclosure)?,
+                disclosure_purpose(arguments, disclosure)?,
+            )
             .map_err(|error| error.to_string())?;
         Ok(json!({
-            "memories": hydrated.iter().map(hydrated_json).collect::<Vec<_>>(),
-            "matched": page.matched,
+            "memories": page.memories.iter().map(hydrated_json).collect::<Vec<_>>(),
+            "matched": self.engine.count_visible(&scope).map_err(|error| error.to_string())?,
         }))
     }
 
-    fn tool_memory_update(&mut self, arguments: &Value) -> Result<Value, String> {
-        let scope = recall_scope(arguments)?;
-        let authority = session_disclosure_authority(arguments)?;
-        let purpose = parse_memory_purpose(arguments, "disclosure_purpose")?;
+    fn tool_memory_update(
+        &mut self,
+        arguments: &Value,
+        disclosure: Option<DisclosureContext>,
+    ) -> Result<Value, String> {
+        let scope = scoped_recall_scope(arguments)?;
+        let authority = disclosure_authority(arguments, disclosure)?;
+        let purpose = disclosure_purpose(arguments, disclosure)?;
         let patch_value = arguments.get("patch").ok_or("`patch` is required")?;
         let patch = MemoryPatch {
             importance: patch_value.get("importance").and_then(Value::as_f64),
@@ -616,19 +780,28 @@ impl Session {
                 now_ms: now_ms(),
             })
             .map_err(|error| error.to_string())?;
-        let hydrated = match memory {
-            Some(memory) => self
-                .engine
-                .get_disclosed_memory(celiums_memory_engine::DisclosedMemoryRequest {
-                    id: memory.id,
-                    scope,
-                    disclosure_authority: authority,
-                    disclosure_purpose: purpose,
-                })
-                .map_err(|error| error.to_string())?,
-            None => None,
+        let Some(memory) = memory else {
+            return if self.authenticated_remote {
+                Err("resource not found".to_owned())
+            } else {
+                Ok(json!({"memory":Value::Null}))
+            };
         };
-        Ok(json!({ "memory": hydrated.as_ref().map(hydrated_json) }))
+        let disclosed = self
+            .engine
+            .get_disclosed_memory(celiums_memory_engine::DisclosedMemoryRequest {
+                id: memory.id.clone(),
+                scope,
+                disclosure_authority: authority,
+                disclosure_purpose: purpose,
+            })
+            .ok()
+            .flatten();
+        Ok(json!({
+            "id":memory.id,
+            "revision":memory.revision,
+            "memory":disclosed.as_ref().map(hydrated_json)
+        }))
     }
 
     fn tool_memory_delete(&mut self, arguments: &Value) -> Result<Value, String> {
@@ -636,10 +809,52 @@ impl Session {
             .engine
             .delete_memory(
                 &required_string(arguments, "id")?,
-                &recall_scope(arguments)?,
+                &scoped_recall_scope(arguments)?,
             )
             .map_err(|error| error.to_string())?;
+        if self.authenticated_remote && !outcome.deleted {
+            return Err("resource not found".to_owned());
+        }
         Ok(json!({ "id": outcome.id, "deleted": outcome.deleted }))
+    }
+
+    fn tool_confirm_destructive(&mut self, arguments: &Value) -> Result<Value, String> {
+        let operation = required_string(arguments, "operation")?;
+        if !matches!(
+            operation.as_str(),
+            "memory_delete" | "consolidate" | "run_lifecycle"
+        ) {
+            return Err("invalid confirmation operation".to_owned());
+        }
+        let resource_id = required_string(arguments, "resource_id")?;
+        let token = Uuid::now_v7().to_string();
+        self.confirmations
+            .retain(|_, value| value.expires_at >= Instant::now());
+        self.confirmations.insert(
+            token.clone(),
+            LocalConfirmation {
+                operation,
+                resource_id,
+                expires_at: Instant::now() + Duration::from_secs(5 * 60),
+            },
+        );
+        Ok(json!({"confirmation_token":token,"expires_in_seconds":300}))
+    }
+
+    fn consume_local_confirmation(&mut self, operation: &str, arguments: &Value) -> bool {
+        let resource_id = arguments
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("tenant");
+        let Some(token) = arguments.get("confirmation_token").and_then(Value::as_str) else {
+            return false;
+        };
+        let Some(confirmation) = self.confirmations.remove(token) else {
+            return false;
+        };
+        confirmation.expires_at >= Instant::now()
+            && confirmation.operation == operation
+            && confirmation.resource_id == resource_id
     }
 
     fn tool_remember_batch(&mut self, arguments: &Value) -> Result<Value, String> {
@@ -650,6 +865,7 @@ impl Session {
         if items.len() > 100 {
             return Err("remember batch maximum is 100 items".to_owned());
         }
+        let before_count = self.engine.count().map_err(|error| error.to_string())?;
         let mut requests = Vec::with_capacity(items.len());
         for item in items {
             let content = required_string(item, "content")?;
@@ -671,7 +887,9 @@ impl Session {
             });
         }
         let outcomes = self.engine.remember_batch(requests);
+        let after_count = self.engine.count().map_err(|error| error.to_string())?;
         Ok(json!({
+            "created":after_count.saturating_sub(before_count),
             "results": outcomes.into_iter().map(|outcome| match outcome.result {
                 Ok(memory) => json!({"index": outcome.index, "id": memory.id}),
                 Err(error) => json!({"index": outcome.index, "error": error}),
@@ -685,6 +903,7 @@ impl Session {
         let adapter = parse_capture_adapter(arguments)?;
         let now = now_ms();
         let context = remember_context(arguments, &content, now)?;
+        let before_count = self.engine.count().map_err(|error| error.to_string())?;
         let entry = self
             .engine
             .ingest_event(
@@ -715,10 +934,17 @@ impl Session {
                 .into_ingest_request(),
             )
             .map_err(|error| error.to_string())?;
-        Ok(ingestion_json(&entry))
+        let after_count = self.engine.count().map_err(|error| error.to_string())?;
+        let mut result = ingestion_json(&entry);
+        result["materialized_now"] = Value::Bool(after_count > before_count);
+        Ok(result)
     }
 
-    fn tool_entity_lookup(&mut self, arguments: &Value) -> Result<Value, String> {
+    fn tool_entity_lookup(
+        &mut self,
+        arguments: &Value,
+        disclosure: Option<DisclosureContext>,
+    ) -> Result<Value, String> {
         match arguments.get("name").and_then(Value::as_str) {
             Some(name) => {
                 let kind = arguments
@@ -731,9 +957,9 @@ impl Session {
                     .entity_memories_scoped(
                         kind,
                         name,
-                        &recall_scope(arguments)?,
-                        session_disclosure_authority(arguments)?,
-                        parse_memory_purpose(arguments, "disclosure_purpose")?,
+                        &scoped_recall_scope(arguments)?,
+                        disclosure_authority(arguments, disclosure)?,
+                        disclosure_purpose(arguments, disclosure)?,
                     )
                     .map_err(|error| error.to_string())?;
                 Ok(json!({
@@ -746,7 +972,7 @@ impl Session {
                 }))
             }
             None => {
-                let scope = recall_scope(arguments)?;
+                let scope = scoped_recall_scope(arguments)?;
                 let mut entities = Vec::new();
                 for entity in self.engine.entities().map_err(|error| error.to_string())? {
                     let visible = self
@@ -755,8 +981,8 @@ impl Session {
                             entity.kind,
                             &entity.name,
                             &scope,
-                            session_disclosure_authority(arguments)?,
-                            parse_memory_purpose(arguments, "disclosure_purpose")?,
+                            disclosure_authority(arguments, disclosure)?,
+                            disclosure_purpose(arguments, disclosure)?,
                         )
                         .map_err(|error| error.to_string())?;
                     if !visible.is_empty() {
@@ -795,7 +1021,11 @@ impl Session {
         }))
     }
 
-    fn tool_recall_at(&mut self, arguments: &Value) -> Result<Value, String> {
+    fn tool_recall_at(
+        &mut self,
+        arguments: &Value,
+        disclosure: Option<DisclosureContext>,
+    ) -> Result<Value, String> {
         let query = required_string(arguments, "query")?;
         let embedding = self.embedding_from(arguments, &query)?;
         let points = snapshot_points(&self.data_dir).map_err(|error| error.to_string())?;
@@ -821,10 +1051,10 @@ impl Session {
                     .map_or(DEFAULT_RECALL_LIMIT, |value| value.max(1) as usize),
                 current_state: None,
                 now_ms: now_ms(),
-                scope: Some(recall_scope(arguments)?),
+                scope: Some(scoped_recall_scope(arguments)?),
                 embedding_space: Some(self.embedding_space_from(arguments)?),
-                disclosure_authority: session_disclosure_authority(arguments)?,
-                disclosure_purpose: parse_memory_purpose(arguments, "disclosure_purpose")?,
+                disclosure_authority: disclosure_authority(arguments, disclosure)?,
+                disclosure_purpose: disclosure_purpose(arguments, disclosure)?,
                 options: snapshot_recall_options(),
             },
         )
@@ -908,6 +1138,39 @@ impl Session {
     }
 }
 
+fn inject_local_identity(message: &mut Value, tenant_id: &TenantId) {
+    let Some(params) = message.get_mut("params").and_then(Value::as_object_mut) else {
+        return;
+    };
+    params.insert("tenant_id".to_owned(), Value::String(tenant_id.to_string()));
+    if let Some(uri) = params.get("uri").and_then(Value::as_str).map(str::to_owned) {
+        let (base, query) = uri.split_once('?').unwrap_or((&uri, ""));
+        let mut pairs = query
+            .split('&')
+            .filter(|pair| !pair.is_empty() && !pair.starts_with("tenant_id="))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        pairs.insert(0, format!("tenant_id={}", uri_encode(tenant_id.as_str())));
+        params.insert(
+            "uri".to_owned(),
+            Value::String(format!("{base}?{}", pairs.join("&"))),
+        );
+    }
+    if let Some(arguments) = params.get_mut("arguments").and_then(Value::as_object_mut) {
+        arguments.insert("tenant_id".to_owned(), Value::String(tenant_id.to_string()));
+        if let Some(items) = arguments.get_mut("items").and_then(Value::as_array_mut) {
+            for item in items.iter_mut().filter_map(Value::as_object_mut) {
+                item.insert("tenant_id".to_owned(), Value::String(tenant_id.to_string()));
+            }
+        }
+    }
+}
+
+fn same_resource_uri(left: &str, right: &str) -> bool {
+    left.split_once('?').map_or(left, |(base, _)| base)
+        == right.split_once('?').map_or(right, |(base, _)| base)
+}
+
 fn scored_json(scored: &ScoredMemory) -> Value {
     json!({
         "id": scored.memory.id,
@@ -949,25 +1212,77 @@ fn citation_json(citation: &celiums_memory_engine::Citation) -> Value {
     })
 }
 
-fn is_mutating_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "remember"
-            | "journal_write"
-            | "memory_update"
-            | "memory_delete"
-            | "remember_batch"
-            | "capture_event"
-            | "consolidate"
-            | "snapshot_now"
-            | "run_lifecycle"
-    )
+fn resource_change(name: &str, arguments: &Value, result: &Value) -> Option<ResourceChange> {
+    let scope = scoped_recall_scope(arguments).ok();
+    match name {
+        "remember" => resource_list_change(),
+        "remember_batch" if result.get("created").and_then(Value::as_u64).unwrap_or(0) > 0 => {
+            resource_list_change()
+        }
+        "capture_event"
+            if result.get("materialized_now").and_then(Value::as_bool) == Some(true) =>
+        {
+            resource_list_change()
+        }
+        "memory_update" => result.get("id").and_then(Value::as_str).and_then(|id| {
+            scope.map(|scope| {
+                if mcp_update_changes_membership(arguments) {
+                    ResourceChange {
+                        list_changed: true,
+                        updated_uris: BTreeSet::from([memory_resource_uri(id, &scope)]),
+                        tenant_wide: false,
+                    }
+                } else {
+                    updated_resource(id, &scope)
+                }
+            })
+        }),
+        "memory_delete" if result.get("deleted").and_then(Value::as_bool) == Some(true) => {
+            resource_list_change()
+        }
+        "consolidate" if result.get("created").and_then(Value::as_u64).unwrap_or(0) > 0 => {
+            resource_list_change()
+        }
+        "run_lifecycle"
+            if result.get("decayed").and_then(Value::as_u64).unwrap_or(0) > 0
+                || result.get("archived").and_then(Value::as_u64).unwrap_or(0) > 0 =>
+        {
+            Some(ResourceChange {
+                list_changed: result.get("archived").and_then(Value::as_u64).unwrap_or(0) > 0,
+                updated_uris: BTreeSet::new(),
+                tenant_wide: true,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn mcp_update_changes_membership(arguments: &Value) -> bool {
+    arguments
+        .get("patch")
+        .is_some_and(|patch| patch.get("state").is_some() || patch.get("scope").is_some())
+}
+
+fn resource_list_change() -> Option<ResourceChange> {
+    Some(ResourceChange {
+        list_changed: true,
+        updated_uris: BTreeSet::new(),
+        tenant_wide: false,
+    })
+}
+
+fn updated_resource(id: &str, scope: &RecallScope) -> ResourceChange {
+    ResourceChange {
+        list_changed: false,
+        updated_uris: BTreeSet::from([memory_resource_uri(id, scope)]),
+        tenant_wide: false,
+    }
 }
 
 fn memory_resource_uri(id: &str, scope: &RecallScope) -> String {
     let mut parameters = vec![
-        format!("tenant_id={}", scope.tenant_id),
-        format!("user_id={}", scope.user_id),
+        format!("tenant_id={}", uri_encode(scope.tenant_id.as_str())),
+        format!("user_id={}", uri_encode(scope.user_id.as_str())),
     ];
     for (name, value) in [
         (
@@ -984,7 +1299,7 @@ fn memory_resource_uri(id: &str, scope: &RecallScope) -> String {
         ),
     ] {
         if let Some(value) = value {
-            parameters.push(format!("{name}={value}"));
+            parameters.push(format!("{name}={}", uri_encode(value)));
         }
     }
     format!("celiums-memory://memories/{id}?{}", parameters.join("&"))
@@ -1010,9 +1325,16 @@ fn parse_memory_resource_uri(uri: &str) -> Result<(String, Value), String> {
         {
             return Err("invalid resource query parameter".to_owned());
         }
-        arguments.insert(key.to_owned(), Value::String(value.to_owned()));
+        let decoded = percent_decode_str(value)
+            .decode_utf8()
+            .map_err(|_| "invalid resource query encoding")?;
+        arguments.insert(key.to_owned(), Value::String(decoded.into_owned()));
     }
     Ok((id.to_owned(), Value::Object(arguments)))
+}
+
+fn uri_encode(value: &str) -> String {
+    utf8_percent_encode(value, NON_ALPHANUMERIC).to_string()
 }
 
 fn hydrated_json(memory: &celiums_memory_engine::HydratedMemory) -> Value {
@@ -1155,8 +1477,26 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "memory_delete",
             "Hard-delete one visible memory and its vector/entity projections.",
-            &scoped_id_schema(),
+            &{
+                let mut schema = scoped_id_schema();
+                schema["properties"]["confirmation_token"] = json!({"type":"string"});
+                schema
+            },
             false,
+        ),
+        tool(
+            "confirm_destructive",
+            "Issue a short-lived one-use confirmation for a destructive local MCP operation.",
+            &json!({
+                "type":"object",
+                "properties":{
+                    "operation":{"type":"string","enum":["memory_delete","consolidate","run_lifecycle"]},
+                    "resource_id":{"type":"string"}
+                },
+                "required":["operation","resource_id"],
+                "additionalProperties":false
+            }),
+            true,
         ),
         tool(
             "remember_batch",
@@ -1304,7 +1644,11 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "run_lifecycle",
             "Apply lifecycle decay: idle memories lose importance; below 0.05 they archive.",
-            &json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            &json!({
+                "type":"object",
+                "properties":{"confirmation_token":{"type":"string"}},
+                "additionalProperties":false
+            }),
             false,
         ),
         tool(
@@ -1438,6 +1782,26 @@ fn session_disclosure_authority(
     }
 }
 
+fn disclosure_authority(
+    arguments: &Value,
+    authenticated: Option<DisclosureContext>,
+) -> Result<DisclosureAuthority, String> {
+    authenticated.map_or_else(
+        || session_disclosure_authority(arguments),
+        |context| Ok(context.authority),
+    )
+}
+
+fn disclosure_purpose(
+    arguments: &Value,
+    authenticated: Option<DisclosureContext>,
+) -> Result<MemoryPurpose, String> {
+    authenticated.map_or_else(
+        || parse_memory_purpose(arguments, "disclosure_purpose"),
+        |context| Ok(context.purpose),
+    )
+}
+
 fn parse_capture_adapter(arguments: &Value) -> Result<CaptureAdapter, String> {
     match arguments.get("adapter").and_then(Value::as_str) {
         Some("opencode_codex") => Ok(CaptureAdapter::OpenCodeCodex),
@@ -1499,6 +1863,12 @@ fn recall_scope(arguments: &Value) -> Result<RecallScope, String> {
         conversation_id: optional_identity(arguments, "conversation_id", ConversationId::new)?,
         session_id: optional_identity(arguments, "session_id", SessionId::new)?,
     })
+}
+
+fn scoped_recall_scope(arguments: &Value) -> Result<RecallScope, String> {
+    arguments
+        .get("_authenticated_scope")
+        .map_or_else(|| recall_scope(arguments), recall_scope)
 }
 
 fn snapshot_recall_options() -> celiums_memory_engine::RecallOptions {
@@ -1600,8 +1970,30 @@ fn tool_success(value: &Value) -> Value {
 fn tool_error(message: &str) -> Value {
     json!({
         "content": [{ "type": "text", "text": message }],
-        "isError": true
+        "isError": true,
+        "structuredContent":{"error":{"code":tool_error_code(message)}}
     })
+}
+
+fn tool_error_code(message: &str) -> &'static str {
+    if message.contains("embedding")
+        || message.contains("quantization")
+        || message.contains("vector must contain")
+        || message.contains("non-finite")
+        || message.contains("zero vector")
+    {
+        "invalid_request"
+    } else if message.contains("revision conflict") {
+        "conflict"
+    } else if message.contains("not found") {
+        "resource_not_found"
+    } else if message.contains("idempotency key was already used")
+        || message.contains("already ingested with a different payload")
+    {
+        "conflict"
+    } else {
+        "operation_failed"
+    }
 }
 
 fn rpc_result(id: &Value, result: &Value) -> Value {
@@ -1653,7 +2045,7 @@ mod tests {
     #[test]
     fn tool_definitions_are_valid_objects() {
         let tools = tool_definitions();
-        assert_eq!(tools.len(), 18);
+        assert_eq!(tools.len(), 19);
         assert!(tools.iter().all(|tool| tool["inputSchema"].is_object()));
         assert!(tools.iter().all(|tool| tool["name"].is_string()));
     }

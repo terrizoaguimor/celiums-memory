@@ -78,7 +78,7 @@ fn full_remember_recall_round_trip_over_mcp() {
             "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}
         }))
         .expect("tools list");
-    assert_eq!(tools["result"]["tools"].as_array().map(Vec::len), Some(18));
+    assert_eq!(tools["result"]["tools"].as_array().map(Vec::len), Some(19));
 
     let remembered = call(
         &mut session,
@@ -183,10 +183,18 @@ fn full_remember_recall_round_trip_over_mcp() {
         json!({"tenant_id":"local","user_id":"mario","project_id":"celiums-memory"}),
     );
     assert_eq!(listed["structuredContent"]["matched"], 1);
+    let delete_confirmation = call(
+        &mut session,
+        "confirm_destructive",
+        json!({"operation":"memory_delete","resource_id":id}),
+    );
     let deleted = call(
         &mut session,
         "memory_delete",
-        json!({"id":id,"tenant_id":"local","user_id":"mario","project_id":"celiums-memory"}),
+        json!({
+            "id":id,"tenant_id":"local","user_id":"mario","project_id":"celiums-memory",
+            "confirmation_token":delete_confirmation["structuredContent"]["confirmation_token"]
+        }),
     );
     assert_eq!(deleted["structuredContent"]["deleted"], true);
     assert!(results[0]["channels"]["semantic"].is_number(), "glass box");
@@ -418,15 +426,32 @@ fn phase2_tools_work_over_mcp() {
     );
 
     // Consolidation over MCP.
+    let consolidate_confirmation = call(
+        &mut session,
+        "confirm_destructive",
+        json!({"operation":"consolidate","resource_id":"tenant"}),
+    );
     let consolidated = call(
         &mut session,
         "consolidate",
-        json!({ "text": "user: We settled on Hyphae snapshots for point-in-time recall going forward" }),
+        json!({
+            "text":"user: We settled on Hyphae snapshots for point-in-time recall going forward",
+            "confirmation_token":consolidate_confirmation["structuredContent"]["confirmation_token"]
+        }),
     );
     assert_eq!(consolidated["structuredContent"]["created"], 1);
 
     // Lifecycle runs (nothing to archive this young).
-    let lifecycle = call(&mut session, "run_lifecycle", json!({}));
+    let lifecycle_confirmation = call(
+        &mut session,
+        "confirm_destructive",
+        json!({"operation":"run_lifecycle","resource_id":"tenant"}),
+    );
+    let lifecycle = call(
+        &mut session,
+        "run_lifecycle",
+        json!({"confirmation_token":lifecycle_confirmation["structuredContent"]["confirmation_token"]}),
+    );
     assert_eq!(lifecycle["isError"], false);
 }
 
@@ -509,7 +534,7 @@ fn resources_read_and_subscriptions_are_policy_safe() {
     );
     let notifications = session.drain_notifications();
     assert!(
-        notifications
+        !notifications
             .iter()
             .any(|message| { message["method"] == "notifications/resources/updated" })
     );

@@ -153,11 +153,11 @@ no uncontrolled duplicates; frozen input and clock produce identical output.
 
 **Goal:** expose one contract over local MCP, remote MCP and HTTP.
 
-- Axum server, REST v1, MCP Streamable HTTP and OpenAPI.
-- API keys, tenant resolution and OIDC interface.
-- RBAC, authority levels and confirmation tokens for destructive operations.
-- Quotas, rate limits, health, readiness and version endpoints.
-- Stable typed errors and request IDs.
+- [x] Axum server, REST v1, MCP Streamable HTTP and OpenAPI.
+- [x] API keys, tenant resolution and OIDC interface.
+- [x] RBAC, authority levels and confirmation tokens for destructive operations.
+- [x] Quotas, rate limits, health, readiness and version endpoints.
+- [x] Stable typed errors and request IDs.
 
 **Exit gate:** transport conformance tests pass; auth bypass and tenant fuzz
 tests are green; destructive actions require explicit elevated authority.

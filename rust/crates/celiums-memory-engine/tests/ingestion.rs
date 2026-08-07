@@ -148,8 +148,9 @@ fn rejected_event_is_accounted_for_without_becoming_memory() {
     assert_eq!(entry.status, IngestionStatus::Rejected);
     assert_eq!(
         entry.event_id,
-        EventId::derive(
+        EventId::derive_for_user(
             &identity().tenant_id,
+            Some(&identity().user_id),
             &SourceNamespace::new("opencode").expect("namespace"),
             &SourceEventId::new("action-9").expect("source event")
         )

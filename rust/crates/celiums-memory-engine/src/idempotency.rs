@@ -11,7 +11,7 @@ use hyphae_query::{Record, Value};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{Memory, TenantId};
+use crate::{Memory, TenantId, UserId};
 
 const MAX_KEY_BYTES: usize = 255;
 const REMEMBER_KIND: &str = "remember";
@@ -79,16 +79,33 @@ impl RememberIdempotencyRecord {
         }
     }
 
-    pub(crate) fn durable_key(tenant_id: &TenantId, key: &IdempotencyKey) -> Vec<u8> {
+    pub(crate) fn durable_key(
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        key: &IdempotencyKey,
+    ) -> Vec<u8> {
+        let mut hasher = blake3::Hasher::new();
+        write_hash_field(&mut hasher, b"tenant_id", tenant_id.as_str().as_bytes());
+        write_hash_field(&mut hasher, b"user_id", user_id.as_str().as_bytes());
+        write_hash_field(&mut hasher, b"idempotency_key", key.as_str().as_bytes());
+        format!("{REMEMBER_KEY_PREFIX}{}", hasher.finalize().to_hex()).into_bytes()
+    }
+
+    pub(crate) fn legacy_durable_key(tenant_id: &TenantId, key: &IdempotencyKey) -> Vec<u8> {
         let mut hasher = blake3::Hasher::new();
         write_hash_field(&mut hasher, b"tenant_id", tenant_id.as_str().as_bytes());
         write_hash_field(&mut hasher, b"idempotency_key", key.as_str().as_bytes());
         format!("{REMEMBER_KEY_PREFIX}{}", hasher.finalize().to_hex()).into_bytes()
     }
 
-    pub(crate) fn to_record(&self, tenant_id: &TenantId, key: &IdempotencyKey) -> Record {
+    pub(crate) fn to_record(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        key: &IdempotencyKey,
+    ) -> Record {
         Record::new(
-            Self::durable_key(tenant_id, key),
+            Self::durable_key(tenant_id, user_id, key),
             Value::Object(BTreeMap::from([
                 ("kind".to_owned(), Value::String(self.kind.clone())),
                 (
@@ -148,6 +165,18 @@ pub enum IdempotencyDecodeError {
 /// deliberately excluded. The caller-provided event time remains part of the
 /// request identity.
 pub(crate) fn canonical_remember_hash(memory: &Memory, vector: &Q15Vector) -> blake3::Hash {
+    canonical_remember_hash_with_governance(memory, vector, true)
+}
+
+pub(crate) fn legacy_remember_hash(memory: &Memory, vector: &Q15Vector) -> blake3::Hash {
+    canonical_remember_hash_with_governance(memory, vector, false)
+}
+
+fn canonical_remember_hash_with_governance(
+    memory: &Memory,
+    vector: &Q15Vector,
+    include_governance: bool,
+) -> blake3::Hash {
     let mut hasher = blake3::Hasher::new();
     hasher.update(REQUEST_HASH_DOMAIN);
     write_hash_field(&mut hasher, b"content", memory.content.as_bytes());
@@ -155,6 +184,18 @@ pub(crate) fn canonical_remember_hash(memory: &Memory, vector: &Q15Vector) -> bl
     write_provenance(&mut hasher, memory);
     write_optional_i64(&mut hasher, b"event_at_ms", memory.event_at_ms);
     write_hash_field(&mut hasher, b"scope", memory.scope.as_str().as_bytes());
+    if include_governance && let Some(governance) = &memory.governance {
+        write_hash_field(
+            &mut hasher,
+            b"content_role",
+            content_role_name(governance.0.role).as_bytes(),
+        );
+        write_hash_field(
+            &mut hasher,
+            b"purpose",
+            memory_purpose_name(governance.0.purpose).as_bytes(),
+        );
+    }
     write_hash_field(
         &mut hasher,
         b"memory_type",
@@ -187,11 +228,33 @@ pub(crate) fn canonical_remember_hash(memory: &Memory, vector: &Q15Vector) -> bl
     hasher.finalize()
 }
 
+fn content_role_name(role: celiums_cognition::ContentRole) -> &'static str {
+    match role {
+        celiums_cognition::ContentRole::Observation => "observation",
+        celiums_cognition::ContentRole::Description => "description",
+        celiums_cognition::ContentRole::OperationalRequest => "operational_request",
+    }
+}
+
+fn memory_purpose_name(purpose: celiums_cognition::MemoryPurpose) -> &'static str {
+    match purpose {
+        celiums_cognition::MemoryPurpose::ConversationalContext => "conversational_context",
+        celiums_cognition::MemoryPurpose::Personalization => "personalization",
+        celiums_cognition::MemoryPurpose::TaskExecution => "task_execution",
+        celiums_cognition::MemoryPurpose::SafetyAudit => "safety_audit",
+    }
+}
+
 /// Derives the stable UUID assigned to an idempotent remember operation.
-pub(crate) fn deterministic_remember_uuid(tenant_id: &TenantId, key: &IdempotencyKey) -> Uuid {
+pub(crate) fn deterministic_remember_uuid(
+    tenant_id: &TenantId,
+    user_id: &UserId,
+    key: &IdempotencyKey,
+) -> Uuid {
     let mut hasher = blake3::Hasher::new();
     hasher.update(UUID_DOMAIN);
     write_hash_field(&mut hasher, b"tenant_id", tenant_id.as_str().as_bytes());
+    write_hash_field(&mut hasher, b"user_id", user_id.as_str().as_bytes());
     write_hash_field(&mut hasher, b"idempotency_key", key.as_str().as_bytes());
     let digest = hasher.finalize();
     let mut bytes = [0_u8; 16];
@@ -434,10 +497,12 @@ mod tests {
     fn record_codec_and_domain_identifiers_are_deterministic() {
         let tenant = TenantId::new("tenant-a").expect("tenant");
         let other_tenant = TenantId::new("tenant-b").expect("tenant");
+        let user = UserId::new("user-a").expect("user");
+        let other_user = UserId::new("user-b").expect("user");
         let key = IdempotencyKey::new("request-1").expect("key");
         let record_value =
             RememberIdempotencyRecord::new("memory-1".to_owned(), blake3::hash(b"request"));
-        let record = record_value.to_record(&tenant, &key);
+        let record = record_value.to_record(&tenant, &user, &key);
 
         assert_eq!(
             RememberIdempotencyRecord::from_record(&record).expect("decode"),
@@ -445,16 +510,24 @@ mod tests {
         );
         assert!(record.key.starts_with(REMEMBER_KEY_PREFIX.as_bytes()));
         assert_ne!(
-            RememberIdempotencyRecord::durable_key(&tenant, &key),
-            RememberIdempotencyRecord::durable_key(&other_tenant, &key)
-        );
-        assert_eq!(
-            deterministic_remember_uuid(&tenant, &key),
-            deterministic_remember_uuid(&tenant, &key)
+            RememberIdempotencyRecord::durable_key(&tenant, &user, &key),
+            RememberIdempotencyRecord::durable_key(&other_tenant, &user, &key)
         );
         assert_ne!(
-            deterministic_remember_uuid(&tenant, &key),
-            deterministic_remember_uuid(&other_tenant, &key)
+            RememberIdempotencyRecord::durable_key(&tenant, &user, &key),
+            RememberIdempotencyRecord::durable_key(&tenant, &other_user, &key)
+        );
+        assert_eq!(
+            deterministic_remember_uuid(&tenant, &user, &key),
+            deterministic_remember_uuid(&tenant, &user, &key)
+        );
+        assert_ne!(
+            deterministic_remember_uuid(&tenant, &user, &key),
+            deterministic_remember_uuid(&other_tenant, &user, &key)
+        );
+        assert_ne!(
+            deterministic_remember_uuid(&tenant, &user, &key),
+            deterministic_remember_uuid(&tenant, &other_user, &key)
         );
     }
 }

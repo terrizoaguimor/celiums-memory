@@ -75,7 +75,7 @@ use crate::graph::{
 };
 use crate::idempotency::{
     IdempotencyDecodeError, IdempotencyKey, RememberIdempotencyRecord, canonical_remember_hash,
-    deterministic_remember_uuid,
+    deterministic_remember_uuid, legacy_remember_hash,
 };
 use crate::identity::{RecallScope, RememberContext, TenantId};
 use crate::ingestion::{
@@ -979,11 +979,22 @@ impl MemoryEngine {
         request: IngestEventRequest,
     ) -> Result<IngestionEntry, MemoryEngineError> {
         self.require_tenant(&request.identity.tenant_id)?;
-        let event_id = EventId::derive(
+        let event_id = EventId::derive_for_user(
+            &self.tenant_id,
+            Some(&request.identity.user_id),
+            &request.source_namespace,
+            &request.source_event_id,
+        );
+        #[allow(deprecated)]
+        let legacy_event_id = EventId::derive(
             &self.tenant_id,
             &request.source_namespace,
             &request.source_event_id,
         );
+        let event_id = match self.get_ingestion_unscoped(&legacy_event_id)? {
+            Some(entry) if entry.identity.user_id == request.identity.user_id => legacy_event_id,
+            _ => event_id,
+        };
         let request_hash = canonical_ingest_event_hash(&request);
         let mut entry = self.prepare_ingestion_entry(&request, event_id, request_hash)?;
 
@@ -1298,7 +1309,7 @@ impl MemoryEngine {
         let scope = batch_scope(&request.events)?;
         self.require_tenant(&scope.tenant_id)?;
         let request_hash = canonical_batch_hash(&request.events);
-        let existing = self.get_ingestion_batch_unscoped(&request.batch_id)?;
+        let existing = self.get_ingestion_batch_unscoped(&scope.user_id, &request.batch_id)?;
         if existing
             .as_ref()
             .is_some_and(|batch| batch.request_hash != request_hash)
@@ -1308,20 +1319,47 @@ impl MemoryEngine {
             });
         }
 
+        for event in &request.events {
+            if let Some(entry) = self.ingestion_entry_for_request(event)? {
+                let event_hash = canonical_ingest_event_hash(event);
+                if entry.request_hash != event_hash {
+                    return Err(MemoryEngineError::IngestionConflict {
+                        event_id: entry.event_id.to_string(),
+                    });
+                }
+            }
+        }
+
         if existing.is_none() && request.events.iter().all(|event| event.embedding.is_none()) {
             return self.ingest_raw_batch(request, scope, request_hash);
         }
 
         let mut items = Vec::with_capacity(request.events.len());
         for (index, event) in request.events.into_iter().enumerate() {
-            let event_id = EventId::derive(
+            let user_event_id = EventId::derive_for_user(
+                &self.tenant_id,
+                Some(&event.identity.user_id),
+                &event.source_namespace,
+                &event.source_event_id,
+            );
+            #[allow(deprecated)]
+            let legacy_event_id = EventId::derive(
                 &self.tenant_id,
                 &event.source_namespace,
                 &event.source_event_id,
             );
+            let legacy_matches = self
+                .get_ingestion_unscoped(&legacy_event_id)?
+                .is_some_and(|entry| entry.identity.user_id == event.identity.user_id);
             let entry = match self.ingest_event(event) {
                 Ok(entry) => entry,
-                Err(error) => self.get_ingestion_unscoped(&event_id)?.ok_or(error)?,
+                Err(error) => self
+                    .get_ingestion_unscoped(if legacy_matches {
+                        &legacy_event_id
+                    } else {
+                        &user_event_id
+                    })?
+                    .ok_or(error)?,
             };
             let mut outcome = BatchItemOutcome::from(&entry);
             outcome.index = index;
@@ -1357,14 +1395,34 @@ impl MemoryEngine {
             .events
             .iter()
             .map(|event| {
-                let event_id = EventId::derive(
+                let user_event_id = EventId::derive_for_user(
+                    &self.tenant_id,
+                    Some(&event.identity.user_id),
+                    &event.source_namespace,
+                    &event.source_event_id,
+                );
+                #[allow(deprecated)]
+                let legacy_event_id = EventId::derive(
                     &self.tenant_id,
                     &event.source_namespace,
                     &event.source_event_id,
                 );
-                new_ingestion_entry(event, event_id, canonical_ingest_event_hash(event))
+                let event_id = match self.get_ingestion_unscoped(&legacy_event_id)? {
+                    Some(entry) if entry.identity.user_id == event.identity.user_id => {
+                        legacy_event_id
+                    }
+                    _ => user_event_id,
+                };
+                match self.get_ingestion_unscoped(&event_id)? {
+                    Some(entry) => Ok(entry),
+                    None => Ok(new_ingestion_entry(
+                        event,
+                        event_id,
+                        canonical_ingest_event_hash(event),
+                    )),
+                }
             })
-            .collect();
+            .collect::<Result<_, MemoryEngineError>>()?;
         let items = entries
             .iter()
             .enumerate()
@@ -1383,6 +1441,30 @@ impl MemoryEngine {
         Ok(batch)
     }
 
+    fn ingestion_entry_for_request(
+        &self,
+        event: &IngestEventRequest,
+    ) -> Result<Option<IngestionEntry>, MemoryEngineError> {
+        let user_event_id = EventId::derive_for_user(
+            &self.tenant_id,
+            Some(&event.identity.user_id),
+            &event.source_namespace,
+            &event.source_event_id,
+        );
+        if let Some(entry) = self.get_ingestion_unscoped(&user_event_id)? {
+            return Ok(Some(entry));
+        }
+        #[allow(deprecated)]
+        let legacy_event_id = EventId::derive(
+            &self.tenant_id,
+            &event.source_namespace,
+            &event.source_event_id,
+        );
+        Ok(self
+            .get_ingestion_unscoped(&legacy_event_id)?
+            .filter(|entry| entry.identity.user_id == event.identity.user_id))
+    }
+
     /// Gets one visible durable ingestion batch.
     ///
     /// # Errors
@@ -1395,20 +1477,31 @@ impl MemoryEngine {
     ) -> Result<Option<IngestionBatch>, MemoryEngineError> {
         self.require_tenant(&scope.tenant_id)?;
         Ok(self
-            .get_ingestion_batch_unscoped(batch_id)?
+            .get_ingestion_batch_unscoped(&scope.user_id, batch_id)?
             .filter(|batch| recall_scope_visible_to(&batch.scope, scope)))
     }
 
     fn get_ingestion_batch_unscoped(
         &self,
+        user_id: &crate::UserId,
         batch_id: &BatchId,
     ) -> Result<Option<IngestionBatch>, MemoryEngineError> {
-        self.hyphae
-            .get_record(&IngestionBatch::durable_key(&self.tenant_id, batch_id))?
+        let record = match self.hyphae.get_record(&IngestionBatch::durable_key(
+            &self.tenant_id,
+            user_id,
+            batch_id,
+        ))? {
+            Some(record) => Some(record),
+            None => self.hyphae.get_record(&IngestionBatch::legacy_durable_key(
+                &self.tenant_id,
+                batch_id,
+            ))?,
+        };
+        let batch = record
             .as_ref()
             .map(IngestionBatch::from_record)
-            .transpose()
-            .map_err(Into::into)
+            .transpose()?;
+        Ok(batch.filter(|batch| batch.scope.user_id == *user_id))
     }
 
     fn persist_ingestion_batch(&mut self, batch: &IngestionBatch) -> Result<(), MemoryEngineError> {
@@ -1830,7 +1923,10 @@ impl MemoryEngine {
         let (classified_importance, _signals) = classify_importance(&request.content);
         let memory_id = request.idempotency_key.as_ref().map_or_else(
             || Uuid::now_v7().to_string(),
-            |key| deterministic_remember_uuid(&self.tenant_id, key).to_string(),
+            |key| {
+                deterministic_remember_uuid(&self.tenant_id, &context.identity.user_id, key)
+                    .to_string()
+            },
         );
         let memory = Memory {
             id: memory_id,
@@ -1863,12 +1959,24 @@ impl MemoryEngine {
         let request_hash = canonical_remember_hash(&memory, &vector);
 
         if let Some(key) = &request.idempotency_key {
-            let ledger_key = RememberIdempotencyRecord::durable_key(&self.tenant_id, key);
-            if let Some(record) = self.hyphae.get_record(&ledger_key)? {
+            let ledger_key = RememberIdempotencyRecord::durable_key(
+                &self.tenant_id,
+                &memory.identity.user_id,
+                key,
+            );
+            let (record, legacy) = match self.hyphae.get_record(&ledger_key)? {
+                Some(record) => (Some(record), false),
+                None => (
+                    self.hyphae
+                        .get_record(&RememberIdempotencyRecord::legacy_durable_key(
+                            &self.tenant_id,
+                            key,
+                        ))?,
+                    true,
+                ),
+            };
+            if let Some(record) = record {
                 let existing = RememberIdempotencyRecord::from_record(&record)?;
-                if existing.request_hash != request_hash {
-                    return Err(MemoryEngineError::IdempotencyConflict);
-                }
                 let record = self
                     .hyphae
                     .get_record(existing.memory_id.as_bytes())?
@@ -1876,19 +1984,33 @@ impl MemoryEngine {
                         id: existing.memory_id.clone(),
                     })?;
                 let existing_memory = Memory::from_record(&record)?;
-                // Repair a vector write interrupted after the atomic document commit.
-                if existing_memory
-                    .governance
-                    .as_ref()
-                    .is_none_or(|state| state.0.treatment != Treatment::Quarantined)
-                {
-                    self.hyphae.put_vectors(
-                        deterministic_phase_uuid(&self.tenant_id, key, "vector"),
-                        &memory_space(),
-                        &[(existing.memory_id.as_bytes().to_vec(), vector)],
-                    )?;
+                if !legacy || existing_memory.identity.user_id == memory.identity.user_id {
+                    if existing.request_hash != request_hash
+                        && (!legacy
+                            || existing.request_hash != legacy_remember_hash(&memory, &vector)
+                            || !same_governance_request(&existing_memory, &memory))
+                    {
+                        return Err(MemoryEngineError::IdempotencyConflict);
+                    }
+                    // Repair a vector write interrupted after the atomic document commit.
+                    if existing_memory
+                        .governance
+                        .as_ref()
+                        .is_none_or(|state| state.0.treatment != Treatment::Quarantined)
+                    {
+                        self.hyphae.put_vectors(
+                            deterministic_phase_uuid(
+                                &self.tenant_id,
+                                &memory.identity.user_id,
+                                key,
+                                "vector",
+                            ),
+                            &memory_space(),
+                            &[(existing.memory_id.as_bytes().to_vec(), vector)],
+                        )?;
+                    }
+                    return Ok(existing_memory);
                 }
-                return Ok(existing_memory);
             }
         }
 
@@ -1896,12 +2018,25 @@ impl MemoryEngine {
         if let Some(key) = &request.idempotency_key {
             let ledger = RememberIdempotencyRecord::new(memory.id.clone(), request_hash);
             self.hyphae.put_records(
-                deterministic_phase_uuid(&self.tenant_id, key, "documents"),
-                &[memory.to_record(), ledger.to_record(&self.tenant_id, key)],
+                deterministic_phase_uuid(
+                    &self.tenant_id,
+                    &memory.identity.user_id,
+                    key,
+                    "documents",
+                ),
+                &[
+                    memory.to_record(),
+                    ledger.to_record(&self.tenant_id, &memory.identity.user_id, key),
+                ],
             )?;
             if !quarantined {
                 self.hyphae.put_vectors(
-                    deterministic_phase_uuid(&self.tenant_id, key, "vector"),
+                    deterministic_phase_uuid(
+                        &self.tenant_id,
+                        &memory.identity.user_id,
+                        key,
+                        "vector",
+                    ),
                     &memory_space(),
                     &[(memory.key(), vector)],
                 )?;
@@ -3647,19 +3782,7 @@ impl MemoryEngine {
     ///
     /// Fails on tenant mismatch or query execution failure.
     pub fn count_visible(&self, scope: &RecallScope) -> Result<u64, MemoryEngineError> {
-        use hyphae_query::{ExecutionLimits, Query};
-        self.require_tenant(&scope.tenant_id)?;
-        let result = self.hyphae.query(
-            &Query {
-                filter: authorization_filter(scope),
-                sort: Vec::new(),
-                cursor: None,
-                limit: 1,
-                aggregation: None,
-            },
-            &ExecutionLimits::default(),
-        )?;
-        Ok(result.matched_records)
+        Ok(u64::try_from(self.authorized_recall_records(scope, None)?.len()).unwrap_or(u64::MAX))
     }
 
     /// Gets one visible memory by ID without reactivation.
@@ -5268,6 +5391,16 @@ impl MemoryEngine {
     }
 }
 
+fn same_governance_request(existing: &Memory, requested: &Memory) -> bool {
+    match (&existing.governance, &requested.governance) {
+        (Some(existing), Some(requested)) => {
+            existing.0.role == requested.0.role && existing.0.purpose == requested.0.purpose
+        }
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 fn migrate_legacy_memories(
     hyphae: &mut HyphaeEngine,
     tenant_id: &TenantId,
@@ -6603,10 +6736,17 @@ fn embedding_space_label(space: &EmbeddingSpaceIdentity) -> String {
     )
 }
 
-fn deterministic_phase_uuid(tenant: &TenantId, key: &IdempotencyKey, phase: &str) -> Uuid {
+fn deterministic_phase_uuid(
+    tenant: &TenantId,
+    user: &crate::UserId,
+    key: &IdempotencyKey,
+    phase: &str,
+) -> Uuid {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"celiums-memory/remember-phase/v1");
     hasher.update(tenant.as_str().as_bytes());
+    hasher.update(&[0]);
+    hasher.update(user.as_str().as_bytes());
     hasher.update(&[0]);
     hasher.update(key.as_str().as_bytes());
     hasher.update(&[0]);

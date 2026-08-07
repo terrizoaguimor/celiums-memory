@@ -489,6 +489,75 @@ fn idempotent_remember_survives_reopen_and_conflicts_on_changed_request() {
 }
 
 #[test]
+fn idempotency_keys_are_isolated_by_user_inside_one_tenant() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut engine = MemoryEngine::open_for_tenant(
+        dir.path(),
+        DIMENSION,
+        RecallConfig::default(),
+        TenantId::new("tenant-a").expect("tenant"),
+    )
+    .expect("open");
+    let key = IdempotencyKey::new("shared-request").expect("key");
+    let mut ids = Vec::new();
+    for user in ["alice", "bob"] {
+        let content = format!("{user} payload");
+        let memory = engine
+            .remember(RememberRequest {
+                content: content.clone(),
+                embedding: embed(1.0, 0.0, 0.0, 0.0),
+                tags: Vec::new(),
+                scope: Scope::Global,
+                importance: None,
+                now_ms: NOW_MS,
+                context: Some(scoped_context(&content, "tenant-a", user, None, None)),
+                embedding_space: None,
+                idempotency_key: Some(key.clone()),
+                content_role: celiums_cognition::ContentRole::Observation,
+                purpose: celiums_cognition::MemoryPurpose::ConversationalContext,
+            })
+            .expect("remember");
+        ids.push(memory.id);
+    }
+    assert_ne!(ids[0], ids[1]);
+    assert_eq!(engine.count().expect("count"), 2);
+}
+
+#[test]
+fn idempotency_hash_includes_governance_role_and_purpose() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut engine =
+        MemoryEngine::open(dir.path(), DIMENSION, RecallConfig::default()).expect("open");
+    let key = IdempotencyKey::new("governance-request").expect("key");
+    let request = |role, purpose| RememberRequest {
+        content: "governed idempotency".to_owned(),
+        embedding: embed(1.0, 0.0, 0.0, 0.0),
+        tags: Vec::new(),
+        scope: Scope::Global,
+        importance: None,
+        now_ms: NOW_MS,
+        context: None,
+        embedding_space: None,
+        idempotency_key: Some(key.clone()),
+        content_role: role,
+        purpose,
+    };
+    engine
+        .remember(request(
+            celiums_cognition::ContentRole::Observation,
+            celiums_cognition::MemoryPurpose::ConversationalContext,
+        ))
+        .expect("first write");
+    assert!(matches!(
+        engine.remember(request(
+            celiums_cognition::ContentRole::Description,
+            celiums_cognition::MemoryPurpose::Personalization,
+        )),
+        Err(MemoryEngineError::IdempotencyConflict)
+    ));
+}
+
+#[test]
 fn filtered_crud_and_batch_preserve_scope_revision_and_projection_cleanup() {
     use celiums_memory_engine::{
         FilterOperator, FilterValue, ListMemoriesRequest, MemoryField, MemoryFilter, MemoryPatch,

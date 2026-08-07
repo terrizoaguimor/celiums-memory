@@ -77,15 +77,29 @@ pub struct InvalidIngestionIdentity {
 pub struct EventId(String);
 
 impl EventId {
-    /// Derives a stable UUID from the physical tenant and namespaced source ID.
+    /// Derives a stable legacy UUID without logical-user isolation.
+    #[deprecated(note = "use derive_for_user for ingestion identities")]
     pub fn derive(
         tenant_id: &TenantId,
+        source_namespace: &SourceNamespace,
+        source_event_id: &SourceEventId,
+    ) -> Self {
+        Self::derive_for_user(tenant_id, None, source_namespace, source_event_id)
+    }
+
+    /// Derives a stable UUID with optional logical-user isolation.
+    pub fn derive_for_user(
+        tenant_id: &TenantId,
+        user_id: Option<&crate::UserId>,
         source_namespace: &SourceNamespace,
         source_event_id: &SourceEventId,
     ) -> Self {
         let mut hasher = blake3::Hasher::new();
         hasher.update(EVENT_ID_DOMAIN);
         write_hash_field(&mut hasher, b"tenant_id", tenant_id.as_str().as_bytes());
+        if let Some(user_id) = user_id {
+            write_hash_field(&mut hasher, b"user_id", user_id.as_str().as_bytes());
+        }
         write_hash_field(
             &mut hasher,
             b"source_namespace",
@@ -295,7 +309,19 @@ impl IngestionBatch {
         self.items = items;
     }
 
-    pub(crate) fn durable_key(tenant_id: &TenantId, batch_id: &BatchId) -> Vec<u8> {
+    pub(crate) fn durable_key(
+        tenant_id: &TenantId,
+        user_id: &crate::UserId,
+        batch_id: &BatchId,
+    ) -> Vec<u8> {
+        let mut hasher = blake3::Hasher::new();
+        write_hash_field(&mut hasher, b"tenant_id", tenant_id.as_str().as_bytes());
+        write_hash_field(&mut hasher, b"user_id", user_id.as_str().as_bytes());
+        write_hash_field(&mut hasher, b"batch_id", batch_id.as_str().as_bytes());
+        format!("{BATCH_KEY_PREFIX}{}", hasher.finalize().to_hex()).into_bytes()
+    }
+
+    pub(crate) fn legacy_durable_key(tenant_id: &TenantId, batch_id: &BatchId) -> Vec<u8> {
         let mut hasher = blake3::Hasher::new();
         write_hash_field(&mut hasher, b"tenant_id", tenant_id.as_str().as_bytes());
         write_hash_field(&mut hasher, b"batch_id", batch_id.as_str().as_bytes());
@@ -304,7 +330,7 @@ impl IngestionBatch {
 
     pub(crate) fn to_record(&self) -> Record {
         Record::new(
-            Self::durable_key(&self.scope.tenant_id, &self.batch_id),
+            Self::durable_key(&self.scope.tenant_id, &self.scope.user_id, &self.batch_id),
             Value::Object(BTreeMap::from([
                 ("kind".to_owned(), string(BATCH_KIND)),
                 ("batch_id".to_owned(), string(self.batch_id.as_str())),
@@ -857,9 +883,12 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(deprecated)]
     fn event_ids_are_stable_and_namespaced() {
         let tenant = TenantId::new("tenant-a").expect("tenant");
         let other_tenant = TenantId::new("tenant-b").expect("tenant");
+        let user = crate::UserId::new("user-a").expect("user");
+        let other_user = crate::UserId::new("user-b").expect("user");
         let namespace = SourceNamespace::new("opencode").expect("namespace");
         let other_namespace = SourceNamespace::new("cursor").expect("namespace");
         let source_id = SourceEventId::new("prompt-42").expect("source id");
@@ -875,6 +904,10 @@ mod tests {
         assert_ne!(
             EventId::derive(&tenant, &namespace, &source_id),
             EventId::derive(&tenant, &other_namespace, &source_id)
+        );
+        assert_ne!(
+            EventId::derive_for_user(&tenant, Some(&user), &namespace, &source_id),
+            EventId::derive_for_user(&tenant, Some(&other_user), &namespace, &source_id)
         );
     }
 }
