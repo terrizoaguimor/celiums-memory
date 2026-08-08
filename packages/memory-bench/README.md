@@ -67,6 +67,25 @@ For the embedded Rust engine, set `MEMORY_TRANSPORT=stdio` (the default),
 optionally `BENCH_RUST_DATA_DIR` for isolated per-instance stores. Set
 `MEMORY_TRANSPORT=http` to retain the in-VPC HTTP deployment path.
 
+## Local P10 Baselines
+
+Before running LongMemEval or LoCoMo, establish the local engineering
+baseline. These numbers are regression references, not public quality claims:
+
+```sh
+cargo run --release --manifest-path rust/Cargo.toml \
+  -p celiums-memory-engine --example benchmark
+cargo run --release --manifest-path rust/Cargo.toml \
+  -p celiums-memory-engine --example p10_benchmark
+node scripts/p10-http-baseline.mjs
+MEMORY_TRANSPORT=stdio CELIUMS_MEMORY_BIN=./rust/target/release/celiums-memory \
+  BENCH_RUST_DATA_DIR=/tmp/celiums-p10-bench \
+  celiums-bench --datasets longmemeval --limit 1 --run p10-local-baseline
+```
+
+The HTTP arm requires an already running native server and a tenant-scoped
+`CELIUMS_BENCH_CMK`; it is intentionally separate from the stdio baseline.
+
 Dataset turns rejected by the production write gate are skipped rather than
 aborting the instance and are reported as `rejectedWrites` on every result.
 This keeps the product contract intact while making its benchmark impact

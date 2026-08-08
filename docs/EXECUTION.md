@@ -259,6 +259,16 @@ stable and an isolated immutable server exists.
 | P10.6 | Native/Container conformance and canary | verified locally | Worker conformance covers tenant binding, journal idempotency and checkpoint pointer/artifact agreement; Rust server checkpoint routes compile and native recovery APIs are covered by portability tests |
 | P10.7 | Phase close | blocked | native/Worker gates and conformance tests pass locally; production Cloudflare canary, R2 binding verification, external journal write and Windows execution-policy failures remain deployment gates |
 
+## P10 benchmark baseline
+
+| Scope | Status | Evidence |
+|---|---|---|
+| Rust engine retrieval baseline | verified locally | 216 memories / 8 probes; top-1 100%, top-5 100%; recall p50 480929 us, p90 742315 us, max 843234 us |
+| Rust checkpoint/recovery baseline | active | `rust/crates/celiums-memory-engine/examples/p10_benchmark.rs` |
+| Native HTTP/MCP baseline | verified locally | `scripts/p10-http-baseline.mjs`; health 27.343 ms, initialize 4.198 ms, remember p50 0.871 ms |
+| `memory-bench` pilot | blocked | Rust stdio ingestion completed with 0 rejected writes; DO Inference returned HTTP 401, so no quality result exists |
+| Frozen metrics | verified locally | `docs/BENCHMARK-P10.md` contains engine, checkpoint/recovery and HTTP reference rows; public quality claims remain blocked |
+
 ## Update protocol
 
 For each item:
