@@ -345,15 +345,19 @@ async fn export_checkpoint(State(state): State<AppState>, request: Request) -> R
             Ok(result) => result,
             Err(_) => return error_response(ServiceError::InvalidCheckpoint, &request_id),
         };
-        return json_response(StatusCode::CREATED, json!({
-            "checkpoint_id": checkpoint_id,
-            "format_version": metadata.format_version,
-            "checkpoint_sequence": metadata.checkpoint_sequence,
-            "snapshot_digest": metadata.snapshot_digest,
-            "ciphertext_blake3": metadata.ciphertext_blake3,
-            "ciphertext_bytes": metadata.ciphertext_bytes,
-            "plaintext_bytes": metadata.plaintext_bytes,
-        }), Some(&request_id));
+        return json_response(
+            StatusCode::CREATED,
+            json!({
+                "checkpoint_id": checkpoint_id,
+                "format_version": metadata.format_version,
+                "checkpoint_sequence": metadata.checkpoint_sequence,
+                "snapshot_digest": metadata.snapshot_digest,
+                "ciphertext_blake3": metadata.ciphertext_blake3,
+                "ciphertext_bytes": metadata.ciphertext_bytes,
+                "plaintext_bytes": metadata.plaintext_bytes,
+            }),
+            Some(&request_id),
+        );
     }
     let (sender, receiver) = oneshot::channel();
     if tenant_engine
