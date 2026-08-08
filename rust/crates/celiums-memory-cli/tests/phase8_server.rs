@@ -45,6 +45,8 @@ fn config(dir: &tempfile::TempDir, role: Role) -> ServerConfig {
         max_tenant_engines: 100,
         max_mcp_sessions: 1_000,
         max_confirmations: 1_000,
+        checkpoint_key: Some([7_u8; 32]),
+        checkpoint_body_limit: 512 * 1024 * 1024,
     }
 }
 

@@ -13,8 +13,8 @@ drifts from the code, the code wins — flag the drift as a bug.
 1. [System overview](#system-overview)
 2. [Trust boundaries](#trust-boundaries)
 3. [The MCP layer](#the-mcp-layer)
-4. [Storage adapter contract](#storage-adapter-contract)
-5. [Three sync modes](#three-sync-modes)
+4. [Native storage contract](#native-storage-contract)
+5. [Cloudflare durability](#cloudflare-durability)
 6. [Auth + identity model](#auth--identity-model)
 7. [Permission system (RBAC + AAL + Ethics)](#permission-system-rbac--aal--ethics)
 8. [Ethics Engine](#ethics-engine)
@@ -29,9 +29,8 @@ drifts from the code, the code wins — flag the drift as a bug.
 
 ## System overview
 
-Celiums Memory is a single open-source engine — Apache-2.0, no
-open-core split, no paid tier. Integrators consume it the same way the
-authors do: there is no internal fork and no "lesser" edition.
+Celiums Memory is a native Rust engine — Apache-2.0, no open-core split, no
+paid tier. Integrators consume it through MCP or authenticated HTTP.
 
 ```
    ┌──────────────────────────────────────────────────────────────┐
@@ -40,41 +39,23 @@ authors do: there is no internal fork and no "lesser" edition.
    └─────────────────────────┬────────────────────────────────────┘
                              │  MCP / HTTP / TS library
                              ▼
-   ┌──────────────────────────────────────────────────────────────┐
-   │  Auto-bootstrap — wraps the first tool response with           │
-   │  <session_context> for clients without hook infra (best-effort)│
-   └─────────────────────────┬────────────────────────────────────┘
-                             ▼
-   ┌──────────────────────────────────────────────────────────────┐
-   │  Composition: RBAC + AAL + Ethics — three orthogonal checks;   │
-   │  all must pass for irreversible operations                     │
-   └─────────────────────────┬────────────────────────────────────┘
-                             ▼
-   ┌──────────────────────────────────────────────────────────────┐
-   │  MCP dispatcher  ── 61 typed tools ──                          │
-   │  recall · remember · forage · journal_* · research_* ·         │
-   │  write_* · ethics_* · atlas_* · turn_* · sense · …             │
-   └────────┬───────────────────────────────────────────┬──────────┘
-            │                                            │
-            ▼                                            ▼
-   ┌─────────────────┐                          ┌──────────────────┐
-   │ Storage adapter │                          │ LLM provider     │
-   │  + RLS tenancy  │                          │ abstraction      │
-   └────────┬────────┘                          │ (Atlas optional) │
-            │                                   └────────┬─────────┘
-   ┌────────┴─────────┐                                  │
-   ▼                  ▼                                  ▼
-┌──────┐    ┌───────────────┐              ┌──────────────────────────┐
-│SQLite│    │ Postgres +    │              │ Ollama / OpenAI / Anthropic│
-│      │    │ Qdrant +      │              │ Google / Mistral / any     │
-└──────┘    │ Valkey        │              │ OpenAI-compatible · Atlas  │
-            └───────────────┘              └──────────────────────────┘
+    ┌──────────────────────────────────────────────────────────────┐
+    │  Worker auth + tenant routing                                 │
+    └─────────────────────────┬────────────────────────────────────┘
+                              ▼
+    ┌──────────────────────────────────────────────────────────────┐
+    │  Durable Object control plane + native Rust Container          │
+    │  MCP / REST · Hyphae log · exact local retrieval               │
+    └──────────────────────────────────────────────┬───────────────┘
+                                                   │
+                                                   ▼
+                                      ┌──────────────────────────┐
+                                      │ caller-provided embeddings│
+                                      └──────────────────────────┘
 ```
 
-Top-down: integrators consume the MCP layer; every request flows
-through auto-bootstrap, three orthogonal authorization checks, the
-dispatcher, and out to a pluggable storage adapter + provider
-abstraction.
+Top-down: the Worker authenticates and resolves a tenant; the Durable Object
+serializes the control plane and forwards requests to the native Rust server.
 
 ---
 
@@ -114,9 +95,7 @@ The dispatcher exposes **61 typed tools** in families:
 | Ethics | ethics_lookup, ethics_audit, ethics_trace | Layer-A lookup + ad-hoc audit + traced evaluation |
 | Auxiliary | web_search | Reach beyond the local corpus |
 
-Schema validation at the dispatcher boundary uses AJV strict mode
-against `schemas/v1/`; inline tool inputSchemas stay lenient (auxiliary
-fields accepted).
+Schema validation is implemented by the Rust MCP/REST boundary.
 
 > **Knowledge note:** `forage` is open and works with skills the
 > operator brings (BYO-knowledge, via the `skills` table). The large
@@ -125,79 +104,38 @@ fields accepted).
 
 ---
 
-## Storage adapter contract
+## Native storage contract
 
-A single interface every backend implements:
+A single embedded engine owns memory, journal, retention and retrieval:
 
 ```ts
-interface StorageAdapter {
-  readonly id: 'sqlite' | 'pg-triple' | 'k8s-pg-triple';
-  readonly capabilities: AdapterCapabilities;
-  init(): Promise<void>;
-  close(): Promise<void>;
-  ensureSchema(): Promise<void>;
-  memoryStore(input): Promise<{ id: string }>;
-  memoryRecall(input): Promise<MemoryRecallOutput>;
-  memoryGet(id): Promise<Memory | null>;
-  memoryDelete(id): Promise<boolean>;
-  journalAppend(input): Promise<{ id: string; hash: string }>;
-  journalRecall(input): Promise<JournalRecallOutput>;
-  journalVerifyChain(agentId): Promise<{ valid: boolean; brokenAt?: string }>;
-  auditWrite(event): Promise<boolean>;
-  auditQuery(filter): Promise<AuditEvent[]>;
-  vacuum(): Promise<void>;
-  stats(): Promise<AdapterStats>;
+MemoryEngine {
+  remember(input): Result<MemoryReceipt>;
+  recall(input): Result<RecallOutput>;
+  journalAppend(input): Result<JournalReceipt>;
+  exportLogical(input): Result<ExportManifest>;
 }
 ```
 
-Three implementations ship — **deployment options, not paid tiers**:
+The native engine uses Hyphae for durable records and local indexes:
 
-| Adapter | Vector search | RLS | Notes |
-|---|---|---|---|
-| `SqliteAdapter` | native (sqlite-vss) | n/a (single-user) | WAL + single writer; great for local / embedded use. |
-| `PgTripleAdapter` | delegated (Qdrant) | yes | Outbox pattern for PG↔Qdrant; eventual vector sync. |
-| `K8sPgTripleAdapter` | delegated (Qdrant) | yes | Connection-pool sizing + read-replica routing for clustered deploys. |
-
-Same engine code runs on all three with config-only changes
-(`CELIUMS_STORAGE_ADAPTER=sqlite|pg|k8s-pg`, or auto-detected from
-`DATABASE_URL` / K8s hints). The adapter does **not** implement the
-tools, authentication, or encryption — those are separate layers.
+Tenant isolation is enforced by the authenticated server and one engine actor
+per tenant. No external database, vector store or cache is required.
 
 ---
 
-## Three sync modes
+## Cloudflare durability
 
-Picked at install time. The operator chooses consciously; the engine
-never silently escalates to a less-private mode.
-
-### Local-only
-SQLite on local disk. Zero outbound except LLM calls the operator
-configured. Crypto = the OS's job; optional `--at-rest-passphrase`
-engages SQLCipher. Trust = self.
-
-### Zero-knowledge (cloud-synced)
-Local store + remote object store that sees **ciphertext only** for
-memory content + journal. Content cipher: **XChaCha20-Poly1305** (AEAD,
-nonce-misuse resistant; AES-256-GCM fallback). Key derivation:
-**Argon2id** (`memory=64MiB, iters=3, parallelism=4`). Per-record salt
-+ nonce. Embeddings computed **locally** (`gte-small` default) so
-semantic recall works against ciphertext without the server seeing
-plaintext. Trust = self + cryptography + your device.
-
-### Cloud-managed
-Remote Postgres + Qdrant + Valkey. TLS in transit; at-rest is
-provider-managed; the server has plaintext in memory. Trust = the
-infra you point it at (Celiums' or your own).
-
-Refused anti-patterns: silent default to managed; server-side key
-escrow for zero-knowledge mode (never); "optional encryption"
-off-by-default (zero-knowledge is always encrypted).
+The Worker resolves the tenant, the Durable Object records commands and
+receipts, and the native Container runs the embedded engine. Checkpoints are
+managed by the Cloudflare control plane. See
+`docs/ADR-025-CLOUDFLARE-CONTAINER-RUNTIME.md` for replay and recovery rules.
 
 ---
 
 ## Auth + identity model
 
-Three credential kinds resolve to a canonical `Principal`:
+The native server resolves a bearer API key to a canonical `Principal`:
 
 ```ts
 interface Principal {
@@ -211,23 +149,19 @@ interface Principal {
 }
 ```
 
-Resolution order at the boundary: **mTLS** client cert → **OIDC**
-bearer → **API key** bearer (`Authorization: Bearer cmk_…`) → **local
-fallback** (loopback only, `CELIUMS_AUTH=disabled`). First match wins;
-no match → 401.
+The Cloudflare Worker validates the bearer key and tenant header before
+forwarding. The native server performs its own bearer-key lookup and returns
+401 for missing or invalid credentials.
 
-API-key hashing is SHA-256 + pepper (not Argon2id) — keys are
-high-entropy machine secrets in every request's hot path; Argon2id is
-for human passwords. Optional **SSO** provides OIDC Authorization Code
-+ PKCE and SAML 2.0; JIT provisioning creates membership rows on first
-valid login. Sessions are signed cookies (HMAC-SHA256, `__Secure-`,
-HttpOnly, SameSite=Lax).
+API-key hashing is SHA-256 plus the configured server pepper. OIDC and SSO
+are outside the active Container cutover contract.
 
 ---
 
 ## Permission system (RBAC + AAL + Ethics)
 
-Three **orthogonal** checks compose at the dispatcher; all must pass.
+The native server composes role, confirmation and ethics checks at the MCP
+boundary; all must pass before a protected operation runs.
 
 **RBAC** — role hierarchy (`platform-owner > platform-admin`;
 `tenant-owner > tenant-admin > tenant-member > tenant-viewer`; `service`,
@@ -337,23 +271,10 @@ via `X-Celiums-AAL-Override` is supported and audit-logged.
 The load-bearing isolation primitive — a technical capability, not a
 paid tier.
 
-**Postgres**: every tenant-scoped table has `tenant_id`, RLS `FORCE`d,
-HASH-partitioned by `tenant_id`. The pool wrapper sets
-`app.current_tenant` on every checkout (`SET LOCAL`) so RLS is enforced
-by construction; the app role has no `BYPASSRLS`.
-
-**Qdrant**: single collection, mandatory `payload_index` on
-`tenant_id`; the `MemoryClient` wrapper injects the tenant filter on
-every call. Raw SDK access is lint-forbidden in handlers.
-
-**Valkey**: keys prefixed `celiums:<tenant_id>:<…>`; the cache wrapper
-enforces the prefix.
-
-Anti-leak: RLS `FORCE`d (even owner can't bypass), pool wrapper sets
-tenant on every checkout, `MemoryClient` is the only Qdrant entry
-point, a CI cross-tenant fuzz test (100 tenants × records, zero leaks
-required), and a schema-diff job that fails CI on any tenant-scoped
-table missing RLS/FORCE.
+The Worker authenticates the bearer key and requires a matching tenant
+header. The Durable Object name is derived from that tenant, and the native
+server receives only the selected tenant's request stream. The engine keeps
+one actor and one opaque durable data path per tenant.
 
 ---
 
@@ -368,9 +289,8 @@ Bearer, JWT). Memory content never appears in metric labels or at
 `info` level.
 
 **Metrics** — Prometheus exposition on `/metrics`. Core series cover
-HTTP, MCP tool calls/duration, memory store/recall, LLM
-calls/tokens, rate-limit, DB pool, Qdrant latency, audit writes, build
-info, plus bootstrap metrics.
+HTTP, MCP tool calls/duration, memory store/recall, rate-limit, audit writes
+and build info.
 
 **Traces** — OpenTelemetry-compatible spans; each MCP handler
 instrumented `mcp.tool.<name>`. Spans tagged `auth.denied` or
@@ -393,7 +313,7 @@ operates with context loaded from then on.
 Content is composed via `turn_context` with priority channels
 (`top_semantic_recent`, `top_semantic_alltime`, `journal_recent`,
 `operational_rules`, `decisions_30d`), hard-capped ~2000 tokens. Cached
-in Valkey per session (4h TTL). Best-effort: cache miss / opt-out /
+by the active control plane per session. Best-effort: cache miss / opt-out /
 composer failure / no-session all return the unwrapped response —
 **bootstrap never blocks a tool call**. Opt-out: `CELIUMS_BOOTSTRAP=
 disabled`, `X-Celiums-Bootstrap: disabled`, or per-tool `exemptTools`.
@@ -426,8 +346,8 @@ Celiums Memory deliberately does not:
   that's the integrator's runtime (OpenCode, Cursor, Letta, …).
 - **Host the curated module corpus.** `forage` is open and BYO-skills;
   the large Celiums knowledge corpus is a separate project.
-- **Be a general vector DB.** Qdrant is used for memory vectors; go to
-  Qdrant directly for arbitrary vector storage.
+- **Be a general vector DB.** Memory retrieval is an engine capability, not
+  an arbitrary vector-storage service.
 - **Be an identity provider.** It integrates with OIDC/SAML; it is not
   Keycloak/Auth0/Okta.
 - **Host object storage.** Spaces/S3/GCS used for archives/backups —

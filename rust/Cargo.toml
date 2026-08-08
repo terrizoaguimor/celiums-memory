@@ -16,9 +16,14 @@ rust-version = "1.89.0"
 license = "Apache-2.0"
 repository = "https://github.com/terrizoaguimor/celiums-memory"
 authors = ["Celiums Solutions LLC"]
+homepage = "https://celiums.ai"
+documentation = "https://docs.rs/celiums-memory"
+readme = "README.md"
+keywords = ["memory", "cognitive", "mcp", "rust", "ai"]
+categories = ["database", "science", "wasm"]
 
 [workspace.dependencies]
-celiums-cognition = { path = "crates/celiums-cognition" }
+celiums-cognition = { version = "=3.0.0-alpha.0", path = "crates/celiums-cognition" }
 # Hyphae is consumed as a published dependency, never vendored: the Hyphae
 # repo explicitly keeps cognition out of its tree, and this repo keeps
 # storage internals out of ours. Pinned exact: the 0.x contract can move.
@@ -27,7 +32,7 @@ hyphae-engine = "=0.2.1"
 hyphae-query = "=0.2.1"
 hyphae-retrieval = "=0.2.1"
 hyphae-storage = "=0.2.1"
-celiums-memory-engine = { path = "crates/celiums-memory-engine" }
+celiums-memory-engine = { version = "=3.0.0-alpha.0", path = "crates/celiums-memory-engine" }
 # Same digest family as the Hyphae log; used for the journal chain.
 blake3 = "1"
 chacha20poly1305 = "0.10"

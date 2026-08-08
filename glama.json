@@ -12,10 +12,10 @@
   "license": "Apache-2.0",
   "homepage": "https://celiums.ai",
   "documentation": "https://github.com/terrizoaguimor/celiums-memory#readme",
-  "runtime": "node",
+  "runtime": "rust",
   "install": {
-    "command": "npm",
-    "args": ["install", "@celiums/memory"]
+    "command": "cargo",
+    "args": ["install", "celiums-memory-cli", "--locked"]
   },
   "start": {
     "command": "celiums-memory",
@@ -25,17 +25,13 @@
   "environmentVariablesJsonSchema": {
     "type": "object",
     "properties": {
-      "CELIUMS_DB_URL": {
+      "CELIUMS_API_KEYS": {
         "type": "string",
-        "description": "PostgreSQL connection string. Optional — defaults to in-memory store for local dev. Required for production."
+        "description": "Static native-server API keys in token:tenant:user:subject:role format."
       },
-      "CELIUMS_QDRANT_URL": {
+      "CELIUMS_API_KEY_PEPPER": {
         "type": "string",
-        "description": "Qdrant vector DB URL for semantic search. Optional but strongly recommended for recall quality."
-      },
-      "CELIUMS_VALKEY_URL": {
-        "type": "string",
-        "description": "Valkey (or Redis) URL for distributed mutex + circadian state. Optional for single-instance deployments."
+        "description": "Server-side pepper used to digest API keys."
       },
       "CELIUMS_LLM_API_KEY": {
         "type": "string",

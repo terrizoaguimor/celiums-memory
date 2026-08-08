@@ -94,7 +94,7 @@ Good:
 
 ### Recent Decisions
 - Rejected ECC alliance — chose to build standalone moat
-- SQLite store added as 3rd storage mode
+- Native Rust engine adopted as the sole storage runtime
 - 7 cognitive reflexes shipped instead of generic skills
 
 ### Open Threads

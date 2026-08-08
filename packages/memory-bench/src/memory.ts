@@ -4,6 +4,7 @@
 /** Memory client for the benchmark system under test. */
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { resolve } from 'node:path';
@@ -39,18 +40,29 @@ function unwrap(response: RpcResponse, tool: string): unknown {
 class HttpTransport implements MemoryTransport {
   private readonly base = (process.env.MEMORY_BASE_URL || '').replace(/\/$/, '');
   private readonly key = process.env.CELIUMS_BENCH_CMK || '';
+  private readonly tenantId: string;
+  private sessionId?: string;
+  private nextId = 1;
+
+  constructor(instanceId: string) {
+    this.tenantId = process.env.CELIUMS_BENCH_TENANT_ID || `bench-${instanceId}`;
+  }
 
   async call(name: string, args: Record<string, unknown>): Promise<unknown> {
     if (!this.base) throw new Error('MEMORY_BASE_URL is required for HTTP transport');
+    await this.start();
     const response = await fetch(`${this.base}/mcp`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json, text/event-stream',
         ...(this.key ? { Authorization: `Bearer ${this.key}` } : {}),
+        'x-celiums-tenant-id': this.tenantId,
+        'x-celiums-operation-id': randomUUID(),
+        ...(this.sessionId ? { 'MCP-Session-Id': this.sessionId, 'MCP-Protocol-Version': '2025-11-25' } : {}),
       },
-      body: JSON.stringify({
-        jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args },
+        body: JSON.stringify({
+        jsonrpc: '2.0', id: this.nextId++, method: 'tools/call', params: { name, arguments: args },
       }),
     });
     if (!response.ok) throw new Error(`mcp ${name} HTTP ${response.status}`);
@@ -58,6 +70,39 @@ class HttpTransport implements MemoryTransport {
   }
 
   async close(): Promise<void> {}
+
+  private async start(): Promise<void> {
+    if (this.sessionId) return;
+    const response = await fetch(`${this.base}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        ...(this.key ? { Authorization: `Bearer ${this.key}` } : {}),
+        'x-celiums-tenant-id': this.tenantId,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: this.nextId++, method: 'initialize',
+        params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'memory-bench', version: '3' } },
+      }),
+    });
+    if (!response.ok) throw new Error(`mcp initialize HTTP ${response.status}`);
+    this.sessionId = response.headers.get('mcp-session-id') ?? undefined;
+    if (!this.sessionId) throw new Error('mcp initialize did not return a session');
+    const initialized = await fetch(`${this.base}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        'MCP-Session-Id': this.sessionId,
+        'MCP-Protocol-Version': '2025-11-25',
+        ...(this.key ? { Authorization: `Bearer ${this.key}` } : {}),
+        'x-celiums-tenant-id': this.tenantId,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+    });
+    if (!initialized.ok) throw new Error(`mcp initialized HTTP ${initialized.status}`);
+  }
 }
 
 class StdioTransport implements MemoryTransport {
@@ -161,7 +206,7 @@ class StdioTransport implements MemoryTransport {
 
 function makeTransport(instanceId: string): MemoryTransport {
   return process.env.MEMORY_TRANSPORT === 'http'
-    ? new HttpTransport()
+    ? new HttpTransport(instanceId)
     : new StdioTransport(instanceId);
 }
 

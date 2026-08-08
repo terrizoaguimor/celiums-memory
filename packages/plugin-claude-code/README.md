@@ -1,6 +1,6 @@
 # @celiums/memory-claude-code
 
-**Automatic persistent memory for Claude Code — with real emotions.**
+**Automatic persistent memory for Claude Code through the native Rust server.**
 
 A Claude Code plugin that gives Claude a persistent brain. Memories survive context death, sessions, and reboots. Every memory carries emotional context (Pleasure, Arousal, Dominance). The AI gets bored of repetitive praise, calms down when you panic, and adapts based on accumulated experience.
 
@@ -51,7 +51,7 @@ Installed automatically to `~/.claude/skills/`. Claude auto-discovers them by fr
 
 Installed automatically to `~/.claude/skills/`. Claude auto-discovers them by frontmatter and fires them based on contextual matches. No manual invocation needed.
 
-**The cognitive layer (from @celiums/memory):**
+**The cognitive layer (from the Rust engine):**
 - PAD emotional model (Mehrabian & Russell, 1974)
 - Big Five personality traits
 - Ebbinghaus forgetting curves
@@ -64,15 +64,13 @@ Installed automatically to `~/.claude/skills/`. Claude auto-discovers them by fr
 
 ## Installation
 
-### 1. Start the memory server
+### 1. Start the native Rust server
 
 ```bash
-# Option A: Run the zero-config in-memory server
-npm install -g @celiums/memory
-npx @celiums/memory
-
-# Option B: Point at a remote server (e.g. memory.celiums.ai)
-export CELIUMS_MEMORY_URL=https://memory.celiums.ai
+export CELIUMS_API_KEY_PEPPER=local-development-pepper-change-me
+celiums-memory serve \
+  --data ~/.celiums/memory \
+  --api-keys 'cmk_local:default:developer:developer:owner'
 ```
 
 ### 2. Install the plugin
@@ -96,6 +94,8 @@ Environment variables (read at install time and by the MCP bridge):
 | Variable | Default | Description |
 |---|---|---|
 | `CELIUMS_MEMORY_URL` | `http://localhost:3210` | Memory API endpoint |
+| `CELIUMS_TENANT_ID` | `default` | Tenant routed by the Cloudflare control plane |
+| `CELIUMS_API_KEY` | _unset_ | Bearer key accepted by the native Rust server |
 | `CELIUMS_MEMORY_USER_ID` | `default` | User ID for memory ownership |
 | `CELIUMS_MEMORY_TIMEOUT` | `5000` | HTTP timeout in ms |
 | `CELIUMS_DEBUG` | _unset_ | Set to `1` to log hook errors to stderr |
@@ -112,7 +112,7 @@ CELIUMS_MEMORY_USER_ID=developer npx @celiums/memory-claude-code install
 
 | | @celiums/memory-claude-code | claude-mem |
 |---|---|---|
-| Storage | PG + Qdrant + Valkey (optional in-memory) | SQLite + Chroma |
+| Storage | Native Rust engine with embedded durability | Local vector store |
 | Capture | Hooks (same) | Hooks (same) |
 | Search | Hybrid + **emotional resonance** | Hybrid (semantic + FTS) |
 | Emotions | ✅ Full PAD model | ❌ |
@@ -122,14 +122,14 @@ CELIUMS_MEMORY_USER_ID=developer npx @celiums/memory-claude-code install
 | Token-efficient search | ✅ `search` tool | ✅ 3-layer workflow |
 | License | Apache 2.0 | MIT |
 
-**TL;DR:** Both solve context death. `claude-mem` is a practical notebook with semantic compression. `@celiums/memory` is a full cognitive architecture. Use whichever fits your needs — or both.
+**TL;DR:** Both solve context death. `claude-mem` is a practical notebook with semantic compression. Celiums uses the native Rust cognitive engine behind an authenticated MCP/HTTP server.
 
 ---
 
 ## Troubleshooting
 
 **Memories aren't persisting:**
-- Check the server is running: `curl http://localhost:3210/health`
+- Check the server is running: `curl http://localhost:3210/healthz`
 - Check the plugin is installed: `grep celiums-memory ~/.claude.json`
 - Enable debug logs: `CELIUMS_DEBUG=1` and check Claude Code logs
 
@@ -139,7 +139,7 @@ CELIUMS_MEMORY_USER_ID=developer npx @celiums/memory-claude-code install
 
 **Want to see what's being stored?**
 - Use the `timeline` MCP tool in Claude to see recent memories
-- Or hit the API directly: `curl -X POST http://localhost:3210/recall -d '{"query":"recent","userId":"default"}'`
+- Or hit the API directly: `curl -X POST http://localhost:3210/v1/recall -H 'Authorization: Bearer cmk_local' -H 'Content-Type: application/json' -d '{"query":"recent"}'`
 
 ---
 

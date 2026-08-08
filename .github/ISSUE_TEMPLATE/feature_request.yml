@@ -25,7 +25,7 @@ body:
         - Layer 3 - Metacognition (personality, ToM, PFC)
         - Layer 2 - Limbic (emotions, memory, recall)
         - Layer 1 - Autonomic (ANS, reward, circadian)
-        - Infrastructure (Docker, CI/CD, adapters)
+        - Infrastructure (Cloudflare, CI/CD, native runtime)
         - Documentation
         - Other
     validations:

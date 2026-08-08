@@ -20,14 +20,14 @@ evidence and why the next action follows.
 
 | Field | Value |
 |---|---|
-| Active phase | Phase 9 - Portability and recovery |
-| Active item | P9.1 - Versioned logical export/import format |
-| Branch | `dev` |
-| Baseline commit | `c67cdbc` |
+| Active phase | Phase 10 - Cloudflare runtime |
+| Active item | P10.7 - Phase close (blocked on external deployment gates) |
+| Branch | `feat/phase-10-cloudflare-containers` |
+| Baseline commit | `d41806b` |
 | Canonical implementation | `rust/` |
 | Storage substrate | Hyphae `=0.2.1` |
 | Production direction | Cloudflare, one Durable Object per tenant |
-| Next phase after gate | Phase 10 - Cloudflare runtime |
+| Next phase after gate | Phase 11 - SDKs and developer experience |
 
 ## Phase 0 checklist
 
@@ -245,7 +245,19 @@ stable and an isolated immutable server exists.
 | P9.2 | Export ownership and verified hard delete | verified locally | tenant physical delete, selective survivor rebuild and residue reports; complete record-family closure and historical backup policy require follow-up review |
 | P9.3 | Encrypted backup, retention and restore | verified locally | ChaCha20-Poly1305 envelope, Hyphae verified backup/restore, retention pruning and encrypted-backup tests |
 | P9.4 | TypeScript and embedding migrations | verified locally | source-digest dry-run/apply foundation; provider-specific TypeScript extraction and embedding vector transformation remain separate adapters |
-| P9.5 | Phase close | pending | PR #46 open toward `dev`; DR drill, review, merge, final journal and CI on merged `dev` remain |
+| P9.5 | Phase close | closed | PR #46 merged as `d41806b`; CI `31229618179` green; journal `019fdea5127a71458ebe3f1f8958dc82` |
+
+## Phase 10 checklist
+
+| ID | Work item | Status | Evidence / exit condition |
+|---|---|---|---|
+| P10.1 | Native Container control-plane contract | verified locally | ADR defines tenant routing, operation IDs, receipts, high-water marks, RPO/RTO and Container disposal semantics; Worker auth contract tests pass; journal write was attempted but API returned HTTP 500 |
+| P10.2 | Public Rust crate family | blocked | package metadata, LICENSE/NOTICE/README and local package gates are prepared; dependent package publication waits for crates.io index visibility |
+| P10.3 | TypeScript cutover | verified locally | legacy TypeScript engine/types/schemas/migrations and external storage release paths removed; plugin/benchmark use Rust transport |
+| P10.4 | Worker and TenantRuntimeDO | verified locally | Worker auth/routing, one named Container/DO per tenant, transactional pending journal, terminal receipts, replay and contiguous high-water mark; 21 Worker contract tests pass |
+| P10.5 | R2 checkpoints, Queues and alarms | verified locally | encrypted native checkpoint artifact, R2 pointer/history bridge, binary pending-object replay, managed Queue delivery and DO alarm lifecycle are implemented; production binding verification remains |
+| P10.6 | Native/Container conformance and canary | verified locally | Worker conformance covers tenant binding, journal idempotency and checkpoint pointer/artifact agreement; Rust server checkpoint routes compile and native recovery APIs are covered by portability tests |
+| P10.7 | Phase close | blocked | native/Worker gates and conformance tests pass locally; production Cloudflare canary, R2 binding verification, external journal write and Windows execution-policy failures remain deployment gates |
 
 ## Update protocol
 

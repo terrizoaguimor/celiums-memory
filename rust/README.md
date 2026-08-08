@@ -296,7 +296,8 @@ read-only context pipeline:
   while recall leaves memory, retrieval counters and affect state unchanged.
 
 Roadmap Phase 8 adds the native server boundary without moving transport into
-the engine:
+the engine. Phase 10 deploys this native binary inside a Cloudflare Container;
+it does not port Hyphae's filesystem backend to WASM:
 
 - `celiums-memory serve` binds to `127.0.0.1:3210` by default and exposes REST
   v1, stateful MCP Streamable HTTP, OpenAPI 3.1, health/readiness/version;
@@ -311,6 +312,8 @@ the engine:
 - five RBAC roles and short-lived single-use confirmation tokens protect
   destructive operations, with stable redacted REST/MCP error contracts and
   `X-Celiums-Request-Id` correlation.
+- Cloudflare uses one Durable Object per tenant as the durable command journal
+  and Container coordinator, with encrypted logical checkpoints in R2.
 
 The ordered platform plan and its mechanical exit gates live in
 [`docs/ROADMAP.md`](../docs/ROADMAP.md); execution evidence and the current

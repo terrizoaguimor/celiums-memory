@@ -23,7 +23,7 @@ If no — do not encode.
 
 | Signal | Example |
 |---|---|
-| **Decision** | "Using Qdrant over Pinecone because..." |
+| **Decision** | "Using Hyphae over an external vector service because..." |
 | **Preference** | "User prefers concise answers, no preamble" |
 | **Identity** | "User is the developer working on a TypeScript project" |
 | **Constraint** | "Cannot use AWS — decided to kill EC2 last month" |

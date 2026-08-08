@@ -47,7 +47,6 @@ paths = [
   # Test files often carry placeholder secrets.
   '''.*\.test\.ts$''',
   '''.*\.spec\.ts$''',
-  '''packages/core/src/__tests__/.*''',
   # Docs that demonstrate key shapes — placeholder only.
   '''docs/.*\.md$''',
   '''README\.md$''',

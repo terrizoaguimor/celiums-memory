@@ -12,6 +12,7 @@
  * Env (all secrets are env/secret-only, NEVER committed):
  *   MEMORY_BASE_URL       in-VPC Service of the arm's bench memory deploy
  *   CELIUMS_BENCH_CMK     scoped bench key for celiums-memory
+ *   CELIUMS_BENCH_TENANT_ID tenant header value for HTTP transport
  *   DO_INFERENCE_URL/KEY  DO Inference (VPC-scoped key)
  *   ARM                   full | no-affect | no-circadian | no-both
  *   BENCH_DATA_DIR        dir with longmemeval_s.json / locomo.json

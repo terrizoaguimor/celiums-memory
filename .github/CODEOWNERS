@@ -11,27 +11,17 @@
 *                                       @terrizoaguimor
 
 # ── Security-sensitive paths (2 reviews required) ─────────────────
-/packages/core/src/lib/auth/            @terrizoaguimor
-/packages/core/src/lib/secrets/         @terrizoaguimor
-/packages/core/src/lib/sso/             @terrizoaguimor
-/packages/core/src/lib/rbac/            @terrizoaguimor
-/packages/core/src/lib/multi-tenancy/   @terrizoaguimor
-/packages/core/src/lib/ethics/          @terrizoaguimor
-/packages/core/src/ethics-layer-*.ts    @terrizoaguimor
-/packages/core/src/mcp/security-audit.ts @terrizoaguimor
-/packages/core/src/mcp/schema-validator.ts @terrizoaguimor
-/packages/core/src/lib/bootstrap/       @terrizoaguimor
+/apps/cloudflare-worker/src/                 @terrizoaguimor
+/rust/crates/celiums-memory-cli/src/server.rs @terrizoaguimor
+/rust/crates/celiums-memory-engine/src/      @terrizoaguimor
 
 # ── Supply chain ──────────────────────────────────────────────────
 /.github/workflows/                     @terrizoaguimor
 /.github/dependabot.yml                 @terrizoaguimor
 /.github/CODEOWNERS                     @terrizoaguimor
-/Dockerfile                             @terrizoaguimor
+/apps/cloudflare-worker/Dockerfile      @terrizoaguimor
 /dependencies-rationale.md              @terrizoaguimor
 /SECURITY.md                            @terrizoaguimor
-
-# ── Helm chart ────────────────────────────────────────────────────
-/charts/celiums-memory/                 @terrizoaguimor
 
 # ── Governance + ADRs ─────────────────────────────────────────────
 /docs/adr/                              @terrizoaguimor

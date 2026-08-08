@@ -159,7 +159,7 @@ End-to-end test on a fresh DigitalOcean Ubuntu 24 droplet:
 
 - **`@celiums/memory@1.2.0` and `@celiums/memory@1.2.1` were unusable when
   installed from npm.** The published `package.json` retained `workspace:*`
-  literal references for internal dependencies (`@celiums/memory-types`,
+  literal references for internal dependencies (the former memory type package,
   `@celiums/core`, `@celiums/types`), which only resolve inside the
   monorepo. External installs failed with `EUNSUPPORTEDPROTOCOL: Unsupported
   URL Type "workspace:": workspace:*`.

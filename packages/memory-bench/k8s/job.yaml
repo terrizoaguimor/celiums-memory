@@ -30,6 +30,7 @@ spec:
             - { name: ARM, value: "${ARM}" }
             # arm-specific bench memory Service (deployed with the arm env)
             - { name: MEMORY_BASE_URL, value: "http://celiums-memory-bench-${ARM}.distill.svc.cluster.local:3210" }
+            - { name: CELIUMS_BENCH_TENANT_ID, value: "bench-${ARM}" }
             - { name: DO_INFERENCE_URL, value: "https://inference.do-ai.run/v1" }
             - { name: BENCH_DATA_DIR, value: "/data" }
             - { name: BENCH_OSS_MODEL, value: "openai-gpt-oss-120b" }

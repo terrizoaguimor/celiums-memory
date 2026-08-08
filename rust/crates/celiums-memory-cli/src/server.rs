@@ -4,6 +4,7 @@
 //! Native Axum adapter for REST v1 and MCP Streamable HTTP.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fs;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -19,7 +20,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use axum::response::Response;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use celiums_cognition::{ContentRole, DisclosureAuthority, MemoryPurpose, Scope};
 use celiums_memory_engine::{
     AgentId, EmbeddingSpaceIdentity, IdempotencyKey, MemoryEngine, MemoryEngineError,
@@ -82,6 +83,10 @@ pub struct ServerConfig {
     pub max_mcp_sessions: usize,
     /// Maximum pending confirmation records.
     pub max_confirmations: usize,
+    /// Optional key used by checkpoint export/import.
+    pub checkpoint_key: Option<[u8; 32]>,
+    /// Maximum binary checkpoint artifact size.
+    pub checkpoint_body_limit: usize,
 }
 
 impl ServerConfig {
@@ -112,6 +117,8 @@ impl ServerConfig {
             max_tenant_engines: 100,
             max_mcp_sessions: 1_000,
             max_confirmations: 1_000,
+            checkpoint_key: None,
+            checkpoint_body_limit: 512 * 1024 * 1024,
         }
     }
 }
@@ -216,6 +223,7 @@ enum EngineOperation {
     Get(String, Principal, ScopeDto),
     Update(String, UpdateDto, Principal, ScopeDto),
     Delete(String, Principal, ScopeDto),
+    CheckpointExport { output: PathBuf, key: [u8; 32] },
 }
 
 struct McpHttpSession {
@@ -294,6 +302,12 @@ pub fn router(config: ServerConfig) -> Router {
         )
         .route("/v1/recall", post(recall))
         .route("/v1/confirmations", post(issue_confirmation))
+        .route("/v1/checkpoints/export", post(export_checkpoint))
+        .route(
+            "/v1/checkpoints/export/{checkpoint_id}",
+            get(get_checkpoint),
+        )
+        .route("/v1/checkpoints/import", put(import_checkpoint))
         .fallback(http_fallback)
         .with_state(state)
 }
@@ -301,6 +315,178 @@ pub fn router(config: ServerConfig) -> Router {
 async fn http_fallback(request: Request) -> Response {
     let request_id = request_id(request.headers());
     error_response(ServiceError::NotFound, &request_id)
+}
+
+async fn export_checkpoint(State(state): State<AppState>, request: Request) -> Response {
+    let request_id = request_id(request.headers());
+    let principal = match authenticate(&state, request.headers()) {
+        Ok(principal) => principal,
+        Err(error) => return error_response(error, &request_id),
+    };
+    if !allows(principal.role, Capability::Maintenance) {
+        return error_response(ServiceError::Forbidden, &request_id);
+    }
+    let Some(key) = state.config.checkpoint_key else {
+        return error_response(ServiceError::Unavailable, &request_id);
+    };
+    let tenant_engine = match tenant_engine(&state, &principal).await {
+        Ok(engine) => engine,
+        Err(error) => return error_response(error, &request_id),
+    };
+    let checkpoint_id = request
+        .headers()
+        .get("x-celiums-operation-id")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| valid_checkpoint_id(value))
+        .map_or_else(|| Uuid::now_v7().simple().to_string(), str::to_owned);
+    let output = checkpoint_directory(&state, &principal.tenant_id, &checkpoint_id);
+    if output.join("checkpoint.artifact").exists() {
+        let (metadata, _) = match celiums_memory_engine::read_encrypted_backup_artifact(&output) {
+            Ok(result) => result,
+            Err(_) => return error_response(ServiceError::InvalidCheckpoint, &request_id),
+        };
+        return json_response(StatusCode::CREATED, json!({
+            "checkpoint_id": checkpoint_id,
+            "format_version": metadata.format_version,
+            "checkpoint_sequence": metadata.checkpoint_sequence,
+            "snapshot_digest": metadata.snapshot_digest,
+            "ciphertext_blake3": metadata.ciphertext_blake3,
+            "ciphertext_bytes": metadata.ciphertext_bytes,
+            "plaintext_bytes": metadata.plaintext_bytes,
+        }), Some(&request_id));
+    }
+    let (sender, receiver) = oneshot::channel();
+    if tenant_engine
+        .sender
+        .try_send(EngineCommand::Execute {
+            operation: Box::new(EngineOperation::CheckpointExport { output, key }),
+            response: sender,
+        })
+        .is_err()
+    {
+        return error_response(ServiceError::Unavailable, &request_id);
+    }
+    match receiver.await {
+        Ok(outcome) => match outcome.result {
+            Ok(mut value) => {
+                value["checkpoint_id"] = json!(checkpoint_id);
+                value["path"] = Value::Null;
+                json_response(StatusCode::CREATED, value, Some(&request_id))
+            }
+            Err(error) => error_response(error, &request_id),
+        },
+        Err(_) => error_response(ServiceError::Unavailable, &request_id),
+    }
+}
+
+async fn get_checkpoint(
+    State(state): State<AppState>,
+    AxumPath(checkpoint_id): AxumPath<String>,
+    request: Request,
+) -> Response {
+    let request_id = request_id(request.headers());
+    let principal = match authenticate(&state, request.headers()) {
+        Ok(principal) => principal,
+        Err(error) => return error_response(error, &request_id),
+    };
+    if !allows(principal.role, Capability::Read) {
+        return error_response(ServiceError::Forbidden, &request_id);
+    }
+    if !valid_checkpoint_id(&checkpoint_id) {
+        return error_response(
+            ServiceError::InvalidRequest("invalid checkpoint id"),
+            &request_id,
+        );
+    }
+    let artifact = checkpoint_directory(&state, &principal.tenant_id, &checkpoint_id)
+        .join("checkpoint.artifact");
+    let bytes = match fs::read(artifact) {
+        Ok(bytes) => bytes,
+        Err(_) => return error_response(ServiceError::NotFound, &request_id),
+    };
+    let mut response = Response::new(Body::from(bytes));
+    *response.status_mut() = StatusCode::OK;
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        HeaderValue::from_static("application/vnd.celiums.checkpoint"),
+    );
+    insert_request_id(&mut response, &request_id);
+    response
+}
+
+async fn import_checkpoint(State(state): State<AppState>, request: Request) -> Response {
+    let request_id = request_id(request.headers());
+    let principal = match authenticate(&state, request.headers()) {
+        Ok(principal) => principal,
+        Err(error) => return error_response(error, &request_id),
+    };
+    if !allows(principal.role, Capability::Maintenance) {
+        return error_response(ServiceError::Forbidden, &request_id);
+    }
+    let Some(key) = state.config.checkpoint_key else {
+        return error_response(ServiceError::Unavailable, &request_id);
+    };
+    if registered_engine(&state, &principal.tenant_id).is_some() {
+        return error_response(ServiceError::Conflict, &request_id);
+    }
+    let destination = state
+        .config
+        .data_root
+        .join(opaque_tenant_directory(&principal.tenant_id));
+    if destination.exists() {
+        return error_response(ServiceError::Conflict, &request_id);
+    }
+    let bytes =
+        match axum::body::to_bytes(request.into_body(), state.config.checkpoint_body_limit).await {
+            Ok(bytes) => bytes,
+            Err(_) => return error_response(ServiceError::PayloadTooLarge, &request_id),
+        };
+    let embedding = state.config.embedding_space.clone();
+    let tenant = principal.tenant_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let report =
+            celiums_memory_engine::restore_encrypted_backup_artifact(&bytes, &destination, &key)
+                .map_err(|_| ServiceError::InvalidCheckpoint)?;
+        MemoryEngine::open_for_tenant_with_embedding(
+            &destination,
+            RecallConfig::default(),
+            tenant,
+            embedding,
+        )
+        .map_err(ServiceError::from_engine)?;
+        Ok::<_, ServiceError>(report)
+    })
+    .await;
+    match result {
+        Ok(Ok(report)) => json_response(
+            StatusCode::CREATED,
+            json!({
+                "restored": true,
+                "record_count": report.record_count,
+                "vector_count": report.vector_count,
+            }),
+            Some(&request_id),
+        ),
+        Ok(Err(error)) => error_response(error, &request_id),
+        Err(_) => error_response(ServiceError::Unavailable, &request_id),
+    }
+}
+
+fn checkpoint_directory(state: &AppState, tenant_id: &TenantId, checkpoint_id: &str) -> PathBuf {
+    state
+        .config
+        .data_root
+        .join("checkpoints")
+        .join(opaque_tenant_directory(tenant_id))
+        .join(checkpoint_id)
+}
+
+fn valid_checkpoint_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
 /// Runs the native server until termination.
@@ -753,7 +939,8 @@ fn rest_resource_change(operation: &EngineOperation) -> Option<mcp::ResourceChan
         EngineOperation::Remember(..)
         | EngineOperation::Recall(..)
         | EngineOperation::List(..)
-        | EngineOperation::Get(..) => None,
+        | EngineOperation::Get(..)
+        | EngineOperation::CheckpointExport { .. } => None,
     }
 }
 
@@ -1013,6 +1200,19 @@ fn execute_engine(
             } else {
                 Err(ServiceError::NotFound)
             }
+        }
+        EngineOperation::CheckpointExport { output, key } => {
+            let info = engine
+                .create_encrypted_backup(&output, &key)
+                .map_err(|_| ServiceError::InvalidCheckpoint)?;
+            Ok(json!({
+                "checkpoint_sequence": info.checkpoint_sequence,
+                "snapshot_digest": info.snapshot_digest,
+                "ciphertext_blake3": info.ciphertext_blake3,
+                "ciphertext_bytes": info.ciphertext_bytes,
+                "plaintext_bytes": info.plaintext_bytes,
+                "path": Value::Null,
+            }))
         }
     }
 }
@@ -2414,6 +2614,8 @@ enum ServiceError {
     NotAcceptable,
     #[error("unavailable")]
     Unavailable,
+    #[error("invalid checkpoint")]
+    InvalidCheckpoint,
     #[error("internal error")]
     Internal,
 }
@@ -2454,6 +2656,7 @@ impl ServiceError {
             Self::UnsupportedMediaType => "unsupported_media_type",
             Self::NotAcceptable => "not_acceptable",
             Self::Unavailable => "storage_unavailable",
+            Self::InvalidCheckpoint => "checkpoint_integrity_failed",
             Self::Internal => "internal_error",
         }
     }
@@ -2471,6 +2674,7 @@ impl ServiceError {
             Self::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Self::NotAcceptable => StatusCode::NOT_ACCEPTABLE,
             Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+            Self::InvalidCheckpoint => StatusCode::UNPROCESSABLE_ENTITY,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }

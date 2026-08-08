@@ -61,7 +61,7 @@ body:
       label: Running mode
       options:
         - In-memory (dev)
-        - Production (PG+Qdrant+Valkey)
-        - Docker Compose
+        - Cloudflare Worker / Container
+        - Native Rust server
     validations:
       required: true

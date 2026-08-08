@@ -95,11 +95,12 @@ pub use ingestion::{
 pub use journal::{BrokenLink, BrokenReason, ChainReport, JournalEntry, Supersession, chain_hash};
 pub use memory::{Memory, MemoryDecodeError};
 pub use portability::{
-    BackupRetentionPolicy, EncryptedBackupInfo, ExportSelector, HardDeleteReport,
-    LogicalExportInfo, LogicalManifest, MigrationKind, MigrationPlan, PortabilityError,
-    ResidueReport, RestoreReport, apply_migration, create_encrypted_backup, hard_delete_store,
-    import_logical, plan_migration, prune_encrypted_backups, residue_report,
-    restore_encrypted_backup, verify_logical_export,
+    BackupRetentionPolicy, CheckpointArtifactInfo, EncryptedBackupInfo, ExportSelector,
+    HardDeleteReport, LogicalExportInfo, LogicalManifest, MigrationKind, MigrationPlan,
+    PortabilityError, ResidueReport, RestoreReport, apply_migration, create_encrypted_backup,
+    hard_delete_store, import_logical, plan_migration, prune_encrypted_backups,
+    read_encrypted_backup_artifact, residue_report, restore_encrypted_backup,
+    restore_encrypted_backup_artifact, verify_logical_export,
 };
 pub use quantize::{QuantizeError, quantize};
 pub use recall_pipeline::{
