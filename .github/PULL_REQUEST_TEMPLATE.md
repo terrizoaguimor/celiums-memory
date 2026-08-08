@@ -51,8 +51,8 @@ Implements / references: ADR-
 ## Checklist
 
 - [ ] Tests added/updated for the changed behaviour
-- [ ] `pnpm --filter @celiums/memory test` passes locally
-- [ ] `pnpm --filter @celiums/memory build` passes locally
+- [ ] `pnpm typecheck` passes locally
+- [ ] `cargo check --manifest-path rust/Cargo.toml --workspace` passes locally
 - [ ] Docs updated where relevant (README, ADRs, runbooks)
 - [ ] CHANGELOG.md entry under `## Unreleased`
 - [ ] DCO sign-off **OR** CLA signed via cla-assistant (per ADR-019)

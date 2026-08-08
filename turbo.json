@@ -64,15 +64,7 @@
       "cache": false,
       "outputs": []
     },
-    "db:migrate": {
-      "cache": false,
-      "outputs": []
-    },
     "db:seed": {
-      "cache": false,
-      "outputs": []
-    },
-    "db:reset": {
       "cache": false,
       "outputs": []
     }
@@ -80,9 +72,8 @@
   "globalEnv": [
     "NODE_ENV",
     "CELIUMS_API_KEY",
-    "POSTGRES_URL",
-    "QDRANT_URL",
-    "VALKEY_URL",
-    "EMBEDDINGS_PROVIDER"
+    "MEMORY_BASE_URL",
+    "CELIUMS_MEMORY_BIN",
+    "CELIUMS_BENCH_CMK"
   ]
 }

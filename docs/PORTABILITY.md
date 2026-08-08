@@ -79,3 +79,12 @@ The current public primitives live in
 
 The CLI surface remains intentionally deferred. Phase 11 owns the polished
 `export`, `import`, `backup`, `restore` and `migrate` commands.
+
+## Cloudflare Boundary
+
+Phase 10 does not port Hyphae to WASM and does not replace Hyphae with a second
+SQLite memory engine. Native Hyphae `=0.2.1` runs inside a disposable
+Cloudflare Container. A Durable Object per tenant stores the durable command
+journal, operation receipts and active checkpoint pointer. Encrypted logical
+checkpoint generations are stored in R2. An acknowledged write is served only
+after both the Container result and the DO receipt are durable.

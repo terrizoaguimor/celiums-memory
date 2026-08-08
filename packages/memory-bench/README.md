@@ -55,6 +55,7 @@ ARM=no-affect celiums-bench --datasets longmemeval,locomo --run full-1
 |---|---|
 | `MEMORY_BASE_URL` | in-VPC Service of the arm's bench memory deploy |
 | `CELIUMS_BENCH_CMK` | scoped bench key for celiums-memory MCP |
+| `CELIUMS_BENCH_TENANT_ID` | tenant header value; defaults to `bench-<run-id>` |
 | `DO_INFERENCE_URL` / `DO_INFERENCE_KEY` | DO Inference (VPC-scoped key) |
 | `ARM` | `full` \| `no-affect` \| `no-circadian` \| `no-both` |
 | `BENCH_DATA_DIR` | dir with `longmemeval_s.json` / `locomo.json` |

@@ -28,6 +28,9 @@ const RECORDS_FILE: &str = "records.ndjson";
 const VECTORS_FILE: &str = "vectors.ndjson";
 const BACKUP_FILE: &str = "backup.bin";
 const ENVELOPE_FILE: &str = "ENVELOPE.json";
+const CHECKPOINT_MAGIC: &[u8] = b"CELIUMSCP";
+const CHECKPOINT_VERSION: u16 = 1;
+const MAX_CHECKPOINT_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 const MEMORY_SPACE: &str = "memories";
 const CONTENT_INDEX: &str = "content";
 const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
@@ -154,6 +157,31 @@ pub struct EncryptedBackupInfo {
     pub created_at_ms: i64,
     /// Ciphertext BLAKE3 digest.
     pub ciphertext_blake3: String,
+    /// Hyphae checkpoint sequence included in the backup.
+    pub checkpoint_sequence: u64,
+    /// Verified Hyphae snapshot digest in lowercase hex.
+    pub snapshot_digest: String,
+    /// Ciphertext byte count.
+    pub ciphertext_bytes: u64,
+    /// Decrypted payload byte count.
+    pub plaintext_bytes: u64,
+}
+
+/// Public metadata for a binary Cloudflare checkpoint artifact.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CheckpointArtifactInfo {
+    /// Wire format version.
+    pub format_version: u16,
+    /// Hyphae checkpoint sequence included in the artifact.
+    pub checkpoint_sequence: u64,
+    /// Verified Hyphae snapshot digest in lowercase hex.
+    pub snapshot_digest: String,
+    /// BLAKE3 digest of the encrypted payload.
+    pub ciphertext_blake3: String,
+    /// Encrypted payload byte count.
+    pub ciphertext_bytes: u64,
+    /// Decrypted payload byte count.
+    pub plaintext_bytes: u64,
 }
 
 /// Migration kind supported by the plan contract.
@@ -236,9 +264,17 @@ struct Envelope {
     format: String,
     version: u16,
     created_at_ms: i64,
+    checkpoint_sequence: u64,
+    snapshot_digest: String,
     nonce_hex: String,
     ciphertext_blake3: String,
     plaintext_bytes: u64,
+}
+
+#[derive(Deserialize)]
+struct BackupMetadata {
+    checkpoint_sequence: u64,
+    snapshot_digest: String,
 }
 
 /// Creates a deterministic logical export from a verified Hyphae snapshot.
@@ -373,6 +409,8 @@ pub fn create_encrypted_backup(
         .map_err(|error| PortabilityError::Manifest(error.to_string()))?;
     let mut plaintext = Vec::new();
     let manifest = fs::read(staging.join("BACKUP.json"))?;
+    let backup_metadata: BackupMetadata = serde_json::from_slice(&manifest)
+        .map_err(|error| PortabilityError::Manifest(error.to_string()))?;
     let snapshot = fs::read(staging.join("snapshot.hysnap"))?;
     write_blob(&mut plaintext, &manifest)?;
     write_blob(&mut plaintext, &snapshot)?;
@@ -388,11 +426,17 @@ pub fn create_encrypted_backup(
         path: output.to_owned(),
         created_at_ms: now_ms(),
         ciphertext_blake3: blake3::hash(&ciphertext).to_hex().to_string(),
+        checkpoint_sequence: backup_metadata.checkpoint_sequence,
+        snapshot_digest: backup_metadata.snapshot_digest,
+        ciphertext_bytes: ciphertext.len() as u64,
+        plaintext_bytes: plaintext.len() as u64,
     };
     let envelope = Envelope {
         format: "celiums-memory-encrypted-backup".to_owned(),
         version: 1,
         created_at_ms: info.created_at_ms,
+        checkpoint_sequence: info.checkpoint_sequence,
+        snapshot_digest: info.snapshot_digest.clone(),
         nonce_hex: hex(&nonce_bytes),
         ciphertext_blake3: info.ciphertext_blake3.clone(),
         plaintext_bytes: plaintext.len() as u64,
@@ -405,6 +449,65 @@ pub fn create_encrypted_backup(
     fs::remove_dir_all(staging)?;
     let _ = backup;
     Ok(info)
+}
+
+/// Packs an encrypted backup directory into one versioned binary artifact.
+pub fn read_encrypted_backup_artifact(
+    backup: impl AsRef<Path>,
+) -> Result<(CheckpointArtifactInfo, Vec<u8>), PortabilityError> {
+    let backup = backup.as_ref();
+    let envelope: Envelope = serde_json::from_slice(&fs::read(backup.join(ENVELOPE_FILE))?)
+        .map_err(|error| PortabilityError::Manifest(error.to_string()))?;
+    validate_envelope(&envelope)?;
+    let ciphertext = fs::read(backup.join(BACKUP_FILE))?;
+    verify_ciphertext(&envelope, &ciphertext)?;
+    let info = CheckpointArtifactInfo {
+        format_version: CHECKPOINT_VERSION,
+        checkpoint_sequence: envelope.checkpoint_sequence,
+        snapshot_digest: envelope.snapshot_digest.clone(),
+        ciphertext_blake3: envelope.ciphertext_blake3.clone(),
+        ciphertext_bytes: ciphertext.len() as u64,
+        plaintext_bytes: envelope.plaintext_bytes,
+    };
+    let envelope_bytes = serde_json::to_vec(&envelope)
+        .map_err(|error| PortabilityError::Manifest(error.to_string()))?;
+    let artifact = encode_checkpoint_artifact(&envelope_bytes, &ciphertext)?;
+    Ok((info, artifact))
+}
+
+/// Restores one binary checkpoint artifact into a new Hyphae directory.
+pub fn restore_encrypted_backup_artifact(
+    artifact: &[u8],
+    destination: impl AsRef<Path>,
+    key: &[u8; 32],
+) -> Result<RestoreReport, PortabilityError> {
+    let (envelope_bytes, ciphertext) = decode_checkpoint_artifact(artifact)?;
+    let envelope: Envelope = serde_json::from_slice(&envelope_bytes)
+        .map_err(|error| PortabilityError::Manifest(error.to_string()))?;
+    validate_envelope(&envelope)?;
+    verify_ciphertext(&envelope, &ciphertext)?;
+    let staging_root = destination.as_ref().parent().ok_or_else(|| {
+        PortabilityError::Manifest("restore destination has no parent".to_owned())
+    })?;
+    let staging = staging_root.join(format!("checkpoint-restore-{}", Uuid::now_v7()));
+    fs::create_dir_all(&staging)?;
+    let nonce = unhex(&envelope.nonce_hex)?;
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
+    let plaintext = cipher
+        .decrypt(Nonce::from_slice(&nonce), ciphertext.as_slice())
+        .map_err(|_| PortabilityError::Crypto)?;
+    let (manifest, snapshot) = split_blobs(&plaintext)?;
+    fs::write(
+        staging.join(ENVELOPE_FILE),
+        serde_json::to_vec(&envelope)
+            .map_err(|error| PortabilityError::Manifest(error.to_string()))?,
+    )?;
+    fs::write(staging.join(BACKUP_FILE), ciphertext)?;
+    fs::write(staging.join("BACKUP.json"), manifest)?;
+    fs::write(staging.join("snapshot.hysnap"), snapshot)?;
+    let result = restore_encrypted_backup(&staging, destination, key);
+    let _ = fs::remove_dir_all(staging);
+    result
 }
 
 /// Decrypts, verifies, and restores an encrypted Hyphae backup to a new path.
@@ -421,10 +524,9 @@ pub fn restore_encrypted_backup(
     }
     let envelope: Envelope = serde_json::from_slice(&fs::read(backup.join(ENVELOPE_FILE))?)
         .map_err(|error| PortabilityError::Manifest(error.to_string()))?;
+    validate_envelope(&envelope)?;
     let ciphertext = fs::read(backup.join(BACKUP_FILE))?;
-    if blake3::hash(&ciphertext).to_hex().to_string() != envelope.ciphertext_blake3 {
-        return Err(PortabilityError::Integrity);
-    }
+    verify_ciphertext(&envelope, &ciphertext)?;
     let nonce = unhex(&envelope.nonce_hex)?;
     if nonce.len() != 12 {
         return Err(PortabilityError::Crypto);
@@ -450,6 +552,93 @@ pub fn restore_encrypted_backup(
         record_count: restored.snapshot.entry_count,
         vector_count: restored.snapshot.vector_count,
     })
+}
+
+fn validate_envelope(envelope: &Envelope) -> Result<(), PortabilityError> {
+    if envelope.format != "celiums-memory-encrypted-backup" || envelope.version != 1 {
+        return Err(PortabilityError::UnsupportedVersion);
+    }
+    let nonce = unhex(&envelope.nonce_hex)?;
+    if nonce.len() != 12 || envelope.plaintext_bytes > MAX_CHECKPOINT_ARTIFACT_BYTES {
+        return Err(PortabilityError::Crypto);
+    }
+    Ok(())
+}
+
+fn verify_ciphertext(envelope: &Envelope, ciphertext: &[u8]) -> Result<(), PortabilityError> {
+    if ciphertext.len() as u64 > MAX_CHECKPOINT_ARTIFACT_BYTES
+        || blake3::hash(ciphertext).to_hex().to_string() != envelope.ciphertext_blake3
+    {
+        return Err(PortabilityError::Integrity);
+    }
+    Ok(())
+}
+
+fn encode_checkpoint_artifact(
+    envelope: &[u8],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, PortabilityError> {
+    if envelope.len() as u64 > MAX_MANIFEST_BYTES
+        || ciphertext.len() as u64 > MAX_CHECKPOINT_ARTIFACT_BYTES
+    {
+        return Err(PortabilityError::Manifest(
+            "checkpoint artifact is too large".to_owned(),
+        ));
+    }
+    let mut artifact =
+        Vec::with_capacity(CHECKPOINT_MAGIC.len() + 2 + 4 + 8 + envelope.len() + ciphertext.len());
+    artifact.extend_from_slice(CHECKPOINT_MAGIC);
+    artifact.extend_from_slice(&CHECKPOINT_VERSION.to_le_bytes());
+    artifact.extend_from_slice(&(envelope.len() as u32).to_le_bytes());
+    artifact.extend_from_slice(&(ciphertext.len() as u64).to_le_bytes());
+    artifact.extend_from_slice(envelope);
+    artifact.extend_from_slice(ciphertext);
+    Ok(artifact)
+}
+
+fn decode_checkpoint_artifact(artifact: &[u8]) -> Result<(Vec<u8>, Vec<u8>), PortabilityError> {
+    let header_bytes = CHECKPOINT_MAGIC.len() + 2 + 4 + 8;
+    if artifact.len() < header_bytes || artifact.len() as u64 > MAX_CHECKPOINT_ARTIFACT_BYTES {
+        return Err(PortabilityError::Integrity);
+    }
+    if &artifact[..CHECKPOINT_MAGIC.len()] != CHECKPOINT_MAGIC {
+        return Err(PortabilityError::Manifest(
+            "invalid checkpoint artifact".to_owned(),
+        ));
+    }
+    let version_offset = CHECKPOINT_MAGIC.len();
+    let version = u16::from_le_bytes(
+        artifact[version_offset..version_offset + 2]
+            .try_into()
+            .map_err(|_| PortabilityError::Integrity)?,
+    );
+    if version != CHECKPOINT_VERSION {
+        return Err(PortabilityError::UnsupportedVersion);
+    }
+    let envelope_offset = version_offset + 2;
+    let envelope_len = u32::from_le_bytes(
+        artifact[envelope_offset..envelope_offset + 4]
+            .try_into()
+            .map_err(|_| PortabilityError::Integrity)?,
+    ) as usize;
+    let ciphertext_offset = envelope_offset + 4;
+    let ciphertext_len = u64::from_le_bytes(
+        artifact[ciphertext_offset..ciphertext_offset + 8]
+            .try_into()
+            .map_err(|_| PortabilityError::Integrity)?,
+    ) as usize;
+    let payload_offset = header_bytes;
+    let expected_len = payload_offset
+        .checked_add(envelope_len)
+        .and_then(|length| length.checked_add(ciphertext_len))
+        .ok_or(PortabilityError::Integrity)?;
+    if expected_len != artifact.len() || envelope_len as u64 > MAX_MANIFEST_BYTES {
+        return Err(PortabilityError::Integrity);
+    }
+    Ok((
+        artifact[payload_offset..payload_offset + envelope_len].to_vec(),
+        artifact[payload_offset + envelope_len..].to_vec(),
+    ))
 }
 
 /// Removes expired encrypted backups while preserving the newest `keep_last`.

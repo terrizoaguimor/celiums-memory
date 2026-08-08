@@ -1,0 +1,30 @@
+name = "celiums-memory-control-plane"
+main = "src/index.ts"
+compatibility_date = "2026-08-07"
+
+[[durable_objects.bindings]]
+name = "TENANT_RUNTIME"
+class_name = "TenantRuntimeDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TenantRuntimeDO"]
+
+[[containers]]
+class_name = "TenantRuntimeDO"
+image = "./Dockerfile"
+instance_type = "basic"
+max_instances = 1
+
+[[r2_buckets]]
+binding = "CHECKPOINTS"
+bucket_name = "celiums-memory-checkpoints"
+
+[[queues.producers]]
+binding = "CHECKPOINT_JOBS"
+queue = "celiums-memory-checkpoint-jobs"
+
+[[queues.consumers]]
+queue = "celiums-memory-checkpoint-jobs"
+max_batch_size = 10
+max_batch_timeout = 30

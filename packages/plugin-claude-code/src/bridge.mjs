@@ -12,7 +12,7 @@
  *
  * Usage:
  *   node bridge.mjs
- *   CELIUMS_MEMORY_URL=http://localhost:3210 CELIUMS_MEMORY_USER_ID=mario node bridge.mjs
+ *   CELIUMS_MEMORY_URL=http://localhost:3210 CELIUMS_TENANT_ID=default CELIUMS_MEMORY_USER_ID=mario node bridge.mjs
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -76,8 +76,8 @@ server.tool(
           type: 'text',
           text: JSON.stringify(
             {
-              found: result.memories?.length || 0,
-              memories: (result.memories || []).map((m) => ({
+               found: (result.results || result.memories || []).length,
+               memories: (result.results || result.memories || []).map((m) => ({
                 content: m.memory?.content || m.content,
                 importance: m.memory?.importance || m.importance,
                 score: m.finalScore || m.score,

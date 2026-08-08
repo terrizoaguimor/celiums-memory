@@ -22,16 +22,9 @@ const PLUGIN_ROOT = path.resolve(__dirname, '..');
 
 const CLAUDE_CONFIG = path.join(os.homedir(), '.claude.json');
 const CLAUDE_SKILLS_DIR = path.join(os.homedir(), '.claude', 'skills');
-const CELIUMS_DIR = path.join(os.homedir(), '.celiums');
-const SQLITE_PATH = process.env.CELIUMS_SQLITE_PATH || path.join(CELIUMS_DIR, 'memory.db');
-
-// Local-first by default. Each user has their own SQLite brain at
-// ~/.celiums/memory.db. Memories never leave the user's machine.
-// Set CELIUMS_MEMORY_URL to opt into a remote server (memory.celiums.ai
-// or self-hosted). Remote requires CELIUMS_API_KEY for auth.
-const REMOTE_URL = process.env.CELIUMS_MEMORY_URL || '';
+const REMOTE_URL = process.env.CELIUMS_MEMORY_URL || 'http://127.0.0.1:3210';
 const API_KEY = process.env.CELIUMS_API_KEY || '';
-const STORAGE_LABEL = REMOTE_URL ? `remote (${REMOTE_URL})` : `local SQLite (${SQLITE_PATH})`;
+const TENANT_ID = process.env.CELIUMS_TENANT_ID || 'default';
 const USER_ID = process.env.CELIUMS_MEMORY_USER_ID || os.userInfo().username || 'default';
 
 const BRIDGE_PATH = path.join(PLUGIN_ROOT, 'src', 'bridge.mjs');
@@ -99,13 +92,11 @@ function writeConfig(config) {
 function installMcp(config) {
   if (!config.mcpServers) config.mcpServers = {};
 
-  // Build env: only set CELIUMS_MEMORY_URL if remote was explicitly chosen.
-  // Otherwise the bridge defaults to local SQLite at ~/.celiums/memory.db.
   const env = {
+    CELIUMS_MEMORY_URL: REMOTE_URL,
+    CELIUMS_TENANT_ID: TENANT_ID,
     CELIUMS_MEMORY_USER_ID: USER_ID,
-    CELIUMS_SQLITE_PATH: SQLITE_PATH,
   };
-  if (REMOTE_URL) env.CELIUMS_MEMORY_URL = REMOTE_URL;
   if (API_KEY) env.CELIUMS_API_KEY = API_KEY;
 
   config.mcpServers['celiums-memory'] = {
@@ -148,12 +139,9 @@ function installReflexes() {
 function installHooks(config) {
   if (!config.hooks) config.hooks = {};
 
-  // Build env exports prefix so each hook has the same SQLite path + user ID
-  // as the MCP bridge. Hooks read these via process.env in client.mjs.
+  // Keep hook credentials aligned with the MCP bridge.
   const apiKeyExport = API_KEY ? `CELIUMS_API_KEY=${shellEscape(API_KEY)} ` : '';
-  const envPrefix = REMOTE_URL
-    ? `CELIUMS_MEMORY_URL=${shellEscape(REMOTE_URL)} ${apiKeyExport}CELIUMS_MEMORY_USER_ID=${shellEscape(USER_ID)} `
-    : `CELIUMS_SQLITE_PATH=${shellEscape(SQLITE_PATH)} CELIUMS_MEMORY_USER_ID=${shellEscape(USER_ID)} `;
+  const envPrefix = `CELIUMS_MEMORY_URL=${shellEscape(REMOTE_URL)} CELIUMS_TENANT_ID=${shellEscape(TENANT_ID)} ${apiKeyExport}CELIUMS_MEMORY_USER_ID=${shellEscape(USER_ID)} `;
 
   for (const [eventName, hookPath] of Object.entries(HOOKS)) {
     if (!config.hooks[eventName]) config.hooks[eventName] = [];
@@ -226,13 +214,6 @@ function checkClaudeCodeInstalled() {
   return fs.existsSync(CLAUDE_CONFIG) || fs.existsSync(path.join(os.homedir(), '.claude'));
 }
 
-function ensureCeliumsDir() {
-  if (!fs.existsSync(CELIUMS_DIR)) {
-    fs.mkdirSync(CELIUMS_DIR, { recursive: true, mode: 0o700 });
-    log(`Created ${CELIUMS_DIR}`);
-  }
-}
-
 async function install() {
   process.stdout.write(`
   ╔═══════════════════════════════════════════════════════╗
@@ -254,14 +235,9 @@ async function install() {
     log('');
   }
 
-  // Storage mode info
-  log(`Storage: ${STORAGE_LABEL}`);
-  if (!REMOTE_URL) {
-    ensureCeliumsDir();
-    log('Your memories live ONLY on this machine. Nothing is sent anywhere.');
-  } else {
-    log('Using remote server. Your memories will be sent there over HTTPS.');
-  }
+  log(`Server: ${REMOTE_URL}`);
+  log(`Tenant: ${TENANT_ID}`);
+  log('The plugin uses the native Rust memory server over HTTP/MCP.');
   log('');
 
   // Path containment — every hook and bridge MUST live inside PLUGIN_ROOT.
@@ -303,7 +279,8 @@ async function install() {
   ║                                                       ║
   ╚═══════════════════════════════════════════════════════╝
 
-  Storage   : ${STORAGE_LABEL}
+   Server    : ${REMOTE_URL}
+   Tenant    : ${TENANT_ID}
   User ID   : ${USER_ID}
   Config    : ~/.claude.json
   Reflexes  : ~/.claude/skills/ (9 cognitive reflexes)
@@ -313,7 +290,7 @@ async function install() {
         remember, recall, search, timeline, emotion, forget
     • 5 lifecycle hooks capture context automatically
     • 9 cognitive reflexes teach Claude when to use memory
-    ${REMOTE_URL ? '• Memories go to your configured remote server' : '• Memories live ONLY on this machine (~/.celiums/memory.db)'}
+     • Memories are stored by the authenticated Rust server
 
   NEXT:
     1. Restart Claude Code (quit + reopen)
@@ -323,14 +300,10 @@ async function install() {
          "what do you remember about how I like answers?"
        Watch it actually remember.
 
-  PRIVACY:
-    ${REMOTE_URL
-      ? '⚠  Remote mode: memories sent to ' + REMOTE_URL
-      : '✓  Fully local. Nothing leaves your machine.'}
-
-  To switch to remote (e.g. shared team memory):
-       CELIUMS_MEMORY_URL=https://memory.celiums.ai \\
-         npx @celiums/memory-claude-code
+   CONFIGURATION:
+     CELIUMS_MEMORY_URL=${REMOTE_URL}
+     CELIUMS_TENANT_ID=${TENANT_ID}
+     CELIUMS_API_KEY=<native Rust server key>
 
   To uninstall:
        npx @celiums/memory-claude-code --uninstall

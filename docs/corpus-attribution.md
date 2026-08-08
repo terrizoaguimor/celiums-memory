@@ -64,7 +64,7 @@ The corpus is **actively growing**.
 | Asset | Lives where | License |
 |---|---|---|
 | The corpus content itself | `memory.celiums.ai` hosted service | per-document upstream + Celiums service terms |
-| The corpus schema | `packages/core/src/lib/knowledge/types.ts` | Apache 2.0 |
+| The corpus schema | native Rust engine corpus types | Apache 2.0 |
 | Module metadata fields (`attribution`, `source_url`, `upstream_license`, `accessed_at`) | API response shape | machine-readable schema is open; payload obeys per-document license |
 
 **We do NOT mirror the full corpus into this repository.** Per

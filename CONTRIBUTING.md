@@ -75,43 +75,37 @@ git remote add upstream https://github.com/celiums/memory.git
 pnpm install
 ```
 
-### Step 3: Start Infrastructure
+### Step 3: Start the native runtime
 
 ```bash
-# Start PostgreSQL, Qdrant, and Valkey
-pnpm docker:up
-
-# Verify everything is healthy
-docker compose -f docker/docker-compose.yml ps
+celiums-memory serve --data ~/.celiums/memory \
+  --api-keys 'cmk_local:default:developer:developer:owner'
+curl http://localhost:3210/healthz
 ```
 
 ### Step 4: Configure Environment
 
 ```bash
-cp docker/.env.example .env.local
-# Edit .env.local with your settings
-# At minimum, set CELIUMS_API_KEY (embedding via local Ollama or any provider)
+export CELIUMS_MEMORY_URL=http://localhost:3210
+export CELIUMS_TENANT_ID=default
+export CELIUMS_API_KEY=cmk_local
+export CELIUMS_API_KEY_PEPPER=local-development-pepper-change-me
 ```
 
-### Step 5: Run Database Migrations
+### Step 5: Start Development Checks
 
 ```bash
-pnpm db:migrate
+pnpm typecheck
+cargo check --manifest-path rust/Cargo.toml --workspace
 ```
 
-### Step 6: Start Development Server
-
-```bash
-pnpm dev
-```
-
-The server will be running at `http://localhost:3456`.
+The native server runs at `http://localhost:3210` when started separately.
 
 ### Verify Setup
 
 ```bash
-curl http://localhost:3456/health
-# Should return: {"status":"ok",...}
+curl http://localhost:3210/healthz
+# Should return: {"ok":true}
 ```
 
 ---
@@ -121,32 +115,22 @@ curl http://localhost:3456/health
 ```
 celiums-memory
 ├── packages/
-│   ├── types/              # @celiums/types — shared TypeScript types
-│   ├── core/               # @celiums/memory — the engine: memory, journal,
-│   │                       #   ethics, knowledge, MCP tool surface + REST
 │   ├── atlas-server/       # optional model-router service (bring your own models)
 │   ├── ethics-harvester/   # ethics knowledge curation
 │   ├── federation/         # knowledge federation connectors
 │   ├── memory-bench/       # benchmark harness for the engine
 │   └── plugin-claude-code/ # Claude Code MCP plugin
-├── charts/                 # Helm chart (charts/celiums-memory)
-├── docker/                 # Docker Compose + Dockerfiles
 ├── docs/                   # documentation
-├── schemas/                # JSON schemas
 └── scripts/                # build + release scripts
 ```
 
 ### Package Dependency Graph
 
 ```
-types
-  └── core
-        ├── server
-        │     └── (deployed)
-        └── adapter-mcp
-              └── (deployed)
-cli
-  └── core
+Rust workspace
+  ├── celiums-cognition
+  ├── celiums-memory-engine
+  └── celiums-memory-cli
 ```
 
 ---
@@ -235,23 +219,11 @@ export async function searchMemories(query, options) {
 
 ### Error Handling
 
-Always use typed errors. Never swallow errors silently.
+Always preserve error context at transport boundaries. Never swallow errors silently.
 
 ```typescript
-// ✅ Good
-import { CeliumsError, ErrorCode } from '@celiums/types'
-
 if (!memory) {
-  throw new CeliumsError({
-    code: ErrorCode.MEMORY_NOT_FOUND,
-    message: `Memory ${id} not found`,
-    context: { id },
-  })
-}
-
-// ❌ Bad
-if (!memory) {
-  throw new Error('not found')
+  throw new Error(`Memory ${id} not found`)
 }
 ```
 
@@ -260,7 +232,7 @@ if (!memory) {
 ```
 src/
 ├── index.ts          # Public API exports only
-├── types.ts          # Local types (if not in @celiums/types)
+├── types.ts          # Local adapter types
 ├── constants.ts      # Constants
 ├── utils/            # Pure utility functions
 ├── services/         # Business logic
@@ -292,11 +264,8 @@ pnpm lint:fix    # Auto-fix
 # All packages
 pnpm test
 
-# Specific package
-pnpm --filter @celiums/core test
-
-# Watch mode
-pnpm --filter @celiums/core test -- --watch
+# Rust workspace
+cargo test --manifest-path rust/Cargo.toml --workspace
 
 # Coverage
 pnpm test:coverage

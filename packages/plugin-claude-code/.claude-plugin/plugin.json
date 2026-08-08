@@ -1,7 +1,7 @@
 {
   "name": "celiums",
   "version": "0.6.1",
-  "description": "Persistent memory for Claude Code — agents remember decisions, patterns, errors and solutions across sessions via memory.celiums.ai. 5 hooks + 6 MCP tools + 9 cognitive reflex skills.",
+  "description": "Persistent memory for Claude Code through the authenticated native Rust server. 5 hooks + 6 MCP tools + 9 cognitive reflex skills.",
   "author": {
     "name": "Celiums Solutions LLC",
     "email": "hello@celiums.ai",
@@ -15,6 +15,7 @@
       "args": ["${CLAUDE_PLUGIN_ROOT}/src/bridge.mjs"],
       "env": {
         "CELIUMS_MEMORY_URL": "${memory_url}",
+        "CELIUMS_TENANT_ID": "${tenant_id}",
         "CELIUMS_MEMORY_USER_ID": "${user_id}",
         "CELIUMS_API_KEY": "${api_key}"
       }

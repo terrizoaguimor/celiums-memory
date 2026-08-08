@@ -4,7 +4,7 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 1.x     | :white_check_mark: |
+| 3.x     | :white_check_mark: |
 
 ## Reporting a Vulnerability
 
@@ -23,8 +23,8 @@ We will respond within 48 hours and provide a fix timeline.
 
 - Dependencies are monitored via Dependabot
 - CodeQL scanning is enabled for automated vulnerability detection
-- The in-memory mode stores no persistent data by default
-- Production mode (PG+Qdrant+Valkey) should be deployed behind a firewall
+- Native Rust storage is durable and tenant-scoped
+- Cloudflare Worker authentication must remain in front of Container ingress
 - API endpoints do not expose internal architecture or model details
 - No real user biometric or medical data is processed — emotional states are computed from text patterns only
 

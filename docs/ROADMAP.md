@@ -9,8 +9,8 @@ this file defines what must happen and the gate that closes each phase.
 
 ## Non-negotiable decisions
 
-1. Rust is the canonical implementation. TypeScript is legacy/reference until
-   the migration is complete.
+1. Rust is the canonical implementation. TypeScript is limited to control-plane,
+   plugin and benchmark adapters.
 2. Hyphae is the only storage and retrieval substrate. Do not recreate the
    Postgres + Qdrant + Valkey architecture.
 3. Production is Cloudflare-first: one Durable Object per tenant for physical
@@ -178,13 +178,17 @@ tenant records; delete residue checks and restore checks are mechanical.
 
 **Goal:** run the same semantics in production on Cloudflare.
 
-- WASM-compatible Hyphae storage boundary.
-- Durable Object SQLite adapter and one DO per tenant.
-- Worker routing/auth, Workers AI embeddings, Queues/alarms and R2 backups.
-- Native/WASM conformance and canary deployment.
+- Native Hyphae `=0.2.1` in one Cloudflare Container per active tenant.
+- Durable Object control plane with a command journal, receipts and
+  high-water marks; the Container filesystem is disposable.
+- Worker routing/auth, Workers AI embeddings, Queues/alarms and encrypted R2
+  checkpoint generations.
+- Native/Container conformance and canary deployment.
 
 **Exit gate:** native and Cloudflare contract suites agree; physical tenant
-isolation, restart recovery, recall health and backup/restore are green.
+isolation, Container destruction/replay recovery, RPO 0 for acknowledged
+writes, recall health and encrypted R2 backup/restore are green. Local gates
+cover the contract; production promotion requires the Cloudflare canary.
 
 ## Phase 11 - SDKs and developer experience
 

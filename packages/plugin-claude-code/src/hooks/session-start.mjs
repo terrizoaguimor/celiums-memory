@@ -54,7 +54,7 @@ async function main() {
   });
 
   lines.push('');
-  lines.push('_Use `search` or `recall` MCP tools for more details. Memories persist across sessions via celiums-memory._');
+   lines.push('_Use `search` or `recall` MCP tools for more details. Memories persist across sessions via the native Rust server._');
 
   // Output as JSON so Claude Code can inject it as context
   const output = {

@@ -2,12 +2,9 @@
 # Celiums Memory release pipeline — implements ADR-018 §"Tag v*.*.*".
 #
 # On tag push (v*.*.*):
-#   1. Build multi-arch Docker image
-#   2. Scan with Trivy + Grype
-#   3. Generate SBOM with Syft (SPDX + CycloneDX)
-#   4. Sign image + chart + npm tarball with cosign (keyless OIDC)
-#   5. Publish to GHCR + npm + GitHub Releases
-#   6. Attach SBOM + signatures to the GH Release
+#   1. Run Rust and active TypeScript checks
+#   2. Build the Cloudflare Container image
+#   3. Publish the native Rust crates
 
 name: Release
 
@@ -38,9 +35,13 @@ jobs:
           node-version: '22'
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @celiums/memory test
+      - run: pnpm --dir apps/cloudflare-worker typecheck
+      - run: pnpm --dir apps/cloudflare-worker test
+      - run: pnpm --dir packages/memory-bench typecheck
+      - run: pnpm --dir packages/plugin-claude-code check
+      - run: cargo check --manifest-path rust/Cargo.toml --workspace --locked
 
-  # ── Build + push multi-arch image ────────────────────────────────
+  # ── Build + push Cloudflare Container image ───────────────────────
   docker:
     name: Build + push image
     needs: [test]
@@ -77,6 +78,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: apps/cloudflare-worker/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
@@ -142,63 +144,9 @@ jobs:
             celiums-memory.spdx.json
             celiums-memory.cdx.json
 
-  # ── Build + push Helm chart ──────────────────────────────────────
-  chart:
-    name: Publish Helm chart
-    needs: [test, docker]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write     # to attach to GH Release
-      packages: write     # OCI push to GHCR
-      id-token: write     # cosign keyless
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Sync chart appVersion with tag
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          sed -i "s/^appVersion: .*/appVersion: \"$VERSION\"/" charts/celiums-memory/Chart.yaml
-      - name: helm dependency + package
-        run: |
-          helm dependency build ./charts/celiums-memory
-          helm package ./charts/celiums-memory -d /tmp/charts/
-      - name: Push chart to OCI registry
-        env:
-          HELM_EXPERIMENTAL_OCI: '1'
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login \
-            ${{ env.REGISTRY }} \
-            -u ${{ github.actor }} --password-stdin
-          helm push /tmp/charts/celiums-memory-*.tgz \
-            oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
-      - uses: sigstore/cosign-installer@v3
-      - name: cosign sign chart artefact
-        run: |
-          for chart in /tmp/charts/celiums-memory-*.tgz; do
-            cosign sign-blob --yes \
-              --output-signature "$chart.sig" \
-              --output-certificate "$chart.pem" \
-              "$chart"
-          done
-
-      - name: Upload chart to GH Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            /tmp/charts/celiums-memory-*.tgz
-            /tmp/charts/celiums-memory-*.tgz.sig
-            /tmp/charts/celiums-memory-*.tgz.pem
-          draft: false
-          generate_release_notes: true
-
-  # ── Publish package via pnpm ─────────────────────────────────────
-  # pnpm-only policy: the repo standardises on pnpm to reduce npm
-  # supply-chain risk (see security posture in SECURITY.md). pnpm
-  # publish proxies the underlying npm registry but with pnpm's
-  # stricter sandboxing — no transitive postinstall scripts execute.
-  publish-package:
-    name: Publish to npm registry (via pnpm)
+  # ── Publish Rust crates ───────────────────────────────────────────
+  publish-crates:
+    name: Publish native Rust crates
     needs: [test, docker]
     runs-on: ubuntu-latest
     permissions:
@@ -206,24 +154,21 @@ jobs:
       id-token: write    # for SLSA provenance attestation
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: pnpm
-          registry-url: 'https://registry.npmjs.org'
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @celiums/memory build
-      - name: Publish with provenance
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish crates in dependency order
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          pnpm --filter @celiums/memory publish --access public --provenance --no-git-checks
+          cargo publish --manifest-path rust/crates/celiums-cognition/Cargo.toml --locked
+          sleep 30
+          cargo publish --manifest-path rust/crates/celiums-memory-engine/Cargo.toml --locked
+          sleep 30
+          cargo publish --manifest-path rust/crates/celiums-memory-cli/Cargo.toml --locked
 
   # ── Final release notes update ───────────────────────────────────
   release-notes:
     name: Append SBOM + signatures to release
-    needs: [docker, chart, publish-package]
+    needs: [docker, publish-crates]
     runs-on: ubuntu-latest
     permissions:
       contents: write

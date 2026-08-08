@@ -45,7 +45,7 @@ When the Discord launches it will have:
 
 - `#general` — anything project-related
 - `#integrators` — Track 1 questions; agent builders embedding Celiums
-- `#operators` — Track 2 deployment + Helm chart + scaling
+- `#operators` — Cloudflare Container deployment, recovery and scaling
 - `#research` — academic uses, papers, citations
 - `#showcase` — projects built on Celiums
 - `#announcements` — read-only, release notes + security advisories

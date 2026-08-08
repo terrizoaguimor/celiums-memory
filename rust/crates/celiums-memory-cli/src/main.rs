@@ -6,7 +6,7 @@
 //! ```text
 //! celiums-memory mcp [--data <dir>] [--dimension <n>] [--embedding-provider <id>]
 //!   [--embedding-model <id>] [--embedding-revision <id>] [--tenant-id <id>]
-//!   [--timezone-offset <min>]
+//!   [--timezone-offset <min>] [--bind <addr>]
 //! ```
 //!
 //! Runs the MCP stdio server over the embedded engine. Zero external
@@ -63,7 +63,7 @@ fn run() -> Result<(), String> {
     let mut embedding_model = "deterministic-word-bigram-hash".to_owned();
     let mut embedding_revision = "v1".to_owned();
     let mut bind = "127.0.0.1:3210".to_owned();
-    let api_keys: Option<String> = std::env::var("CELIUMS_API_KEYS").ok();
+    let mut api_keys: Option<String> = std::env::var("CELIUMS_API_KEYS").ok();
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--data" => {
@@ -92,6 +92,9 @@ fn run() -> Result<(), String> {
             "--tenant-id" => {
                 tenant_id = TenantId::new(args.next().ok_or("--tenant-id requires an id")?)
                     .map_err(|error| error.to_string())?;
+            }
+            "--api-keys" => {
+                api_keys = Some(args.next().ok_or("--api-keys requires key records")?);
             }
             "--embedding-provider" => {
                 embedding_provider = args.next().ok_or("--embedding-provider requires an id")?;
@@ -143,6 +146,8 @@ fn run() -> Result<(), String> {
             max_tenant_engines: 100,
             max_mcp_sessions: 1_000,
             max_confirmations: 1_000,
+            checkpoint_key: parse_checkpoint_key()?,
+            checkpoint_body_limit: 512 * 1024 * 1024,
         };
         let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
         return runtime.block_on(server::serve(config));
@@ -167,6 +172,24 @@ fn run() -> Result<(), String> {
     session
         .run(&mut input, &mut output)
         .map_err(|error| error.to_string())
+}
+
+fn parse_checkpoint_key() -> Result<Option<[u8; 32]>, String> {
+    let Some(value) = std::env::var("CELIUMS_CHECKPOINT_KEY_HEX").ok() else {
+        return Ok(None);
+    };
+    if value.len() != 64 || !value.is_ascii() {
+        return Err("CELIUMS_CHECKPOINT_KEY_HEX must contain 64 hex characters".to_owned());
+    }
+    let bytes = (0..value.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&value[index..index + 2], 16))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "CELIUMS_CHECKPOINT_KEY_HEX must contain 64 hex characters")?;
+    bytes
+        .try_into()
+        .map(Some)
+        .map_err(|_| "CELIUMS_CHECKPOINT_KEY_HEX must contain 64 hex characters".to_owned())
 }
 
 fn unix_now_ms() -> i64 {

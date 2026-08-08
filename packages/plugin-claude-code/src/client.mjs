@@ -1,55 +1,27 @@
 /**
- * In-process memory client for celiums-memory Claude Code plugin.
+ * HTTP memory client for the Celiums Claude Code plugin.
  *
- * Each user has their own SQLite brain at ~/.celiums/memory.db. No HTTP,
- * no server, no remote calls, no accounts. Memories never leave the user's
- * machine — full privacy by default.
+ * Talks to the authenticated native Rust server through the Cloudflare
+ * control plane. The plugin does not embed a storage engine.
  *
- * If CELIUMS_MEMORY_URL is set, falls back to HTTP mode (for users who
- * want to point at memory.celiums.ai or a self-hosted server). The HTTP
- * fallback is opt-in only.
- *
- * Same API as before so hooks and bridge work unchanged:
+ * Stable hook-facing API:
  *   client.health(), .store(), .recall(), .emotion(),
  *   .searchCompact(), .timeline(), .consolidate()
  */
 
-import os from 'node:os';
-import path from 'node:path';
-import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
+import os from 'node:os';
+import { randomUUID } from 'node:crypto';
 
 // ─── Configuration ────────────────────────────────────
-const REMOTE_URL = process.env.CELIUMS_MEMORY_URL || '';
+const REMOTE_URL = process.env.CELIUMS_MEMORY_URL || 'http://127.0.0.1:3210';
 const API_KEY = process.env.CELIUMS_API_KEY || '';
+const TENANT_ID = process.env.CELIUMS_TENANT_ID || 'default';
 const DEFAULT_USER = process.env.CELIUMS_MEMORY_USER_ID || os.userInfo().username || 'default';
 const DEFAULT_TIMEOUT = parseInt(process.env.CELIUMS_MEMORY_TIMEOUT || '5000', 10);
-const SQLITE_PATH = process.env.CELIUMS_SQLITE_PATH ||
-  path.join(os.homedir(), '.celiums', 'memory.db');
-
-// Ensure ~/.celiums exists for the SQLite file
-const SQLITE_DIR = path.dirname(SQLITE_PATH);
-if (!REMOTE_URL && !fs.existsSync(SQLITE_DIR)) {
-  fs.mkdirSync(SQLITE_DIR, { recursive: true });
-}
-
-// ─── Engine singleton (in-process mode only) ─────────
-let enginePromise = null;
-async function getEngine() {
-  if (enginePromise) return enginePromise;
-  enginePromise = (async () => {
-    const { createMemoryEngine } = await import('@celiums/memory');
-    return createMemoryEngine({
-      personality: process.env.CELIUMS_PERSONALITY || 'balanced',
-      sqlitePath: SQLITE_PATH,
-    });
-  })();
-  return enginePromise;
-}
-
-// ─── HTTP fallback (only if REMOTE_URL is set) ──────
-function httpRequest(path, method = 'GET', body = null) {
+// ─── Native Rust MCP/HTTP endpoint ──────────────────
+function httpRequest(path, method = 'GET', body = null, extraHeaders = {}, includeHeaders = false) {
   return new Promise((resolve, reject) => {
     const url = new URL(path, REMOTE_URL);
     const isHttps = url.protocol === 'https:';
@@ -63,7 +35,10 @@ function httpRequest(path, method = 'GET', body = null) {
         method,
         headers: {
           'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
           'User-Agent': 'celiums-memory-claude-code/0.5.2',
+          'x-celiums-tenant-id': TENANT_ID,
+          ...extraHeaders,
           ...(API_KEY ? { Authorization: `Bearer ${API_KEY}` } : {}),
           ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
         },
@@ -73,8 +48,10 @@ function httpRequest(path, method = 'GET', body = null) {
         let data = '';
         res.on('data', (c) => (data += c));
         res.on('end', () => {
-          try { resolve(JSON.parse(data)); }
-          catch { resolve({ ok: false, raw: data.substring(0, 200) }); }
+          let parsed;
+          try { parsed = JSON.parse(data); }
+          catch { parsed = { ok: false, raw: data.substring(0, 200) }; }
+          resolve(includeHeaders ? { body: parsed, headers: res.headers } : parsed);
         });
       },
     );
@@ -83,6 +60,48 @@ function httpRequest(path, method = 'GET', body = null) {
     if (payload) req.write(payload);
     req.end();
   });
+}
+
+let mcpSessionId;
+let nextMcpId = 1;
+
+async function mcpCall(name, arguments_ = {}) {
+  if (!mcpSessionId) {
+    const initializedResponse = await httpRequest('/mcp', 'POST', {
+      jsonrpc: '2.0',
+      id: nextMcpId++,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-11-25',
+        capabilities: {},
+        clientInfo: { name: 'celiums-memory-claude-code', version: '2.0.0' },
+      },
+    }, {}, true);
+    mcpSessionId = initializedResponse.headers['mcp-session-id'];
+    if (!mcpSessionId) throw new Error('MCP initialize did not return a session');
+    await httpRequest('/mcp', 'POST', {
+      jsonrpc: '2.0',
+      method: 'notifications/initialized',
+    }, {
+      'MCP-Session-Id': mcpSessionId,
+      'MCP-Protocol-Version': '2025-11-25',
+      'x-celiums-operation-id': randomUUID(),
+    });
+  }
+  const response = await httpRequest('/mcp', 'POST', {
+    jsonrpc: '2.0',
+    id: nextMcpId++,
+    method: 'tools/call',
+    params: { name, arguments: arguments_ },
+  }, {
+    'MCP-Session-Id': mcpSessionId,
+    'MCP-Protocol-Version': '2025-11-25',
+    'x-celiums-operation-id': randomUUID(),
+  });
+  if (response?.result?.structuredContent !== undefined) return response.result.structuredContent;
+  const text = response?.result?.content?.[0]?.text;
+  if (!text) return response;
+  try { return JSON.parse(text); } catch { return response; }
 }
 
 // ─── Safe wrapper — never throws ─────────────────────
@@ -100,60 +119,23 @@ async function safe(fn) {
 // ─── Public API ───────────────────────────────────────
 export const client = {
   userId: DEFAULT_USER,
-  url: REMOTE_URL || `sqlite:${SQLITE_PATH}`,
-  mode: REMOTE_URL ? 'remote' : 'local-sqlite',
+  url: REMOTE_URL,
+  mode: 'rust-server',
 
   async health() {
-    if (REMOTE_URL) return safe(() => httpRequest('/health', 'GET'));
-    return safe(async () => {
-      const engine = await getEngine();
-      const h = await engine.health();
-      return { status: 'alive', mode: 'local-sqlite', stores: h, sqlitePath: SQLITE_PATH };
-    });
+    return safe(() => httpRequest('/healthz', 'GET'));
   },
 
   async store({ content, tags = [], source = 'claude-code', userId = DEFAULT_USER }) {
-    if (REMOTE_URL) {
-      return safe(() => httpRequest('/store', 'POST', { userId, content, tags, source }));
-    }
-    return safe(async () => {
-      const engine = await getEngine();
-      const result = await engine.store([{ userId, content, tags, source }]);
-      return { stored: result.length, memory: result[0] };
-    });
+    return safe(() => mcpCall('remember', { content, tags, source_kind: source }));
   },
 
   async recall({ query, limit = 10, userId = DEFAULT_USER }) {
-    if (REMOTE_URL) {
-      return safe(() => httpRequest('/recall', 'POST', { query, userId, limit }));
-    }
-    return safe(async () => {
-      const engine = await getEngine();
-      const result = await engine.recall({ query, userId, limit });
-      return {
-        memories: (result.memories || []).map((m) => ({
-          memory: m.memory,
-          finalScore: m.finalScore,
-          score: m.finalScore,
-          emotionalScore: m.emotionalScore,
-          limbicResonance: m.limbicResonance,
-        })),
-        limbicState: result.limbicState,
-        modulation: result.modulation,
-      };
-    });
+    return safe(() => mcpCall('recall', { query, limit }));
   },
 
   async emotion({ userId = DEFAULT_USER } = {}) {
-    if (REMOTE_URL) {
-      return safe(() => httpRequest(`/emotion?userId=${encodeURIComponent(userId)}`, 'GET'));
-    }
-    return safe(async () => {
-      const engine = await getEngine();
-      const state = await engine.getLimbicState(userId);
-      const modulation = await engine.getModulation(userId);
-      return { feeling: labelEmotion(state), state, modulation };
-    });
+    return safe(() => mcpCall('memory_stats'));
   },
 
   /**
@@ -162,9 +144,10 @@ export const client = {
    */
   async searchCompact({ query, limit = 10, userId = DEFAULT_USER }) {
     const result = await this.recall({ query, limit, userId });
-    if (!result?.memories) return { memories: [] };
+    const memories = result?.results || result?.memories;
+    if (!Array.isArray(memories)) return { memories: [] };
     return {
-      memories: result.memories.map((m) => ({
+      memories: memories.map((m) => ({
         id: m.memory?.id || m.id,
         summary: (m.memory?.summary || m.memory?.content || m.content || '').substring(0, 120),
         score: m.finalScore || m.score,
@@ -179,9 +162,10 @@ export const client = {
       limit,
       userId,
     });
-    if (!result?.memories) return { memories: [] };
+    const memories = result?.results || result?.memories;
+    if (!Array.isArray(memories)) return { memories: [] };
     return {
-      memories: result.memories
+      memories: memories
         .slice(0, limit)
         .map((m) => ({
           id: m.memory?.id || m.id,
@@ -194,38 +178,16 @@ export const client = {
   },
 
   async circadian({ userId = DEFAULT_USER } = {}) {
-    if (REMOTE_URL) {
-      return safe(() => httpRequest(`/circadian?userId=${encodeURIComponent(userId)}`, 'GET'));
-    }
-    // Local mode: return basic time info
-    return safe(async () => {
-      const h = new Date().getHours() + new Date().getMinutes() / 60;
-      return { localHour: h, timeOfDay: h >= 5 && h < 12 ? 'morning' : h < 18 ? 'afternoon' : 'night', rhythmComponent: 0.5 };
-    });
+    return safe(() => mcpCall('circadian_status'));
   },
 
   async consolidate({ conversation, userId = DEFAULT_USER }) {
-    if (REMOTE_URL) {
-      return safe(() => httpRequest('/consolidate', 'POST', { conversation, userId }));
-    }
-    return safe(async () => {
-      const engine = await getEngine();
-      return engine.consolidate(userId, conversation);
-    });
+    return safe(async () => ({
+      supported: false,
+      reason: 'consolidation is explicit maintenance and is not invoked by the plugin automatically',
+      conversationLength: conversation.length,
+    }));
   },
 };
-
-function labelEmotion(state) {
-  const { pleasure: p, arousal: a, dominance: d } = state;
-  if (p > 0.3 && a > 0.3 && d > 0.3) return 'exuberant';
-  if (p > 0.3 && a > 0.3) return 'excited';
-  if (p > 0.3 && a <= 0.3) return 'peaceful';
-  if (p > 0.1) return 'content';
-  if (p <= -0.3 && a > 0.3) return 'anxious';
-  if (p <= -0.3) return 'sad';
-  if (a > 0.5) return 'alert';
-  if (a < -0.5) return 'drowsy';
-  return 'neutral';
-}
 
 export default client;

@@ -10,7 +10,8 @@ use celiums_memory_engine::{
     EmbeddingSpaceIdentity, ExportSelector, IdempotencyKey, MemoryEngine, MemoryIdentity,
     PortabilityError, Provenance, RecallConfig, RememberContext, RememberRequest, SourceKind,
     TenantId, UserId, apply_migration, hard_delete_store, import_logical, plan_migration,
-    residue_report, restore_encrypted_backup, verify_logical_export,
+    read_encrypted_backup_artifact, residue_report, restore_encrypted_backup,
+    restore_encrypted_backup_artifact, verify_logical_export,
 };
 
 const DIMENSION: u16 = 4;
@@ -137,6 +138,17 @@ fn encrypted_backup_can_be_created_and_is_not_plaintext() {
     let restored = tempfile::tempdir().expect("restored").path().join("tenant");
     let report = restore_encrypted_backup(&backup, &restored, &key).expect("restore");
     assert!(report.record_count > 0);
+
+    let (descriptor, artifact) = read_encrypted_backup_artifact(&backup).expect("artifact");
+    assert!(descriptor.ciphertext_bytes > 0);
+    assert!(descriptor.plaintext_bytes > 0);
+    let artifact_restore = tempfile::tempdir()
+        .expect("artifact restore")
+        .path()
+        .join("tenant");
+    let artifact_report = restore_encrypted_backup_artifact(&artifact, &artifact_restore, &key)
+        .expect("artifact restore");
+    assert_eq!(artifact_report.record_count, report.record_count);
 }
 
 #[test]

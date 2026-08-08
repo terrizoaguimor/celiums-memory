@@ -48,12 +48,12 @@ A decision that is not encoded is a decision that will be re-litigated within 3 
 ## Example
 
 ```
-Bad:  remember("Using PostgreSQL")
+Bad:  remember("Using a database")
 Good: remember(
-  "DECISION: PostgreSQL 17 + pgvector over MongoDB —
-   REASON: need ACID + vector search + mature ecosystem —
-   REJECTED: MongoDB (no transactions), SQLite (scale)",
-  tags: ["decision", "database", "stack"]
+  "DECISION: native Rust Hyphae engine behind Cloudflare Containers —
+   REASON: durable tenant isolation without external storage services —
+   REJECTED: multi-service external-storage stack",
+   tags: ["decision", "runtime", "stack"]
 )
 ```
 
