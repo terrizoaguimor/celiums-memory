@@ -32,6 +32,7 @@ mod identity;
 mod ingestion;
 mod journal;
 mod memory;
+mod portability;
 mod quantize;
 mod recall_pipeline;
 mod temporal;
@@ -93,6 +94,13 @@ pub use ingestion::{
 };
 pub use journal::{BrokenLink, BrokenReason, ChainReport, JournalEntry, Supersession, chain_hash};
 pub use memory::{Memory, MemoryDecodeError};
+pub use portability::{
+    BackupRetentionPolicy, EncryptedBackupInfo, ExportSelector, HardDeleteReport,
+    LogicalExportInfo, LogicalManifest, MigrationKind, MigrationPlan, PortabilityError,
+    ResidueReport, RestoreReport, apply_migration, create_encrypted_backup, hard_delete_store,
+    import_logical, plan_migration, prune_encrypted_backups, residue_report,
+    restore_encrypted_backup, verify_logical_export,
+};
 pub use quantize::{QuantizeError, quantize};
 pub use recall_pipeline::{
     BranchAbstention, Citation, CompactSearchRequest, CompactSearchResponse, CompactSearchResult,
