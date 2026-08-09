@@ -3,8 +3,10 @@
 
 # Rust Crates Publishing
 
-The public Rust family is published in dependency order. Hyphae remains an
-external registry dependency and is never forked or vendored.
+The public Rust family is published in dependency order. Hyphae v1.0.0 is the
+current immutable native substrate. It is consumed from the signed `v1.0.0`
+release commit during this migration; switch to exact crates.io versions when
+the Hyphae v1 crates are published.
 
 ## Order
 
@@ -32,7 +34,8 @@ cargo package --locked -p <crate>
 
 Each package must contain a README, LICENSE and NOTICE, and its package archive
 must not contain local data, build output or secrets. A clean consumer must be
-able to resolve the family from crates.io while Hyphae stays pinned to `0.2.1`.
+able to resolve the family from crates.io while Hyphae stays pinned to the
+Hyphae v1.0.0 release commit.
 After publishing a dependency, wait for the crates.io index to observe it before
 publishing the next dependent crate. The release workflow uses a 30-second
 interval between dependent publishes.

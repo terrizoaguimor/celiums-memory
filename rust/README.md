@@ -4,7 +4,7 @@
 # Celiums Memory — Rust port
 
 The Rust rewrite of Celiums Memory, built **on top of
-[Hyphae](https://github.com/celiumsai/hyphae)** (`hyphae-engine =0.2.1`,
+[Hyphae](https://github.com/celiumsai/hyphae)** (`hyphae-engine =1.0.0`,
 Apache-2.0) instead of the Postgres + Qdrant + Valkey triple-store.
 
 ## Zero external services

@@ -55,8 +55,8 @@ command and commit that produced them.
 
 | Commit | Toolchain | Corpus | Transport | Result |
 |---|---|---:|---|---|
-| `7e10b6c` | Rust release | 216 memories / 8 probes | embedded | retrieval top-1 100%; top-5 100%; ingest 2646.720 ms; recall p50 480929 us, p90 742315 us, max 843234 us |
-| `7e10b6c` | Rust release | 100 memories | embedded | writes 1005.617 ms; checkpoint 623731 B / 23.775 ms; restore 204 records / 100 vectors / 49.755 ms |
+| `hyphae-v1-migration` | Rust release / Hyphae 1.0.0 | 216 memories / 8 probes | embedded | retrieval top-1 100%; top-5 100%; ingest 2669.154 ms; recall p50 590170 us, p90 785344 us, max 925489 us |
+| `hyphae-v1-migration` | Rust release / Hyphae 1.0.0 | 100 memories | embedded | writes 876.191 ms; checkpoint 623731 B / 21.927 ms; restore 204 records / 100 vectors / 51.594 ms |
 | `7e10b6c` | Rust debug | 10 HTTP MCP writes | MCP HTTP | health 27.343 ms; initialize 4.198 ms; remember p50 0.871 ms, p90 1.178 ms, max 1.180 ms |
 | `7e10b6c` | Node 24 / Rust debug | LongMemEval 1 instance | stdio MCP | ingestion 0 rejected writes; drivers/judges unavailable because DO Inference returned HTTP 401; not a quality result |
 

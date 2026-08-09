@@ -22,10 +22,10 @@ evidence and why the next action follows.
 |---|---|
 | Active phase | Phase 10 - Cloudflare runtime |
 | Active item | P10.7 - Phase close (blocked on external deployment gates) |
-| Branch | `feat/phase-10-cloudflare-containers` |
-| Baseline commit | `d41806b` |
+| Branch | `feat/hyphae-1-migration` |
+| Baseline commit | `9887d16` |
 | Canonical implementation | `rust/` |
-| Storage substrate | Hyphae `=0.2.1` |
+| Storage substrate | Hyphae `=1.0.0` release commit `839ea6e2`; Git source until crates.io publication |
 | Production direction | Cloudflare, one Durable Object per tenant |
 | Next phase after gate | Phase 11 - SDKs and developer experience |
 
@@ -101,7 +101,7 @@ Celiums Memory. Do not vendor or fork it into this tree.
 
 On 2026-08-05 I crossed this boundary while evaluating CRUD atomicity and
 opened Hyphae PR #111. I closed it immediately after correction. P1 must be
-implemented exclusively against published Hyphae `0.2.1`; no Hyphae repository
+implemented exclusively against the immutable Hyphae v1.0.0 release; no Hyphae repository
 changes are part of the Celiums Memory roadmap.
 
 ### D-003 - Ethics remains central
@@ -252,7 +252,7 @@ stable and an isolated immutable server exists.
 | ID | Work item | Status | Evidence / exit condition |
 |---|---|---|---|
 | P10.1 | Native Container control-plane contract | verified locally | ADR defines tenant routing, operation IDs, receipts, high-water marks, RPO/RTO and Container disposal semantics; Worker auth contract tests pass; journal write was attempted but API returned HTTP 500 |
-| P10.2 | Public Rust crate family | blocked | package metadata, LICENSE/NOTICE/README and local package gates are prepared; dependent package publication waits for crates.io index visibility |
+| P10.2 | Public Rust crate family | active | package metadata, LICENSE/NOTICE/README and local package gates are prepared; Hyphae v1.0.0 is consumed from its immutable release commit while crates.io v1 publication is pending |
 | P10.3 | TypeScript cutover | verified locally | legacy TypeScript engine/types/schemas/migrations and external storage release paths removed; plugin/benchmark use Rust transport |
 | P10.4 | Worker and TenantRuntimeDO | verified locally | Worker auth/routing, one named Container/DO per tenant, transactional pending journal, terminal receipts, replay and contiguous high-water mark; 21 Worker contract tests pass |
 | P10.5 | R2 checkpoints, Queues and alarms | verified locally | encrypted native checkpoint artifact, R2 pointer/history bridge, binary pending-object replay, managed Queue delivery and DO alarm lifecycle are implemented; production binding verification remains |
@@ -263,7 +263,7 @@ stable and an isolated immutable server exists.
 
 | Scope | Status | Evidence |
 |---|---|---|
-| Rust engine retrieval baseline | verified locally | 216 memories / 8 probes; top-1 100%, top-5 100%; recall p50 480929 us, p90 742315 us, max 843234 us |
+| Rust engine retrieval baseline | verified locally | Hyphae v1.0.0; 216 memories / 8 probes; top-1 100%, top-5 100%; recall p50 590170 us, p90 785344 us, max 925489 us |
 | Rust checkpoint/recovery baseline | active | `rust/crates/celiums-memory-engine/examples/p10_benchmark.rs` |
 | Native HTTP/MCP baseline | verified locally | `scripts/p10-http-baseline.mjs`; health 27.343 ms, initialize 4.198 ms, remember p50 0.871 ms |
 | `memory-bench` pilot | blocked | Rust stdio ingestion completed with 0 rejected writes; DO Inference returned HTTP 401, so no quality result exists |
