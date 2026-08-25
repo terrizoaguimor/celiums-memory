@@ -471,15 +471,13 @@ dependencies = [
 
 [[package]]
 name = "hyphae-core"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c952d2c59f1b4911988609b082214dceeb456565ae9d1e7b067776e3aea43710"
+version = "1.0.0"
+source = "git+https://github.com/celiumsai/hyphae.git?tag=v1.0.0#839ea6e2a806ed919610952cb17fd1dd61195d76"
 
 [[package]]
 name = "hyphae-engine"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adaf7b414fc90c5ede8e9ebf5bbd537c14c5a437ca7a67902e13c025f92b89ca"
+version = "1.0.0"
+source = "git+https://github.com/celiumsai/hyphae.git?tag=v1.0.0#839ea6e2a806ed919610952cb17fd1dd61195d76"
 dependencies = [
  "blake3",
  "crc32c",
@@ -493,9 +491,8 @@ dependencies = [
 
 [[package]]
 name = "hyphae-query"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d7abc92142f98c58f3aa4cf2ff89a16113dbbece80d737adddc300e09e78ad2"
+version = "1.0.0"
+source = "git+https://github.com/celiumsai/hyphae.git?tag=v1.0.0#839ea6e2a806ed919610952cb17fd1dd61195d76"
 dependencies = [
  "blake3",
  "crc32c",
@@ -505,9 +502,8 @@ dependencies = [
 
 [[package]]
 name = "hyphae-retrieval"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c78246885a2137fb0fdbfab559caed944b722fd0eb92411b783876c1a93af2b7"
+version = "1.0.0"
+source = "git+https://github.com/celiumsai/hyphae.git?tag=v1.0.0#839ea6e2a806ed919610952cb17fd1dd61195d76"
 dependencies = [
  "hyphae-core",
  "hyphae-query",
@@ -519,9 +515,8 @@ dependencies = [
 
 [[package]]
 name = "hyphae-storage"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a702a577bd23d5bc5bed793c130c8f9f34698ed3ed141c6c6bfea01f82b0a565"
+version = "1.0.0"
+source = "git+https://github.com/celiumsai/hyphae.git?tag=v1.0.0#839ea6e2a806ed919610952cb17fd1dd61195d76"
 dependencies = [
  "blake3",
  "crc32c",

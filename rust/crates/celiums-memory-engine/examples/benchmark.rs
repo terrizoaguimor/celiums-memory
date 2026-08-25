@@ -145,7 +145,7 @@ fn main() {
     let mut top1 = 0u32;
     let mut top5 = 0u32;
     let mut latencies_us: Vec<u128> = Vec::new();
-    for (topic, _facts, probe) in TOPICS {
+    for (_topic, facts, probe) in TOPICS {
         let started = Instant::now();
         let response = engine
             .recall(RecallRequest {
@@ -164,7 +164,7 @@ fn main() {
         latencies_us.push(started.elapsed().as_micros());
 
         let hit = |scored: &celiums_memory_engine::ScoredMemory| {
-            scored.memory.content.to_lowercase().contains(topic)
+            facts.iter().any(|fact| *fact == scored.memory.content)
         };
         if response.results.first().is_some_and(hit) {
             top1 += 1;

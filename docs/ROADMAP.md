@@ -178,7 +178,7 @@ tenant records; delete residue checks and restore checks are mechanical.
 
 **Goal:** run the same semantics in production on Cloudflare.
 
-- Native Hyphae `=0.2.1` in one Cloudflare Container per active tenant.
+- Native Hyphae `=1.0.0` in one Cloudflare Container per active tenant.
 - Durable Object control plane with a command journal, receipts and
   high-water marks; the Container filesystem is disposable.
 - Worker routing/auth, Workers AI embeddings, Queues/alarms and encrypted R2

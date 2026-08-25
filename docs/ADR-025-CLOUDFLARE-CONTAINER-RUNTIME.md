@@ -9,8 +9,9 @@ Accepted for Phase 10.
 
 ## Decision
 
-Run the native Rust binary and Hyphae `=0.2.1` inside a disposable Cloudflare
-Container. Do not port Hyphae's filesystem/redb backend to WASM and do not
+Run the native Rust binary and Hyphae `=1.0.0` inside a disposable Cloudflare
+Container. Hyphae v1.0.0 is consumed from its immutable release commit while
+the v1 crates are being published. Do not port Hyphae's filesystem/redb backend to WASM and do not
 modify Hyphae upstream.
 
 A Cloudflare Worker authenticates and resolves the tenant. A Durable Object
@@ -51,8 +52,8 @@ ID.
 
 ## Consequences
 
-- Hyphae remains unchanged and is consumed from crates.io at the exact pinned
-  version.
+- Hyphae remains unchanged and is consumed from the immutable v1.0.0 release
+  commit through Cargo's git source until the v1 crates are published.
 - Native filesystem semantics remain available inside the Container.
 - Cloud durability is provided by DO journal plus R2 checkpoints, not by the
   ephemeral Container disk.

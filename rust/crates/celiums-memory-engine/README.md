@@ -1,6 +1,6 @@
 # celiums-memory-engine
 
-Durable cognitive memory semantics over the pinned Hyphae `0.2.1` contract.
+Durable cognitive memory semantics over the pinned Hyphae `1.0.0` contract.
 The engine provides scoped memory, recall, governance, journal, ingestion,
 claims, graph, consolidation and portability primitives.
 

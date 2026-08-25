@@ -24,14 +24,13 @@ categories = ["database", "science", "wasm"]
 
 [workspace.dependencies]
 celiums-cognition = { version = "=3.0.0-alpha.0", path = "crates/celiums-cognition" }
-# Hyphae is consumed as a published dependency, never vendored: the Hyphae
-# repo explicitly keeps cognition out of its tree, and this repo keeps
-# storage internals out of ours. Pinned exact: the 0.x contract can move.
-hyphae-core = "=0.2.1"
-hyphae-engine = "=0.2.1"
-hyphae-query = "=0.2.1"
-hyphae-retrieval = "=0.2.1"
-hyphae-storage = "=0.2.1"
+# Hyphae is consumed from the immutable v1.0.0 release commit, never vendored.
+# Switch these sources to exact crates.io versions after Hyphae publishes v1.
+hyphae-core = { git = "https://github.com/celiumsai/hyphae.git", tag = "v1.0.0", version = "=1.0.0" }
+hyphae-engine = { git = "https://github.com/celiumsai/hyphae.git", tag = "v1.0.0", version = "=1.0.0" }
+hyphae-query = { git = "https://github.com/celiumsai/hyphae.git", tag = "v1.0.0", version = "=1.0.0" }
+hyphae-retrieval = { git = "https://github.com/celiumsai/hyphae.git", tag = "v1.0.0", version = "=1.0.0" }
+hyphae-storage = { git = "https://github.com/celiumsai/hyphae.git", tag = "v1.0.0", version = "=1.0.0" }
 celiums-memory-engine = { version = "=3.0.0-alpha.0", path = "crates/celiums-memory-engine" }
 # Same digest family as the Hyphae log; used for the journal chain.
 blake3 = "1"

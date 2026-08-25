@@ -53,7 +53,7 @@ Durable Object per tenant
 Disposable Cloudflare Container generation
     |  native Rust binary, one tenant filesystem
     v
-Hyphae 0.2.1
+ Hyphae 1.0.0 from the immutable `v1.0.0` release commit
     |  hash-chained log, verified snapshots, embedded indexes
     v
 Celiums Memory Rust engine
